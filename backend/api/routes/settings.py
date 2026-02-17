@@ -45,6 +45,7 @@ class SystemSettingsResponse(BaseModel):
     energy_cost_per_kwh: float = 0.12
     currency: str = "USD"
     weather_entity: str = ""
+    energy_entity: str = ""
     home_assistant_url: str = ""
     home_assistant_token: str = ""
     climate_entities: str = ""
@@ -71,6 +72,7 @@ class SystemSettingsUpdate(BaseModel):
     energy_cost_per_kwh: float | None = None
     currency: str | None = None
     weather_entity: str | None = None
+    energy_entity: str | None = None
     home_assistant_url: str | None = None
     home_assistant_token: str | None = None
     climate_entities: str | None = None
@@ -132,6 +134,7 @@ _SETTINGS_KEYS: dict[str, Any] = {
     "energy_cost_per_kwh": 0.12,
     "currency": "USD",
     "weather_entity": "",
+    "energy_entity": "",
     "home_assistant_url": "",
     "home_assistant_token": "",
     "climate_entities": "",
@@ -193,6 +196,7 @@ async def get_settings(
         energy_cost_per_kwh=kv["energy_cost_per_kwh"],
         currency=kv["currency"],
         weather_entity=kv["weather_entity"],
+        energy_entity=kv["energy_entity"],
         home_assistant_url=str(kv["home_assistant_url"]),
         home_assistant_token=kv["home_assistant_token"],
         climate_entities=kv["climate_entities"],

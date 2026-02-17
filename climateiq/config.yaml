@@ -1,5 +1,5 @@
 name: ClimateIQ
-version: "0.3.1"
+version: "0.4.0"
 slug: climateiq
 description: AI-Powered Intelligent Climate Management for Home Assistant
 url: "https://github.com/JoshuaSeidel/climateIQ"
@@ -44,6 +44,7 @@ options:
   climate_entities: []
   sensor_entities: []
   weather_entity: ""
+  energy_entity: ""
 schema:
   log_level: list(debug|info|warning|error)
   temperature_unit: list(F|C)
@@ -63,6 +64,7 @@ schema:
   sensor_entities:
     - str
   weather_entity: str?
+  energy_entity: str?
 
 # Permissions
 hassio_api: true

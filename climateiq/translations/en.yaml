@@ -74,5 +74,10 @@ configuration:
     description: >-
       HA weather entity for forecasts (e.g. weather.home).
       Leave blank to select later from the ClimateIQ UI.
+  energy_entity:
+    name: Energy Entity
+    description: >-
+      HA sensor entity for energy monitoring (e.g. sensor.total_energy_usage).
+      Leave blank to select later from the ClimateIQ UI.
 network:
   8099/tcp: ClimateIQ Web UI (direct access)

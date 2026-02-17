@@ -455,6 +455,13 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
     },
   })
 
+  const updateEnergyEntity = useMutation({
+    mutationFn: (entity: string) => api.put('/settings', { energy_entity: entity }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+
   return (
     <Card className="border-border/60">
       <CardHeader>
@@ -516,6 +523,28 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
             <p className="mt-1 text-xs text-red-500">
               Failed to update: {updateWeatherEntity.error?.message}
             </p>
+          )}
+        </div>
+
+        <div>
+          <label className="text-sm font-medium">Energy Entity</label>
+          <select
+            value={settings?.energy_entity ?? ''}
+            onChange={(e) => updateEnergyEntity.mutate(e.target.value)}
+            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm"
+          >
+            <option value="">None — energy tracking disabled</option>
+            {(sensorEntities ?? []).map((entity) => (
+              <option key={entity.entity_id} value={entity.entity_id}>
+                {entity.name} ({entity.entity_id}) — {entity.state}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Select an HA energy sensor entity (e.g. utility meter) for HVAC energy tracking
+          </p>
+          {updateEnergyEntity.isSuccess && (
+            <p className="mt-1 text-xs text-green-600">Energy entity updated</p>
           )}
         </div>
 

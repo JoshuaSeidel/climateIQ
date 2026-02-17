@@ -16,8 +16,6 @@ import {
   Sun,
   Cloud,
   Thermometer,
-  TrendingUp,
-  TrendingDown,
   Zap,
   Calendar,
   Clock,
@@ -60,8 +58,6 @@ interface SystemStats {
   avgHumidity: number
   activeZones: number
   totalZones: number
-  energyToday: number
-  energyTrend: 'up' | 'down' | 'stable'
 }
 
 const getWeatherIcon = (state: string | undefined) => {
@@ -151,14 +147,21 @@ export const Dashboard = () => {
     },
   })
 
-  // Fetch energy data
-  const { data: energyData } = useQuery({
-    queryKey: ['energy-today'],
+  // Fetch live energy data from HA entity (only shows if energy_entity is configured)
+  const { data: energyData } = useQuery<{
+    configured: boolean
+    value: number | null
+    unit: string | null
+    entity_id: string | null
+    friendly_name: string | null
+  }>({
+    queryKey: ['energy-live'],
     queryFn: async () => {
-      const response = await fetch(`${BASE_PATH}/api/v1/analytics/energy?hours=24`)
-      if (!response.ok) throw new Error(`Failed to fetch energy data: ${response.status}`)
+      const response = await fetch(`${BASE_PATH}/api/v1/analytics/energy/live`)
+      if (!response.ok) return { configured: false, value: null, unit: null, entity_id: null, friendly_name: null }
       return response.json()
     },
+    refetchInterval: 60_000, // refresh every minute
   })
 
   // Fetch LLM summary
@@ -210,8 +213,6 @@ export const Dashboard = () => {
         avgHumidity: 0,
         activeZones: 0,
         totalZones: 0,
-        energyToday: 0,
-        energyTrend: 'stable',
       }
     }
 
@@ -225,10 +226,8 @@ export const Dashboard = () => {
         : 0,
       activeZones: zones.filter((z) => z.occupancy === 'occupied').length,
       totalZones: zones.length,
-      energyToday: energyData?.total_estimated_kwh ?? 0,
-      energyTrend: 'stable',
     }
-  }, [zones, energyData])
+  }, [zones])
 
   // Temperature override handler — uses the command endpoint for safety clamping
   const handleTempOverride = useCallback(
@@ -339,27 +338,22 @@ export const Dashboard = () => {
           </CardContent>
         </Card>
 
-        {/* Energy Today */}
-        <Card className="border-border/60 bg-card">
-          <CardContent className="flex items-center justify-between p-4">
-            <div>
-              <p className="text-xs uppercase tracking-widest text-muted-foreground">Energy</p>
-              <div className="flex items-center gap-2">
+        {/* Energy — only shown when an HA energy entity is configured */}
+        {energyData?.configured && (
+          <Card className="border-border/60 bg-card">
+            <CardContent className="flex items-center justify-between p-4">
+              <div>
+                <p className="text-xs uppercase tracking-widest text-muted-foreground">Energy</p>
                 <p className="text-2xl font-semibold text-foreground">
-                  {stats.energyToday > 0 ? `${stats.energyToday.toFixed(1)} kWh` : '-- kWh'}
+                  {energyData.value != null ? `${energyData.value.toFixed(1)} ${energyData.unit ?? 'kWh'}` : '--'}
                 </p>
-                {stats.energyTrend === 'down' ? (
-                  <TrendingDown className="h-4 w-4 text-green-500" />
-                ) : stats.energyTrend === 'up' ? (
-                  <TrendingUp className="h-4 w-4 text-red-500" />
-                ) : null}
               </div>
-            </div>
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-yellow-500/10">
-              <Zap className="h-6 w-6 text-yellow-500" />
-            </div>
-          </CardContent>
-        </Card>
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-yellow-500/10">
+                <Zap className="h-6 w-6 text-yellow-500" />
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* LLM Summary */}
@@ -510,12 +504,14 @@ export const Dashboard = () => {
                     {stats.activeZones}/{stats.totalZones}
                   </span>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm">Energy Today</span>
-                  <span className="text-sm font-medium">
-                    {stats.energyToday > 0 ? `${stats.energyToday.toFixed(1)} kWh` : '--'}
-                  </span>
-                </div>
+                {energyData?.configured && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm">Energy</span>
+                    <span className="text-sm font-medium">
+                      {energyData.value != null ? `${energyData.value.toFixed(1)} ${energyData.unit ?? 'kWh'}` : '--'}
+                    </span>
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>

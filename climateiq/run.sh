@@ -38,6 +38,7 @@ if [ -f "$CONFIG_PATH" ]; then
     CLIMATE_ENTITIES=$(jq -r '(.climate_entities // []) | join(",")' "$CONFIG_PATH")
     SENSOR_ENTITIES=$(jq -r '(.sensor_entities // []) | join(",")' "$CONFIG_PATH")
     WEATHER_ENTITY=$(jq -r '.weather_entity // ""' "$CONFIG_PATH")
+    ENERGY_ENTITY=$(jq -r '.energy_entity // ""' "$CONFIG_PATH")
 else
     LOG_LEVEL="info"
     TEMPERATURE_UNIT="F"
@@ -55,10 +56,11 @@ else
     CLIMATE_ENTITIES=""
     SENSOR_ENTITIES=""
     WEATHER_ENTITY=""
+    ENERGY_ENTITY=""
 fi
 
 echo "============================================"
-echo "  ClimateIQ Home Assistant Add-on v0.3.1"
+echo "  ClimateIQ Home Assistant Add-on v0.4.0"
 echo "============================================"
 echo "Log level:          ${LOG_LEVEL}"
 echo "Temperature unit:   ${TEMPERATURE_UNIT}"
@@ -200,6 +202,9 @@ if [ -n "$SENSOR_ENTITIES" ]; then
 fi
 if [ -n "$WEATHER_ENTITY" ]; then
     export CLIMATEIQ_WEATHER_ENTITY="${WEATHER_ENTITY}"
+fi
+if [ -n "$ENERGY_ENTITY" ]; then
+    export CLIMATEIQ_ENERGY_ENTITY="${ENERGY_ENTITY}"
 fi
 
 # =============================================================================

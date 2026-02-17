@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     climate_entities: str = Field(default="")
     sensor_entities: str = Field(default="")
     weather_entity: str = Field(default="")
+    energy_entity: str = Field(default="")
 
     # Safety limits (absolute bounds, not user-configurable via env for safety)
     safety_min_temp_c: float = Field(default=4.4)  # 40°F - freeze protection

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated
@@ -11,9 +12,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.api.dependencies import get_db
+from backend.api.dependencies import get_db, get_ha_client
+from backend.integrations import HAClient
+from backend.integrations.ha_client import HAClientError
 from backend.models.database import Sensor, SensorReading, Zone
 from backend.models.schemas import SensorReadingResponse, ZoneCreate, ZoneResponse, ZoneUpdate
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -38,9 +43,17 @@ async def list_zones(
     if floor is not None:
         stmt = stmt.where(Zone.floor == floor)
 
+    # Try to get HA client for live thermostat data (non-fatal if unavailable)
+    ha_client: HAClient | None = None
+    try:
+        from backend.api.dependencies import _ha_client
+        ha_client = _ha_client
+    except Exception:
+        pass
+
     result = await db.execute(stmt)
     zones = result.scalars().unique().all()
-    return [await _enrich_zone_response(db, z) for z in zones]
+    return [await _enrich_zone_response(db, z, ha_client) for z in zones]
 
 
 # ---------------------------------------------------------------------------
@@ -52,8 +65,16 @@ async def get_zone(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ZoneResponse:
     """Return a single zone by ID with sensors and devices."""
+    # Try to get HA client for live thermostat data (non-fatal if unavailable)
+    ha_client: HAClient | None = None
+    try:
+        from backend.api.dependencies import _ha_client
+        ha_client = _ha_client
+    except Exception:
+        pass
+
     zone = await _fetch_zone(db, zone_id)
-    return await _enrich_zone_response(db, zone)
+    return await _enrich_zone_response(db, zone, ha_client)
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +190,9 @@ async def _fetch_zone(db: AsyncSession, zone_id: uuid.UUID) -> Zone:
     return zone
 
 
-async def _enrich_zone_response(db: AsyncSession, zone: Zone) -> ZoneResponse:
+async def _enrich_zone_response(
+    db: AsyncSession, zone: Zone, ha_client: HAClient | None = None
+) -> ZoneResponse:
     """Build a ZoneResponse with latest sensor readings attached."""
     resp = ZoneResponse.model_validate(zone)
 
@@ -205,6 +228,23 @@ async def _enrich_zone_response(db: AsyncSession, zone: Zone) -> ZoneResponse:
         )
         if thermostat and thermostat.capabilities:
             resp.target_temp = thermostat.capabilities.get("target_temp")
+
+    # Try to get live thermostat data from HA
+    if ha_client and zone.devices:
+        for device in zone.devices:
+            if device.type.value == "thermostat" and device.ha_entity_id:
+                try:
+                    state = await ha_client.get_state(device.ha_entity_id)
+                    attrs = state.attributes
+                    # Current temperature reading from the thermostat
+                    if resp.current_temp is None and attrs.get("current_temperature") is not None:
+                        resp.current_temp = float(attrs["current_temperature"])
+                    # Target / setpoint temperature
+                    if resp.target_temp is None and attrs.get("temperature") is not None:
+                        resp.target_temp = float(attrs["temperature"])
+                    break
+                except (HAClientError, Exception) as exc:
+                    logger.debug("Could not fetch HA state for %s: %s", device.ha_entity_id, exc)
 
     return resp
 

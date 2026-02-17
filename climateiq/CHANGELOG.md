@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- **Live thermostat data on Dashboard** — zone cards now show real-time
+  current temperature and target temperature fetched directly from Home
+  Assistant climate entities instead of relying on stale DB readings.
+- **Energy entity integration** — new `energy_entity` add-on option lets
+  users point to a real HA energy sensor (e.g., a utility meter). Energy
+  card on the Dashboard reads live state from HA and only appears when an
+  entity is configured — no more fabricated heuristic estimates.
+- `GET /api/v1/analytics/energy/live` endpoint returning live energy
+  reading from the configured HA entity.
+- **HA entity picker for sensors** — the sensor creation form in the Zones
+  page now shows a dropdown of available HA sensor entities. Selecting one
+  auto-fills the sensor name and links the `ha_entity_id`.
+- **Energy entity picker in Settings** — Settings > Home Assistant tab
+  includes a new picker for selecting the energy monitoring entity.
+
+### Changed
+
+- `_enrich_zone_response` in the zones API now accepts an optional HA
+  client and fetches live thermostat state (`current_temperature`,
+  `temperature`) for devices that have an `ha_entity_id`.
+- Dashboard energy card replaced: uses live HA data via
+  `/analytics/energy/live` instead of the heuristic `/analytics/energy`
+  endpoint.
+
+### Removed
+
+- Tuning/Settings button from the header (redundant with sidebar
+  navigation).
+- Heuristic energy trend indicators (`TrendingUp`/`TrendingDown`) from
+  the Dashboard stats bar.
+
 ## 0.3.1
 
 ### Added

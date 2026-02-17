@@ -277,6 +277,7 @@ export type SystemSettings = {
   weather_entity: string
   climate_entities: string
   sensor_entities: string
+  energy_entity: string
 
   home_assistant_url: string
   home_assistant_token: string

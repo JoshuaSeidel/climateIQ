@@ -6,6 +6,7 @@ estimates, and comfort scoring per zone.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
@@ -15,17 +16,22 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.dependencies import get_db
+from backend.api.dependencies import get_db, get_ha_client
+from backend.integrations import HAClient
+from backend.integrations.ha_client import HAClientError
 from backend.models.database import (
     Device,
     DeviceAction,
     OccupancyPattern,
     Sensor,
     SensorReading,
+    SystemSetting,
     Zone,
 )
 from backend.models.enums import DeviceType, PatternType, Season
 from backend.models.schemas import OccupancyPatternResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -626,8 +632,72 @@ async def get_decisions(
 
 
 # ---------------------------------------------------------------------------
+# Response schema for energy/live
+# ---------------------------------------------------------------------------
+class EnergyLiveResponse(BaseModel):
+    """Live energy reading from a Home Assistant entity."""
+
+    configured: bool
+    value: float | None = None
+    unit: str | None = None
+    entity_id: str | None = None
+    friendly_name: str | None = None
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# GET /analytics/energy/live
+# ---------------------------------------------------------------------------
+@router.get("/energy/live", response_model=EnergyLiveResponse)
+async def get_energy_live(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    ha_client: Annotated[HAClient, Depends(get_ha_client)],
+) -> EnergyLiveResponse:
+    """Return the current live energy reading from a configured HA entity.
+
+    Reads the ``energy_entity`` setting from the database. If not configured,
+    returns ``configured=false``. Otherwise fetches the entity state from HA.
+    """
+    energy_entity = await _get_energy_entity(db)
+    if not energy_entity:
+        return EnergyLiveResponse(configured=False)
+
+    try:
+        state = await ha_client.get_state(energy_entity)
+        return EnergyLiveResponse(
+            configured=True,
+            value=float(state.state),
+            unit=state.attributes.get("unit_of_measurement", "kWh"),
+            entity_id=energy_entity,
+            friendly_name=state.attributes.get("friendly_name", ""),
+        )
+    except (HAClientError, ValueError, Exception) as exc:
+        logger.warning("Failed to fetch energy entity %s: %s", energy_entity, exc)
+        return EnergyLiveResponse(
+            configured=True,
+            value=None,
+            unit=None,
+            entity_id=energy_entity,
+            error=str(exc),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+async def _get_energy_entity(db: AsyncSession) -> str:
+    """Read the configured energy entity from the key-value table.
+
+    Returns an empty string if not configured.
+    """
+    result = await db.execute(select(SystemSetting).where(SystemSetting.key == "energy_entity"))
+    row = result.scalar_one_or_none()
+    if row is None:
+        return ""
+    value: str = row.value.get("value", "")
+    return value
+
+
 async def _require_zone(db: AsyncSession, zone_id: uuid.UUID) -> Zone:
     """Load a zone or raise 404."""
     result = await db.execute(select(Zone).where(Zone.id == zone_id))

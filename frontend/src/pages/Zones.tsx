@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { api } from '@/lib/api'
-import type { Zone, ZoneBackend, Sensor, ZoneType, SensorType, HistoryResponse } from '@/types'
+import type { Zone, ZoneBackend, Sensor, ZoneType, SensorType, HistoryResponse, HAEntity } from '@/types'
 import {
   Plus,
   Thermometer,
@@ -69,6 +69,7 @@ interface SensorFormData {
   type: SensorType
   manufacturer: string
   model: string
+  ha_entity_id: string
 }
 
 interface ComfortPrefs {
@@ -96,6 +97,7 @@ export const Zones = () => {
     type: 'temp_humidity',
     manufacturer: '',
     model: '',
+    ha_entity_id: '',
   })
   const [showSensorForm, setShowSensorForm] = useState(false)
   const [comfortPrefs, setComfortPrefs] = useState<ComfortPrefs>({
@@ -150,6 +152,19 @@ export const Zones = () => {
     queryKey: ['zone-history', selectedZoneId],
     queryFn: () => api.get<HistoryResponse>(`/analytics/zones/${selectedZoneId}/history`, { hours: 24, resolution: 300 }),
     enabled: !!selectedZoneId && viewMode === 'detail',
+  })
+
+  // Fetch HA sensor entities for the sensor picker
+  const { data: haSensorEntities } = useQuery<HAEntity[]>({
+    queryKey: ['ha-entities', 'sensor-all'],
+    queryFn: async () => {
+      const [sensors, binary] = await Promise.all([
+        api.get<HAEntity[]>('/settings/ha/entities', { domain: 'sensor' }),
+        api.get<HAEntity[]>('/settings/ha/entities', { domain: 'binary_sensor' }),
+      ])
+      return [...sensors, ...binary]
+    },
+    enabled: viewMode === 'detail' && showSensorForm,
   })
 
   // Fetch sensors for a zone
@@ -217,12 +232,13 @@ export const Zones = () => {
         zone_id: data.zone_id,
         manufacturer: data.manufacturer || undefined,
         model: data.model || undefined,
+        ha_entity_id: data.ha_entity_id || undefined,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['zone-sensors', selectedZoneId] })
       queryClient.invalidateQueries({ queryKey: ['zones-raw'] })
       setShowSensorForm(false)
-      setSensorForm({ name: '', type: 'temp_humidity', manufacturer: '', model: '' })
+      setSensorForm({ name: '', type: 'temp_humidity', manufacturer: '', model: '', ha_entity_id: '' })
     },
   })
 
@@ -584,6 +600,31 @@ export const Zones = () => {
                     />
                   </div>
                 </div>
+                  <div className="sm:col-span-2">
+                    <label className="text-sm font-medium">HA Entity (optional)</label>
+                    <select
+                      value={sensorForm.ha_entity_id}
+                      onChange={(e) => {
+                        const entityId = e.target.value
+                        setSensorForm((f) => ({
+                          ...f,
+                          ha_entity_id: entityId,
+                          name: f.name || (haSensorEntities?.find(ent => ent.entity_id === entityId)?.name ?? ''),
+                        }))
+                      }}
+                      className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm"
+                    >
+                      <option value="">None — manual sensor</option>
+                      {(haSensorEntities ?? []).map((entity) => (
+                        <option key={entity.entity_id} value={entity.entity_id}>
+                          {entity.name} ({entity.entity_id}) — {entity.state}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Link to a Home Assistant entity for automatic data ingestion
+                    </p>
+                  </div>
                 <Button
                   size="sm"
                   disabled={!sensorForm.name || createSensor.isPending}
@@ -613,6 +654,7 @@ export const Zones = () => {
                       <p className="text-xs text-muted-foreground">
                         {sensor.type} {sensor.manufacturer ? `- ${sensor.manufacturer}` : ''}
                         {sensor.model ? ` ${sensor.model}` : ''}
+                        {sensor.ha_entity_id ? ` · ${sensor.ha_entity_id}` : ''}
                       </p>
                     </div>
                     <Button
