@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.7
+
+### Fixed
+
+- Pre-resolve DB hostname to an IP address before handing the URL to asyncpg so
+  that `getaddrinfo` is never called inside the asyncio thread-pool (broken on
+  Alpine musl). Resolution happens both in `run.sh` (shell-level) and in
+  `database.py` (`_pre_resolve_url`) as a defense-in-depth measure.
+
 ## 0.2.6
 
 ### Fixed
