@@ -368,12 +368,21 @@ def get_engine() -> AsyncEngine:
         from backend.config import get_settings
 
         settings = get_settings()
+        # Build connect_args to pass directly to asyncpg.
+        # This bypasses URL parsing issues and ensures ssl=False is
+        # passed as a Python object, not a URL query string that uvloop's
+        # resolver may mishandle.
+        connect_args: dict[str, object] = {}
+        if not settings.db_ssl:
+            connect_args["ssl"] = False
+
         _engine = create_async_engine(
             settings.database_url,
             echo=settings.debug,
             future=True,
             pool_size=5,
             max_overflow=10,
+            connect_args=connect_args,
         )
     return _engine
 

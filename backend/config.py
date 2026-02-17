@@ -92,13 +92,10 @@ class Settings(BaseSettings):
 
         if self.db_url:
             return str(self.db_url)
-        base = (
+        return (
             f"postgresql+asyncpg://{self.db_user}:{self.db_password}@"
             f"{self.db_host}:{self.db_port}/{self.db_name}"
         )
-        if not self.db_ssl:
-            base += "?ssl=disable"
-        return base
 
     @computed_field  # type: ignore[prop-decorator]
     @property
