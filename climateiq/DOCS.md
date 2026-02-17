@@ -132,6 +132,9 @@ Supported providers:
 2. Check that the database user and password are correct
 3. Ensure the `climateiq` database exists and the user has access
 4. If using TimescaleDB, confirm the `uuid-ossp` extension is available
+5. If you see `[Errno -2] Name does not resolve` even when using an IP address,
+   confirm you're running v0.2.6+ so uvicorn is pinned to the stdlib `asyncio`
+   loop; older builds used uvloop, which has a broken DNS resolver on Alpine.
 
 ## Support
 

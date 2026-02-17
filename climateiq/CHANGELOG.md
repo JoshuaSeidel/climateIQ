@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.6
+
+### Fixed
+
+- Force uvicorn to run on the built-in `asyncio` event loop across the add-on,
+  Docker image, and local development setups to avoid uvloop DNS resolution
+  failures on Alpine/musl.
+
+### Changed
+
+- Document asyncio loop requirement across README and DOCS so non-HA deployments
+  mirror the Home Assistant runtime behavior.
+
 ## 0.2.0
 
 ### Removed

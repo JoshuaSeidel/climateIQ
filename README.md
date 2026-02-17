@@ -18,8 +18,8 @@ Intelligent HVAC zone management system with AI-powered automation, real-time mo
 - **Python 3.13+** with FastAPI
 - **TimescaleDB** (PostgreSQL 18 with time-series optimization)
 - **Redis 8+** for caching
-- **MQTT** for real-time sensor data
 - **LiteLLM** for unified LLM provider access
+- **Uvicorn** pinned to the standard `asyncio` loop (uvloop disabled on Alpine/HA builds due to DNS resolver issues)
 
 ### Frontend
 - **React 19.2+** with TypeScript 5.7+
@@ -127,6 +127,11 @@ MQTT_PASSWORD=your_password
 ## Home Assistant Add-on
 
 ClimateIQ includes a full Home Assistant add-on with ingress proxying. The UI and all API calls are routed through Home Assistant when used as an add-on.
+
+**Note:** Starting with v0.2.6, the add-on forces uvicorn to use the stdlib
+`asyncio` event loop to work around uvloop's DNS resolver issues on
+Alpine/musl. If you run the backend outside Home Assistant, pass `--loop
+asyncio` (or set `UVICORN_LOOP=asyncio`) to mirror the production behavior.
 
 ### Add-on Options
 

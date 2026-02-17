@@ -49,7 +49,7 @@ else
 fi
 
 echo "============================================"
-echo "  ClimateIQ Home Assistant Add-on v0.2.5"
+echo "  ClimateIQ Home Assistant Add-on v0.2.6"
 echo "============================================"
 echo "Log level:          ${LOG_LEVEL}"
 echo "Temperature unit:   ${TEMPERATURE_UNIT}"
@@ -194,6 +194,7 @@ python3 -m uvicorn backend.api.main:app \
     --port 8099 \
     --log-level "${LOG_LEVEL}" \
     --no-access-log \
+    --loop asyncio \
     --workers 1 &
 UVICORN_PID=$!
 

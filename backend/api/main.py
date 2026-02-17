@@ -993,6 +993,7 @@ if __name__ == "__main__":
         "backend.api.main:app",
         host=settings.host,
         port=settings.port,
+        loop="asyncio",
         reload=settings.debug,
         log_level="debug" if settings.debug else "info",
         access_log=True,

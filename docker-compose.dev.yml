@@ -10,7 +10,7 @@ services:
     environment:
       - DEBUG=true
       - LOG_LEVEL=DEBUG
-    command: uvicorn backend.main:app --host 0.0.0.0 --port ${CLIMATEIQ_PORT:-8420} --reload
+    command: uvicorn backend.main:app --host 0.0.0.0 --port ${CLIMATEIQ_PORT:-8420} --loop asyncio --reload
     networks:
       - climateiq-network
 
