@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.6
+
+### Fixed
+
+- **Settings now persist to database** — `GET /settings` and
+  `PUT /settings` were non-functional stubs that returned hardcoded
+  defaults and silently discarded all writes. Rewrote the entire
+  `settings.py` backend to properly read/write the `system_settings`
+  KV table. All user preferences (timezone, temperature unit, comfort
+  ranges, energy cost, currency, entity selections) now persist across
+  add-on restarts.
+- **Entity discovery endpoint** — `GET /settings/ha/entities?domain=...`
+  now uses the initialized HA REST client to return real entities.
+- **LLM provider listing** — `GET /settings/llm/providers` returns
+  actual provider status based on configured environment variables.
+
 ## 0.4.5
 
 ### Fixed
