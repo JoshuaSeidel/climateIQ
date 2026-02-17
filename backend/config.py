@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     temperature_unit: str = Field(default="F")
     log_level: str = Field(default="info")
 
+    # Entity filters (comma-separated entity IDs; empty = no filter / all entities)
+    climate_entities: str = Field(default="")
+    sensor_entities: str = Field(default="")
+    weather_entity: str = Field(default="")
+
     # Safety limits (absolute bounds, not user-configurable via env for safety)
     safety_min_temp_c: float = Field(default=4.4)  # 40°F - freeze protection
     safety_max_temp_c: float = Field(default=37.8)  # 100°F - overheat protection

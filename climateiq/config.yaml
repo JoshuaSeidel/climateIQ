@@ -1,5 +1,5 @@
 name: ClimateIQ
-version: "0.2.11"
+version: "0.3.0"
 slug: climateiq
 description: AI-Powered Intelligent Climate Management for Home Assistant
 url: "https://github.com/JoshuaSeidel/climateIQ"
@@ -41,6 +41,9 @@ options:
   gemini_api_key: ""
   grok_api_key: ""
   ollama_url: ""
+  climate_entities: []
+  sensor_entities: []
+  weather_entity: ""
 schema:
   log_level: list(debug|info|warning|error)
   temperature_unit: list(F|C)
@@ -55,6 +58,11 @@ schema:
   gemini_api_key: str?
   grok_api_key: str?
   ollama_url: str?
+  climate_entities:
+    - str
+  sensor_entities:
+    - str
+  weather_entity: str?
 
 # Permissions
 hassio_api: true

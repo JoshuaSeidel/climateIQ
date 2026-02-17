@@ -57,6 +57,9 @@ add-ons) or external services on your network.
 | `gemini_api_key` | string | No | | API key for Google Gemini (AI chat) |
 | `grok_api_key` | string | No | | API key for xAI Grok (AI chat) |
 | `ollama_url` | string | No | | URL for local Ollama instance |
+| `climate_entities` | list | No | `[]` | Climate entity IDs to monitor (empty = all) |
+| `sensor_entities` | list | No | `[]` | Sensor entity IDs to monitor (empty = all) |
+| `weather_entity` | string | No | | Weather entity for forecasts (e.g., `weather.home`) |
 
 ### Example Configuration
 
@@ -70,7 +73,27 @@ db_user: climateiq
 db_password: "your-secure-password"
 redis_url: "redis://192.168.1.50:6379/0"
 anthropic_api_key: "sk-ant-..."
+climate_entities:
+  - climate.living_room
+  - climate.bedroom
+sensor_entities:
+  - sensor.living_room_temperature
+  - sensor.bedroom_temperature
+  - sensor.outdoor_humidity
+weather_entity: "weather.home"
 ```
+
+### Entity Filtering
+
+By default ClimateIQ subscribes to **all** sensor and climate state changes from
+Home Assistant. On systems with many entities this creates unnecessary load.
+
+Use `climate_entities` and `sensor_entities` to whitelist only the entities you
+want ClimateIQ to track. Leave them empty (`[]`) to accept everything.
+
+`weather_entity` selects which HA weather entity is used for forecasts and
+proactive climate adjustments. You can also set this from the ClimateIQ UI
+under Settings.
 
 ### Using HA Add-ons for Database and Redis
 

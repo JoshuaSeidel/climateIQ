@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- **Entity filtering** — choose which Home Assistant entities ClimateIQ
+  monitors instead of subscribing to all state changes.
+  - `climate_entities`: list of `climate.*` entity IDs to track.
+  - `sensor_entities`: list of `sensor.*` / `binary_sensor.*` entity IDs to track.
+  - `weather_entity`: single `weather.*` entity for forecast polling.
+  - When lists are empty (the default), all entities in the supported domains
+    are accepted (previous behavior).
+- Seed `weather_entity` into the database `system_settings` table on startup
+  when configured via add-on options, so the weather poller picks it up
+  automatically.
+
 ## 0.2.11
 
 ### Fixed

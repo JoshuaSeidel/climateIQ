@@ -59,5 +59,20 @@ configuration:
     description: >-
       URL of a local Ollama instance for local LLM inference (no API key needed).
       Example: http://192.168.1.50:11434 — Leave blank to disable.
+  climate_entities:
+    name: Climate Entities
+    description: >-
+      List of HA climate entity IDs to monitor (e.g. climate.living_room).
+      Leave empty to monitor all climate entities.
+  sensor_entities:
+    name: Sensor Entities
+    description: >-
+      List of HA sensor entity IDs to monitor (e.g. sensor.living_room_temperature).
+      Leave empty to monitor all sensor entities.
+  weather_entity:
+    name: Weather Entity
+    description: >-
+      HA weather entity for forecasts (e.g. weather.home).
+      Leave blank to select later from the ClimateIQ UI.
 network:
   8099/tcp: ClimateIQ Web UI (direct access)

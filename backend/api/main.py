@@ -498,15 +498,49 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if settings.home_assistant_token:
             logger.info("Connecting to Home Assistant WebSocket...")
             try:
+                # Build entity filter from config (comma-separated lists).
+                entity_filter: set[str] | None = None
+                _climate = settings.climate_entities.strip()
+                _sensors = settings.sensor_entities.strip()
+                if _climate or _sensors:
+                    entity_filter = set()
+                    if _climate:
+                        entity_filter.update(e.strip() for e in _climate.split(",") if e.strip())
+                    if _sensors:
+                        entity_filter.update(e.strip() for e in _sensors.split(",") if e.strip())
+                    logger.info("Entity filter active: %d entities", len(entity_filter))
+
                 ha_ws = HAWebSocketClient(
                     url=str(settings.home_assistant_url),
                     token=settings.home_assistant_token,
+                    entity_filter=entity_filter,
                 )
                 ha_ws.add_callback(_handle_ha_state_change)
                 await ha_ws.connect()
                 app_state.ha_ws = ha_ws
             except Exception as e:
                 logger.warning(f"HA WebSocket connection failed (sensor ingestion degraded): {e}")
+
+        # Seed weather_entity from config if set and not already in DB
+        if settings_instance.weather_entity:
+            try:
+                from sqlalchemy import select as sa_select
+                from backend.models.database import SystemSetting
+                session_maker = get_session_maker()
+                async with session_maker() as db:
+                    result = await db.execute(
+                        sa_select(SystemSetting).where(SystemSetting.key == "weather_entity")
+                    )
+                    existing = result.scalar_one_or_none()
+                    if not existing:
+                        db.add(SystemSetting(
+                            key="weather_entity",
+                            value={"value": settings_instance.weather_entity},
+                        ))
+                        await db.commit()
+                        logger.info("Seeded weather_entity from config: %s", settings_instance.weather_entity)
+            except Exception as e:
+                logger.warning("Failed to seed weather_entity: %s", e)
 
         # Record startup time
         app_state.startup_time = datetime.now(UTC)

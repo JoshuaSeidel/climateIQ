@@ -32,6 +32,12 @@ if [ -f "$CONFIG_PATH" ]; then
     GEMINI_API_KEY=$(jq -r '.gemini_api_key // ""' "$CONFIG_PATH")
     GROK_API_KEY=$(jq -r '.grok_api_key // ""' "$CONFIG_PATH")
     OLLAMA_URL=$(jq -r '.ollama_url // ""' "$CONFIG_PATH")
+
+    # Entity filters (optional — empty = accept all)
+    # Arrays are joined as comma-separated strings for the env var.
+    CLIMATE_ENTITIES=$(jq -r '(.climate_entities // []) | join(",")' "$CONFIG_PATH")
+    SENSOR_ENTITIES=$(jq -r '(.sensor_entities // []) | join(",")' "$CONFIG_PATH")
+    WEATHER_ENTITY=$(jq -r '.weather_entity // ""' "$CONFIG_PATH")
 else
     LOG_LEVEL="info"
     TEMPERATURE_UNIT="F"
@@ -46,10 +52,13 @@ else
     GEMINI_API_KEY=""
     GROK_API_KEY=""
     OLLAMA_URL=""
+    CLIMATE_ENTITIES=""
+    SENSOR_ENTITIES=""
+    WEATHER_ENTITY=""
 fi
 
 echo "============================================"
-echo "  ClimateIQ Home Assistant Add-on v0.2.11"
+echo "  ClimateIQ Home Assistant Add-on v0.3.0"
 echo "============================================"
 echo "Log level:          ${LOG_LEVEL}"
 echo "Temperature unit:   ${TEMPERATURE_UNIT}"
@@ -180,6 +189,17 @@ export CLIMATEIQ_GEMINI_API_KEY="${GEMINI_API_KEY}"
 export CLIMATEIQ_GROK_API_KEY="${GROK_API_KEY}"
 if [ -n "$OLLAMA_URL" ]; then
     export CLIMATEIQ_OLLAMA_URL="${OLLAMA_URL}"
+fi
+
+# Entity filters
+if [ -n "$CLIMATE_ENTITIES" ]; then
+    export CLIMATEIQ_CLIMATE_ENTITIES="${CLIMATE_ENTITIES}"
+fi
+if [ -n "$SENSOR_ENTITIES" ]; then
+    export CLIMATEIQ_SENSOR_ENTITIES="${SENSOR_ENTITIES}"
+fi
+if [ -n "$WEATHER_ENTITY" ]; then
+    export CLIMATEIQ_WEATHER_ENTITY="${WEATHER_ENTITY}"
 fi
 
 # =============================================================================
