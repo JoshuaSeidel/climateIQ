@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.8
+
+### Fixed
+
+- Patch the asyncio event loop's `getaddrinfo` to resolve IP-address literals
+  synchronously (no thread-pool) so Alpine musl's broken threaded resolver
+  never fires. Called once during app startup before `init_db()`.
+
 ## 0.2.7
 
 ### Fixed

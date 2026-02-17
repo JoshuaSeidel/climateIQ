@@ -49,7 +49,7 @@ else
 fi
 
 echo "============================================"
-echo "  ClimateIQ Home Assistant Add-on v0.2.7"
+echo "  ClimateIQ Home Assistant Add-on v0.2.8"
 echo "============================================"
 echo "Log level:          ${LOG_LEVEL}"
 echo "Temperature unit:   ${TEMPERATURE_UNIT}"
@@ -116,25 +116,6 @@ else
     ip addr 2>/dev/null | grep 'inet ' || echo "  (ip addr not available)"
     echo "[ClimateIQ] Default route:"
     ip route 2>/dev/null | grep default || echo "  (no default route)"
-fi
-
-# Pre-resolve the DB host to an IP address so asyncpg never calls getaddrinfo
-# inside the asyncio thread-pool (broken on Alpine musl).
-RESOLVED_DB_HOST=$(python3 -c "
-import socket, sys
-host = '${DB_HOST}'
-try:
-    infos = socket.getaddrinfo(host, ${DB_PORT}, type=socket.SOCK_STREAM)
-    print(infos[0][4][0])
-except Exception as e:
-    print(host, file=sys.stderr)
-    sys.exit(0)
-")
-if [ -n "$RESOLVED_DB_HOST" ] && [ "$RESOLVED_DB_HOST" != "$DB_HOST" ]; then
-    echo "[ClimateIQ] Pre-resolved DB host: ${DB_HOST} -> ${RESOLVED_DB_HOST}"
-    DB_HOST="$RESOLVED_DB_HOST"
-else
-    echo "[ClimateIQ] DB host already an IP or unchanged: ${DB_HOST}"
 fi
 
 # =============================================================================

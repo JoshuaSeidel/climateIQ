@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import socket
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlparse, urlunparse
 
 from pgvector.sqlalchemy import Vector  # type: ignore[import-untyped]
 from sqlalchemy import (
@@ -367,62 +367,50 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 _db_logger = logging.getLogger(__name__)
 
 
-def _pre_resolve_url(database_url: str) -> str:
-    """Replace the hostname in *database_url* with an already-resolved IP.
+def _patch_loop_getaddrinfo() -> None:
+    """Patch the running event loop so ``getaddrinfo`` for IP-address
+    literals returns instantly instead of going through ``run_in_executor``.
 
-    On Alpine/musl, glibc-style ``getaddrinfo`` is not fully thread-safe.
-    ``asyncio``'s default loop calls ``getaddrinfo`` inside
-    ``run_in_executor`` (a thread-pool), which can trigger
-    ``[Errno -2] Name does not resolve`` even for bare IP addresses.
+    On Alpine/musl, the C-level ``getaddrinfo`` is not safe to call from
+    secondary threads.  asyncio's ``create_connection`` always calls
+    ``loop.getaddrinfo`` which dispatches to a thread-pool — and that
+    fails with ``[Errno -2] Name does not resolve`` even for bare IPs.
 
-    By resolving the host once in the main thread (before the event loop
-    hands the URL to asyncpg) we guarantee that asyncpg never needs to call
-    ``getaddrinfo`` at all.
+    This patch intercepts those calls: if the host is already an IP
+    address it resolves synchronously in the current (main) thread and
+    wraps the result in a future, completely bypassing the thread-pool.
     """
-    parsed = urlparse(database_url)
-    host = parsed.hostname
-    if not host:
-        return database_url
+    loop = asyncio.get_event_loop()
+    if getattr(loop, "_climateiq_patched", False):
+        return  # already patched
 
-    try:
-        # Prefer IPv4 (AF_INET) to avoid IPv6 bracket-escaping issues in URLs.
-        # Fall back to any address family if IPv4 isn't available.
-        for family in (socket.AF_INET, 0):
+    _original = loop.getaddrinfo
+
+    async def _fast_getaddrinfo(
+        host: str | None,
+        port: int | str | None,
+        *,
+        family: int = 0,
+        type: int = 0,
+        proto: int = 0,
+        flags: int = 0,
+    ) -> list[Any]:
+        # If the host looks like an IP address, resolve it synchronously
+        # in the current coroutine (no thread-pool).
+        if host is not None:
             try:
-                infos = socket.getaddrinfo(
-                    host, parsed.port or 5432, family=family, type=socket.SOCK_STREAM,
-                )
-                if infos:
-                    break
-            except socket.gaierror:
-                if family == 0:
-                    raise
-                continue
-        else:
-            return database_url
+                socket.inet_aton(host)  # IPv4 literal check
+                return socket.getaddrinfo(host, port, family=family, type=type,
+                                          proto=proto, flags=flags)
+            except OSError:
+                pass
+        # Fall back to the original (threaded) implementation.
+        return await _original(host, port, family=family, type=type,
+                               proto=proto, flags=flags)
 
-        resolved_ip = str(infos[0][4][0])
-        addr_family = infos[0][0]
-        _db_logger.info(
-            "Pre-resolved DB host %s -> %s (bypassing in-loop DNS)", host, resolved_ip
-        )
-
-        # IPv6 literals must be wrapped in brackets inside a URL.
-        ip_for_url = f"[{resolved_ip}]" if addr_family == socket.AF_INET6 else resolved_ip
-
-        # Rebuild the netloc.  The original host in the netloc may already be
-        # bracket-wrapped (e.g. ``[::1]``), so try both forms.
-        original_netloc = parsed.netloc
-        for old_host in (f"[{host}]", str(host)):
-            if old_host in original_netloc:
-                netloc = original_netloc.replace(old_host, ip_for_url, 1)
-                return urlunparse(parsed._replace(netloc=netloc))
-
-        # Fallback: couldn't locate the host token in netloc — return unchanged.
-    except Exception as exc:
-        _db_logger.warning("Pre-resolution of DB host %s failed (%s); using original URL", host, exc)
-
-    return database_url
+    loop.getaddrinfo = _fast_getaddrinfo  # type: ignore[assignment]
+    loop._climateiq_patched = True  # type: ignore[attr-defined]
+    _db_logger.info("Patched event loop getaddrinfo — IP literals resolve synchronously")
 
 
 def get_engine() -> AsyncEngine:
@@ -433,18 +421,19 @@ def get_engine() -> AsyncEngine:
 
         settings = get_settings()
 
-        # Pre-resolve the hostname so asyncpg/asyncio never calls
-        # getaddrinfo inside the thread-pool (broken on Alpine musl).
-        db_url = _pre_resolve_url(settings.database_url)
-
-        # Build connect_args to pass directly to asyncpg.
-        # ssl=False bypasses URL parsing issues on musl.
         connect_args: dict[str, object] = {}
         if not settings.db_ssl:
             connect_args["ssl"] = False
 
+        _db_logger.info(
+            "Creating engine -> %s:%s/%s",
+            settings.db_host,
+            settings.db_port,
+            settings.db_name,
+        )
+
         _engine = create_async_engine(
-            db_url,
+            settings.database_url,
             echo=settings.debug,
             future=True,
             pool_size=5,
