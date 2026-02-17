@@ -1,0 +1,7 @@
+build_from:
+  amd64: ghcr.io/home-assistant/amd64-base-python:3.13
+  aarch64: ghcr.io/home-assistant/aarch64-base-python:3.13
+  armv7: ghcr.io/home-assistant/armv7-base-python:3.13
+squash: false
+args:
+  BUILD_FROM: "{build_from}"

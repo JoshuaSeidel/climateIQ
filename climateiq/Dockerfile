@@ -52,16 +52,17 @@ COPY backend/requirements.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
-# Copy backend source
+# Copy backend source and version file
 COPY backend/ /app/backend/
+COPY VERSION /app/
 
 # Copy frontend build
 COPY --from=frontend-builder /build/frontend/dist /app/frontend/dist
 
 # Copy add-on specific files
-COPY ha-addon/run.sh /run.sh
-COPY ha-addon/nginx.conf /etc/nginx/http.d/climateiq.conf
-COPY ha-addon/rootfs/ /
+COPY climateiq/run.sh /run.sh
+COPY climateiq/nginx.conf /etc/nginx/http.d/climateiq.conf
+COPY climateiq/rootfs/ /
 
 # Make scripts executable
 RUN chmod a+x /run.sh && \
