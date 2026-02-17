@@ -521,6 +521,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             except Exception as e:
                 logger.warning(f"HA WebSocket connection failed (sensor ingestion degraded): {e}")
 
+        # Initialize the shared HA REST client so zone enrichment can
+        # fetch live thermostat data without requiring a DI-injected dependency.
+        if settings.home_assistant_token:
+            try:
+                from backend.api.dependencies import _ha_client as _existing_ha
+                if _existing_ha is None:
+                    from backend.integrations import HAClient as _HAClient
+                    import backend.api.dependencies as _deps
+                    _rest_client = _HAClient(
+                        url=str(settings.home_assistant_url),
+                        token=settings.home_assistant_token,
+                    )
+                    await _rest_client.connect()
+                    _deps._ha_client = _rest_client
+                    logger.info("HA REST client initialized for live thermostat data")
+            except Exception as e:
+                logger.warning("Failed to initialize HA REST client: %s", e)
+
         # Seed weather_entity from config if set and not already in DB
         if settings_instance.weather_entity:
             try:

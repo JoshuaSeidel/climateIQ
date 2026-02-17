@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.5
+
+### Fixed
+
+- **Live thermostat data now actually works** — the HA REST client
+  (`_ha_client`) was never initialized at startup. It was only created
+  lazily when a route used `Depends(get_ha_client)`, but the zones
+  endpoint reads the module-level variable directly. Since no route
+  triggered the lazy init before zones were fetched, `_ha_client` was
+  always `None` and the live HA thermostat block was silently skipped.
+  Now the REST client is initialized during app startup in `lifespan()`,
+  so `GET /zones` correctly returns the thermostat's live
+  `current_temperature` and `temperature` (setpoint) attributes.
+
 ## 0.4.4
 
 ### Fixed
