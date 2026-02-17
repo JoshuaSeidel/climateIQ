@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.11
+
+### Fixed
+
+- Make `CREATE EXTENSION` calls non-fatal during `init_db()` so startup
+  succeeds when the DB user isn't a superuser (extensions must be
+  pre-installed by an admin).
+
 ## 0.2.10
 
 ### Fixed

@@ -408,8 +408,16 @@ async def init_db() -> None:
     engine = get_engine()
     async with engine.begin() as conn:
         # Ensure required PostgreSQL extensions exist before creating tables.
-        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
-        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "vector"'))
+        # These may fail if the DB user isn't a superuser — that's OK as long
+        # as the extensions were pre-created by an admin.
+        for ext in ("uuid-ossp", "vector"):
+            try:
+                await conn.execute(text(f'CREATE EXTENSION IF NOT EXISTS "{ext}"'))
+            except Exception:
+                _db_logger.warning(
+                    "Could not create extension '%s' (needs superuser). "
+                    "Ensure it is pre-installed on the database.", ext,
+                )
         await conn.run_sync(Base.metadata.create_all)
 
 
