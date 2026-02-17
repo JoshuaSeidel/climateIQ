@@ -49,7 +49,7 @@ else
 fi
 
 echo "============================================"
-echo "  ClimateIQ Home Assistant Add-on v0.2.3"
+echo "  ClimateIQ Home Assistant Add-on v0.2.4"
 echo "============================================"
 echo "Log level:          ${LOG_LEVEL}"
 echo "Temperature unit:   ${TEMPERATURE_UNIT}"
@@ -78,14 +78,44 @@ fi
 # =============================================================================
 
 echo "[ClimateIQ] Checking network connectivity to ${DB_HOST}:${DB_PORT}..."
+
+# Python-level DNS resolution test (same runtime as the app)
+python3 -c "
+import socket
+host = '${DB_HOST}'
+port = ${DB_PORT}
+print(f'  getaddrinfo({host}, {port}):')
+try:
+    result = socket.getaddrinfo(host, port)
+    for r in result:
+        print(f'    {r}')
+except Exception as e:
+    print(f'    FAILED: {e}')
+print(f'  /etc/resolv.conf:')
+try:
+    with open('/etc/resolv.conf') as f:
+        for line in f:
+            print(f'    {line.rstrip()}')
+except Exception as e:
+    print(f'    {e}')
+print(f'  /etc/hosts entries for {host}:')
+try:
+    with open('/etc/hosts') as f:
+        for line in f:
+            if host in line:
+                print(f'    {line.rstrip()}')
+except Exception:
+    pass
+"
+
 if nc -z -w3 "$DB_HOST" "$DB_PORT" 2>/dev/null; then
-    echo "[ClimateIQ] Database host is reachable."
+    echo "[ClimateIQ] Database host is reachable via nc."
 else
-    echo "[ClimateIQ] WARNING: Cannot reach ${DB_HOST}:${DB_PORT}"
-    echo "[ClimateIQ] Network info:"
-    ip route 2>/dev/null || route -n 2>/dev/null || echo "  (route command not available)"
-    echo "[ClimateIQ] Attempting ping..."
-    ping -c 1 -W 2 "$DB_HOST" 2>&1 || echo "  (ping failed)"
+    echo "[ClimateIQ] WARNING: Cannot reach ${DB_HOST}:${DB_PORT} via nc"
+    echo "[ClimateIQ] Network interfaces:"
+    ip addr 2>/dev/null | grep 'inet ' || echo "  (ip addr not available)"
+    echo "[ClimateIQ] Default route:"
+    ip route 2>/dev/null | grep default || echo "  (no default route)"
 fi
 
 # =============================================================================
