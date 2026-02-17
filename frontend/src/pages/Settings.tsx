@@ -380,7 +380,7 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
   })
 
   // Toggle an entity in a set
-  const toggleEntity = (set: Set<string>, setFn: React.Dispatch<React.SetStateAction<Set<string>>>, entityId: string) => {
+  const toggleEntity = (setFn: React.Dispatch<React.SetStateAction<Set<string>>>, entityId: string) => {
     setFn(prev => {
       const next = new Set(prev)
       if (next.has(entityId)) {
@@ -578,7 +578,7 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
                       <input
                         type="checkbox"
                         checked={selectedClimate.has(entity.entity_id)}
-                        onChange={() => toggleEntity(selectedClimate, setSelectedClimate, entity.entity_id)}
+                        onChange={() => toggleEntity(setSelectedClimate, entity.entity_id)}
                         className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
                       />
                       <div className="flex-1 min-w-0">
@@ -622,7 +622,7 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
                       <input
                         type="checkbox"
                         checked={selectedSensors.has(entity.entity_id)}
-                        onChange={() => toggleEntity(selectedSensors, setSelectedSensors, entity.entity_id)}
+                        onChange={() => toggleEntity(setSelectedSensors, entity.entity_id)}
                         className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
                       />
                       <div className="flex-1 min-w-0">
