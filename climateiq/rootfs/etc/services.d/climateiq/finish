@@ -1,9 +1,0 @@
-#!/usr/bin/execlineb -S1
-# S6 finish script: ClimateIQ backend
-# Runs when the service exits
-
-if { s6-test ${1} -ne 0 }
-    s6-echo "ClimateIQ backend exited with code ${1}, signaling shutdown..."
-
-# If the main service dies, bring down the whole container
-s6-svscanctl -t /var/run/s6/services

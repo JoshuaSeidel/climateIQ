@@ -18,47 +18,47 @@ recommendations, and automated scheduling for multi-zone HVAC systems.
 - **Energy Analytics** - Track energy usage and identify savings opportunities
 - **MQTT Support** - Auto-discovers MQTT broker from Home Assistant
 
+## Prerequisites
+
+ClimateIQ requires **external** database and cache services:
+
+- **TimescaleDB (PostgreSQL 18)** or compatible PostgreSQL instance
+- **Redis** for caching and real-time pub/sub
+
+These can be other Home Assistant add-ons (e.g., the TimescaleDB and Redis
+add-ons) or external services on your network.
+
 ## Installation
 
 ### From the Add-on Store
 
 1. Navigate to **Settings > Add-ons > Add-on Store**
 2. Click the three-dot menu and select **Repositories**
-3. Add the repository URL: `https://github.com/joshuaseidel/climateiq`
+3. Add the repository URL: `https://github.com/JoshuaSeidel/climateIQ`
 4. Find "ClimateIQ" in the store and click **Install**
-5. Configure the add-on options (see below)
+5. Configure the add-on options (see below) — database and Redis are required
 6. Click **Start**
-
-### Manual Installation
-
-1. Copy the `ha-addon` directory to your Home Assistant `addons/climateiq` folder
-2. Navigate to **Settings > Add-ons > Add-on Store**
-3. Click the refresh button
-4. Find "ClimateIQ" under **Local add-ons** and install it
 
 ## Configuration
 
 ### Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `log_level` | list | `info` | Logging verbosity: `debug`, `info`, `warning`, `error` |
-| `mqtt_auto_discover` | bool | `true` | Auto-discover MQTT broker from Home Assistant |
-| `temperature_unit` | list | `F` | Temperature display unit: `F` (Fahrenheit) or `C` (Celsius) |
-| `use_internal_database` | bool | `true` | Use embedded PostgreSQL (false = external DB) |
-| `use_internal_redis` | bool | `true` | Use embedded Redis (false = external Redis) |
-| `external_db_host` | string | | External PostgreSQL/TimescaleDB host |
-| `external_db_port` | port | `5432` | External DB port |
-| `external_db_name` | string | `climateiq` | External DB name |
-| `external_db_user` | string | `climateiq` | External DB user |
-| `external_db_password` | string | | External DB password |
-| `external_db_ssl` | bool | `false` | Enable SSL for external DB |
-| `external_redis_url` | url | | External Redis URL (e.g., `redis://host:6379/0`) |
-| `anthropic_api_key` | string | | API key for Anthropic Claude (AI chat features) |
-| `openai_api_key` | string | | API key for OpenAI (AI chat features) |
-| `gemini_api_key` | string | | API key for Google Gemini (AI chat features) |
-| `grok_api_key` | string | | API key for xAI Grok (AI chat features) |
-| `ollama_url` | url | | URL for local Ollama instance (e.g., `http://192.168.1.100:11434`) |
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `db_host` | string | **Yes** | | PostgreSQL/TimescaleDB host |
+| `db_port` | port | No | `5432` | Database port |
+| `db_name` | string | No | `climateiq` | Database name |
+| `db_user` | string | No | `climateiq` | Database user |
+| `db_password` | password | **Yes** | | Database password |
+| `redis_url` | string | **Yes** | | Redis URL (e.g., `redis://host:6379/0`) |
+| `log_level` | list | No | `info` | Logging verbosity: `debug`, `info`, `warning`, `error` |
+| `mqtt_auto_discover` | bool | No | `true` | Auto-discover MQTT broker from Home Assistant |
+| `temperature_unit` | list | No | `F` | Temperature display unit: `F` or `C` |
+| `anthropic_api_key` | string | No | | API key for Anthropic Claude (AI chat) |
+| `openai_api_key` | string | No | | API key for OpenAI (AI chat) |
+| `gemini_api_key` | string | No | | API key for Google Gemini (AI chat) |
+| `grok_api_key` | string | No | | API key for xAI Grok (AI chat) |
+| `ollama_url` | url | No | | URL for local Ollama instance |
 
 ### Example Configuration
 
@@ -66,20 +66,26 @@ recommendations, and automated scheduling for multi-zone HVAC systems.
 log_level: info
 mqtt_auto_discover: true
 temperature_unit: F
-use_internal_database: true
-use_internal_redis: true
-external_db_host: ""
-external_db_port: 5432
-external_db_name: climateiq
-external_db_user: climateiq
-external_db_password: ""
-external_db_ssl: false
-external_redis_url: ""
-anthropic_api_key: sk-ant-...
-openai_api_key: ""
-gemini_api_key: ""
-grok_api_key: ""
-ollama_url: ""
+db_host: "192.168.1.50"
+db_port: 5432
+db_name: climateiq
+db_user: climateiq
+db_password: "your-secure-password"
+redis_url: "redis://192.168.1.50:6379/0"
+anthropic_api_key: "sk-ant-..."
+```
+
+### Using HA Add-ons for Database and Redis
+
+If you run TimescaleDB and Redis as HA add-ons on the same machine:
+
+```yaml
+db_host: "core-timescaledb"       # or the add-on's hostname
+db_port: 5432
+db_name: climateiq
+db_user: climateiq
+db_password: "your-password"
+redis_url: "redis://core-redis:6379/0"
 ```
 
 ## Accessing the UI
@@ -87,34 +93,26 @@ ollama_url: ""
 Once started, ClimateIQ appears as a panel in the Home Assistant sidebar
 (look for the thermostat icon). Click it to open the ClimateIQ dashboard.
 
-You can also access it directly at:
-`http://your-ha-instance:8420` (if the port is exposed in the add-on configuration).
-
 ## Architecture
 
-The add-on runs as a single container with embedded services:
+The add-on runs a single lightweight container:
 
-- **Nginx** - Ingress proxy handling HA authentication and path rewriting
-- **PostgreSQL** - Persistent storage for zones, sensors, schedules, and analytics
-- **Redis** - Caching and real-time pub/sub for WebSocket updates
-- **ClimateIQ Backend** - FastAPI application serving the API and frontend
+- **ClimateIQ Backend (FastAPI/Uvicorn)** - Serves the API and pre-built
+  frontend SPA directly on the HA ingress port
 
-All data is persisted in the `/data` directory, which survives add-on updates.
+All persistent data (zones, schedules, analytics) is stored in the external
+database. The add-on itself stores only a secret key in `/data/climateiq/`.
 
 ## MQTT Integration
 
 When `mqtt_auto_discover` is enabled, ClimateIQ automatically discovers your
-MQTT broker configuration from Home Assistant's Supervisor API. This means you
-don't need to manually configure MQTT connection details.
-
-ClimateIQ subscribes to climate-related MQTT topics and can publish commands
-to control HVAC equipment directly.
+MQTT broker configuration from Home Assistant's Supervisor API. No manual
+MQTT configuration is needed.
 
 ## AI Chat Features
 
 ClimateIQ includes an AI-powered chat interface for natural language climate
-control. To use this feature, configure at least one LLM provider API key in
-the add-on options.
+control. Configure at least one LLM provider API key to use this feature.
 
 Supported providers:
 - **Anthropic Claude** - Recommended for best results
@@ -128,14 +126,21 @@ Supported providers:
 ### Add-on won't start
 
 1. Check the add-on logs in **Settings > Add-ons > ClimateIQ > Log**
-2. Ensure no other service is using port 8420
-3. Verify you have sufficient system resources (minimum 512MB RAM recommended)
+2. Verify `db_host`, `db_password`, and `redis_url` are configured
+3. Ensure the database and Redis services are running and reachable
 
 ### Can't access the UI through ingress
 
 1. Try clearing your browser cache
 2. Restart the add-on
-3. Check that `ingress: true` is set in the add-on configuration
+3. Check that the add-on shows as "running" in the add-on info page
+
+### Database connection errors
+
+1. Verify the database host is reachable from the HA machine
+2. Check that the database user and password are correct
+3. Ensure the `climateiq` database exists and the user has access
+4. If using TimescaleDB, confirm the `uuid-ossp` extension is available
 
 ### MQTT not connecting
 
@@ -143,28 +148,7 @@ Supported providers:
 2. Check that `mqtt_auto_discover` is enabled
 3. Review the add-on logs for MQTT connection errors
 
-### Database errors
-
-The embedded PostgreSQL database is automatically initialized on first start.
-If you encounter database errors after an update:
-
-1. Stop the add-on
-2. Check logs for migration errors
-3. If needed, the database can be reset by removing `/data/postgresql` from the
-   add-on data directory (this will erase all ClimateIQ data)
-
-## Data Persistence
-
-All ClimateIQ data is stored in the `/data` directory:
-
-- `/data/postgresql/` - PostgreSQL database files
-- `/data/redis/` - Redis persistence files
-- `/data/climateiq/` - Application configuration and secrets
-
-This data persists across add-on restarts and updates. Uninstalling the add-on
-will remove this data.
-
 ## Support
 
-- **GitHub Issues**: [github.com/joshuaseidel/climateiq/issues](https://github.com/joshuaseidel/climateiq/issues)
-- **Documentation**: [github.com/joshuaseidel/climateiq](https://github.com/joshuaseidel/climateiq)
+- **GitHub Issues**: [github.com/JoshuaSeidel/climateIQ/issues](https://github.com/JoshuaSeidel/climateIQ/issues)
+- **Documentation**: [github.com/JoshuaSeidel/climateIQ](https://github.com/JoshuaSeidel/climateIQ)

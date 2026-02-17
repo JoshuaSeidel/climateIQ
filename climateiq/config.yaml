@@ -12,6 +12,7 @@ boot: auto
 init: false
 
 # Ingress configuration - proxied through HA UI
+# Uvicorn listens directly on the ingress port (no nginx)
 ingress: true
 ingress_port: 8099
 ingress_stream: true
@@ -20,24 +21,21 @@ panel_title: ClimateIQ
 
 # Port mappings (optional direct access, null = not exposed by default)
 ports:
-  8420/tcp: null
+  8099/tcp: null
 ports_description:
-  8420/tcp: ClimateIQ Web UI (direct access)
+  8099/tcp: ClimateIQ Web UI (direct access)
 
 # User-configurable options
 options:
   log_level: info
   mqtt_auto_discover: true
   temperature_unit: F
-  use_internal_database: true
-  use_internal_redis: true
-  external_db_host: ""
-  external_db_port: 5432
-  external_db_name: climateiq
-  external_db_user: climateiq
-  external_db_password: ""
-  external_db_ssl: false
-  external_redis_url: ""
+  db_host: ""
+  db_port: 5432
+  db_name: climateiq
+  db_user: climateiq
+  db_password: ""
+  redis_url: ""
   anthropic_api_key: ""
   openai_api_key: ""
   gemini_api_key: ""
@@ -47,15 +45,12 @@ schema:
   log_level: list(debug|info|warning|error)
   mqtt_auto_discover: bool
   temperature_unit: list(F|C)
-  use_internal_database: bool
-  use_internal_redis: bool
-  external_db_host: str?
-  external_db_port: port
-  external_db_name: str?
-  external_db_user: str?
-  external_db_password: str?
-  external_db_ssl: bool
-  external_redis_url: url?
+  db_host: str
+  db_port: port
+  db_name: str
+  db_user: str
+  db_password: password
+  redis_url: str
   anthropic_api_key: str?
   openai_api_key: str?
   gemini_api_key: str?
