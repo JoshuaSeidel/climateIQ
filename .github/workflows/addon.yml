@@ -37,6 +37,10 @@ jobs:
         id: version
         run: echo "value=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
+      - name: Lowercase owner
+        id: owner
+        run: echo "value=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -60,7 +64,7 @@ jobs:
           build-args: |
             BUILD_FROM=${{ matrix.base }}
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/climateiq-addon-${{ matrix.arch }}:${{ steps.version.outputs.value }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/climateiq-addon-${{ matrix.arch }}:latest
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/climateiq-addon-${{ matrix.arch }}:${{ steps.version.outputs.value }}
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/climateiq-addon-${{ matrix.arch }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
