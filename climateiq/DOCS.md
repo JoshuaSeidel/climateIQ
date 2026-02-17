@@ -130,12 +130,16 @@ Supported providers:
 
 1. Verify the database host is reachable from the HA machine
 2. Check that the database user and password are correct
-3. Ensure the `climateiq` database exists and the user has access
-4. If using TimescaleDB, confirm the `uuid-ossp` extension is available
-5. If you see `[Errno -2] Name does not resolve` even when using an IP address,
-   confirm you're running v0.2.7+ which pre-resolves the DB host to an IP and
-   pins uvicorn to the stdlib `asyncio` loop; older builds relied on musl's
-   thread-unsafe `getaddrinfo` which can fail inside the asyncio executor.
+3. Ensure the database exists and the user has access
+4. The `uuid-ossp` and `vector` (pgvector) extensions must be created by a
+   superuser before first startup:
+   ```sql
+   \c climateiqdb
+   CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+   CREATE EXTENSION IF NOT EXISTS "vector";
+   ```
+5. If the password contains special characters (`@`, `:`, `/`, etc.) ensure
+   you're on v0.2.10+ which URL-encodes credentials automatically
 
 ## Support
 

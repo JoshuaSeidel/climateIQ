@@ -9,17 +9,17 @@ Intelligent HVAC zone management system with AI-powered automation, real-time mo
 - **Weather Integration**: Proactive pre-conditioning based on weather forecasts
 - **Smart Scheduling**: Time-based schedules with conflict resolution
 - **Real-time Monitoring**: WebSocket-based live updates for all sensors
-- **Home Assistant Integration**: Seamless connection with your existing HA setup
+- **Home Assistant Integration**: Full add-on with ingress, sidebar panel, and entity discovery
 - **Energy Optimization**: Cost-aware decisions based on energy pricing
 
 ## Tech Stack
 
 ### Backend
 - **Python 3.13+** with FastAPI
-- **TimescaleDB** (PostgreSQL 18 with time-series optimization)
-- **Redis 8+** for caching
+- **PostgreSQL 18** / **TimescaleDB** for time-series data
+- **psycopg 3** (async PostgreSQL driver)
+- **Redis 8+** for caching and pub/sub
 - **LiteLLM** for unified LLM provider access
-- **Uvicorn** pinned to the standard `asyncio` loop (uvloop disabled on Alpine/HA builds due to DNS resolver issues)
 
 ### Frontend
 - **React 19.2+** with TypeScript 5.7+
@@ -35,6 +35,8 @@ Intelligent HVAC zone management system with AI-powered automation, real-time mo
 - Docker & Docker Compose
 - Node.js 24 LTS
 - Python 3.13+
+- PostgreSQL / TimescaleDB instance
+- Redis instance
 - At least one LLM API key (Anthropic, OpenAI, Gemini, etc.)
 
 ### Installation
@@ -52,21 +54,13 @@ cp .env.example .env
 
 3. Edit `.env` with your configuration:
    - Database credentials
-   - MQTT broker settings
+   - Redis URL
    - Home Assistant URL and token
    - LLM API keys
 
-4. Start with Docker Compose (pulls prebuilt image from GHCR):
+4. Start with Docker Compose:
 ```bash
 docker-compose up -d
-```
-
-### Local Build (from source)
-
-Use the local compose file when you want to build from source:
-
-```bash
-docker-compose -f docker-compose.local.yml up --build
 ```
 
 5. Access the application:
@@ -81,7 +75,7 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn api.main:app --reload
+uvicorn backend.api.main:app --reload --loop asyncio
 ```
 
 #### Frontend
@@ -93,9 +87,35 @@ npm run dev
 
 ## Configuration
 
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `CLIMATEIQ_DB_HOST` | Yes | `localhost` | PostgreSQL host |
+| `CLIMATEIQ_DB_PORT` | No | `5432` | PostgreSQL port |
+| `CLIMATEIQ_DB_NAME` | No | `climateiq` | Database name |
+| `CLIMATEIQ_DB_USER` | No | `climateiq` | Database user |
+| `CLIMATEIQ_DB_PASSWORD` | Yes | | Database password |
+| `CLIMATEIQ_REDIS_URL` | Yes | `redis://localhost:6379/0` | Redis connection URL |
+| `CLIMATEIQ_HOME_ASSISTANT_URL` | No | `http://localhost:8123` | Home Assistant URL |
+| `CLIMATEIQ_HOME_ASSISTANT_TOKEN` | No | | HA long-lived access token |
+
+### Database Setup
+
+ClimateIQ requires PostgreSQL with these extensions pre-installed by a superuser:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "vector";    -- pgvector for embeddings/RAG
+```
+
+If using **TimescaleDB**, also enable the TimescaleDB extension. The app user
+does not need superuser privileges — just ensure the extensions exist before
+first startup.
+
 ### LLM Providers
 
-ClimateIQ supports multiple LLM providers. Configure at least one:
+Configure at least one:
 
 | Provider | Environment Variable | Models |
 |----------|---------------------|--------|
@@ -110,50 +130,54 @@ Models are discovered dynamically from each provider's API.
 ### Home Assistant
 
 1. Generate a long-lived access token in HA
-2. Set `HA_URL` and `HA_TOKEN` in `.env`
-3. ClimateIQ will discover climate and sensor entities
-
-### MQTT
-
-Configure your MQTT broker (typically from Home Assistant):
-
-```env
-MQTT_BROKER=192.168.1.x
-MQTT_PORT=1883
-MQTT_USERNAME=your_user
-MQTT_PASSWORD=your_password
-```
+2. Set `CLIMATEIQ_HOME_ASSISTANT_URL` and `CLIMATEIQ_HOME_ASSISTANT_TOKEN`
+3. ClimateIQ will discover climate and sensor entities via the HA WebSocket API
 
 ## Home Assistant Add-on
 
 ClimateIQ includes a full Home Assistant add-on with ingress proxying. The UI and all API calls are routed through Home Assistant when used as an add-on.
 
-**Note:** Starting with v0.2.7, the add-on forces uvicorn to use the stdlib
-`asyncio` event loop to work around uvloop's DNS resolver issues on
-Alpine/musl. If you run the backend outside Home Assistant, pass `--loop
-asyncio` (or set `UVICORN_LOOP=asyncio`) to mirror the production behavior.
+### Add-on Installation
+
+1. Go to **Settings > Add-ons > Add-on Store**
+2. Add repository: `https://github.com/JoshuaSeidel/climateIQ`
+3. Install **ClimateIQ** and configure the options
+4. Start the add-on — it appears in the HA sidebar
 
 ### Add-on Options
 
-You can choose to use **internal** PostgreSQL/Redis (embedded in the add-on container) or **external** services:
-
-```yaml
-use_internal_database: true
-use_internal_redis: true
-external_db_host: ""
-external_db_port: 5432
-external_db_name: climateiq
-external_db_user: climateiq
-external_db_password: ""
-external_db_ssl: false
-external_redis_url: ""
-```
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `db_host` | string | **Yes** | | PostgreSQL/TimescaleDB host (IP or hostname) |
+| `db_port` | port | No | `5432` | Database port |
+| `db_name` | string | No | `climateiq` | Database name |
+| `db_user` | string | No | `climateiq` | Database user |
+| `db_password` | password | **Yes** | | Database password |
+| `redis_url` | string | **Yes** | | Redis URL (e.g., `redis://192.168.1.50:6379/0`) |
+| `log_level` | list | No | `info` | `debug`, `info`, `warning`, `error` |
+| `temperature_unit` | list | No | `F` | `F` or `C` |
+| `anthropic_api_key` | string | No | | Anthropic API key |
+| `openai_api_key` | string | No | | OpenAI API key |
+| `gemini_api_key` | string | No | | Google Gemini API key |
+| `grok_api_key` | string | No | | xAI Grok API key |
+| `ollama_url` | string | No | | Ollama instance URL |
 
 ### Database Requirements
 
-- **pgvector** is **required** for embeddings and RAG.
-- **TimescaleDB** is **preferred** for time-series performance (hypertables, continuous aggregates, compression).
-- Internal add-on DB uses standard PostgreSQL. For full time-series performance, use an **external TimescaleDB** instance.
+The add-on requires **external** PostgreSQL and Redis. Before first startup,
+connect to your database as a superuser and run:
+
+```sql
+CREATE DATABASE climateiqdb;
+CREATE USER climateiq WITH PASSWORD 'your-password';
+GRANT ALL PRIVILEGES ON DATABASE climateiqdb TO climateiq;
+
+\c climateiqdb
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "vector";
+```
+
+**TimescaleDB** is recommended for time-series performance but not required.
 
 ## API Endpoints
 
@@ -186,8 +210,8 @@ external_redis_url: ""
 │                     ClimateIQ System                        │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌──────────┐ │
-│  │  React    │  │  FastAPI  │  │TimescaleDB│  │  Redis   │ │
-│  │  Frontend │◄─┤  Backend  ├──┤  Database │  │  Cache   │ │
+│  │  React    │  │  FastAPI  │  │PostgreSQL │  │  Redis   │ │
+│  │  Frontend │◄─┤  Backend  ├──┤/Timescale │  │  Cache   │ │
 │  └───────────┘  └─────┬─────┘  └───────────┘  └──────────┘ │
 │                       │                                     │
 │  ┌────────────────────┼────────────────────┐               │
@@ -200,8 +224,8 @@ external_redis_url: ""
 │  │    ┌───────┬───────┼───────┬───────┐   │               │
 │  │    ▼       ▼       ▼       ▼       ▼   │               │
 │  │ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐│               │
-│  │ │Anthr│ │OpenAI│ │Gemini│ │HA  │ │MQTT ││               │
-│  │ │opic │ │     │ │     │ │    │ │     ││               │
+│  │ │Anthr│ │OpenAI│ │Gemini│ │Grok │ │ HA  ││               │
+│  │ │opic │ │     │ │     │ │    │ │ WS  ││               │
 │  │ └─────┘ └─────┘ └─────┘ └─────┘ └─────┘│               │
 │  └────────────────────────────────────────┘               │
 └─────────────────────────────────────────────────────────────┘
@@ -221,4 +245,3 @@ MIT License - See [LICENSE](LICENSE) for details.
 ## Support
 
 - GitHub Issues: [Report a bug](https://github.com/JoshuaSeidel/climateiq/issues)
-- Documentation: Coming soon
