@@ -18,7 +18,7 @@ if (typeof document !== 'undefined') {
 
 export const useUIStore = create<UIState>((set) => ({
   theme: prefersDark ? 'dark' : 'light',
-  sidebarOpen: true,
+  sidebarOpen: typeof window !== 'undefined' ? window.innerWidth >= 1024 : false,
   toggleTheme: () =>
     set((state) => {
       const next = state.theme === 'light' ? 'dark' : 'light'

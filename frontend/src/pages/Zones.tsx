@@ -444,7 +444,7 @@ export const Zones = () => {
         </div>
 
         {/* Zone Stats */}
-        <div className="grid gap-4 sm:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Card className="border-border/60">
             <CardContent className="p-4">
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -599,7 +599,6 @@ export const Zones = () => {
                       placeholder="Optional"
                     />
                   </div>
-                </div>
                   <div className="sm:col-span-2">
                     <label className="text-sm font-medium">HA Entity (optional)</label>
                     <select
@@ -624,7 +623,8 @@ export const Zones = () => {
                     <p className="mt-1 text-xs text-muted-foreground">
                       Link to a Home Assistant entity for automatic data ingestion
                     </p>
-                  </div>
+                   </div>
+                </div>
                 <Button
                   size="sm"
                   disabled={!sensorForm.name || createSensor.isPending}

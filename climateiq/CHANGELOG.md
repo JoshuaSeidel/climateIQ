@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.4.1
+
+### Fixed
+
+- **Mobile responsiveness overhaul** — the entire UI is now usable on
+  phones and the Home Assistant mobile app. No design changes; purely
+  responsive adjustments:
+  - Main sidebar defaults to closed on screens < 1024px instead of
+    covering 77% of the viewport on load.
+  - Chat conversation sidebar defaults to closed on mobile and uses a
+    slide-over overlay (like the main sidebar) instead of stealing inline
+    width.
+  - Header mode-switcher buttons wrap and use smaller padding on narrow
+    screens so all four modes remain accessible.
+  - Analytics time-range selector stacks below the page title on mobile
+    instead of overflowing off-screen.
+  - Analytics tab labels hidden on mobile (icon-only), matching the
+    Settings tab pattern.
+  - ZoneCard stats grid switches from a fixed 3-column layout to
+    single-column on mobile.
+  - Zone detail and Analytics summary stats use `sm:grid-cols-2
+    lg:grid-cols-4` instead of jumping from 1 to 4 columns at 640px.
+  - Layout and Card padding reduced on mobile (`p-3`/`p-4` base,
+    `sm:p-6` on larger screens).
+  - Input font size set to 16px on mobile (`text-base sm:text-sm`) to
+    prevent iOS Safari auto-zoom on focus.
+  - Dashboard temperature override button is now visible on touch devices
+    (was hidden behind hover-only opacity).
+  - Temperature override controls enlarged from 24px to 32px for better
+    touch targets.
+  - Sidebar close and hamburger buttons enlarged for easier tapping.
+  - Entity names in Settings truncated with hidden entity_id on mobile to
+    prevent row overflow.
+  - Entity filter search input uses full width on mobile.
+  - `overflow-x: hidden` added to body to prevent horizontal scroll from
+    any stray overflow.
+  - Sensor form HA entity picker moved inside its parent grid so
+    `sm:col-span-2` works correctly.
+  - Chat "Send" label and "New Chat" label hidden on mobile (icon only).
+
 ## 0.4.0
 
 ### Added

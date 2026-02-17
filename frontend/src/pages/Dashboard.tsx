@@ -407,7 +407,7 @@ export const Dashboard = () => {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-6 w-6"
+                          className="h-8 w-8"
                           onClick={() =>
                             setTempOverride({
                               zoneId: zone.id,
@@ -415,18 +415,18 @@ export const Dashboard = () => {
                             })
                           }
                         >
-                          <ChevronDown className="h-3 w-3" />
+                          <ChevronDown className="h-4 w-4" />
                         </Button>
                         <Input
                           type="number"
                           value={tempOverride.temp}
                           onChange={(e) => setTempOverride({ zoneId: zone.id, temp: e.target.value })}
-                          className="h-6 w-14 border-0 p-0 text-center text-xs"
+                          className="h-8 w-14 border-0 p-0 text-center text-xs"
                         />
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-6 w-6"
+                          className="h-8 w-8"
                           onClick={() =>
                             setTempOverride({
                               zoneId: zone.id,
@@ -434,11 +434,11 @@ export const Dashboard = () => {
                             })
                           }
                         >
-                          <ChevronUp className="h-3 w-3" />
+                          <ChevronUp className="h-4 w-4" />
                         </Button>
                         <Button
                           size="sm"
-                          className="h-6 px-2 text-xs"
+                          className="h-8 px-2 text-xs"
                           disabled={overrideSubmitting}
                           onClick={() => handleTempOverride(zone.id, Number(tempOverride.temp))}
                         >
@@ -447,17 +447,17 @@ export const Dashboard = () => {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-6 w-6"
+                          className="h-8 w-8"
                           onClick={() => setTempOverride(null)}
                         >
-                          <X className="h-3 w-3" />
+                          <X className="h-4 w-4" />
                         </Button>
                       </div>
                     ) : (
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100 hover:opacity-100"
+                        className="h-8 w-8 opacity-70 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:hover:opacity-100"
                         onClick={() =>
                           setTempOverride({
                             zoneId: zone.id,

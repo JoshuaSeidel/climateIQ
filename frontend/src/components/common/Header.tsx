@@ -45,9 +45,9 @@ export const Header = () => {
   )
 
   return (
-    <header className="flex flex-col gap-4 border-b border-border/60 bg-background/80 px-6 py-4 backdrop-blur lg:flex-row lg:items-center lg:justify-between">
+    <header className="flex flex-col gap-4 border-b border-border/60 bg-background/80 px-3 py-3 backdrop-blur sm:px-6 sm:py-4 lg:flex-row lg:items-center lg:justify-between">
       <div className="flex items-center gap-3">
-        <button className="rounded-xl border border-border p-2 lg:hidden" onClick={toggleSidebar}>
+        <button className="rounded-xl border border-border p-2.5 lg:hidden" onClick={toggleSidebar}>
           <MonitorSmartphone className="h-5 w-5" />
         </button>
         <div>
@@ -57,13 +57,13 @@ export const Header = () => {
       </div>
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex flex-col gap-1">
-          <div className="flex rounded-2xl border border-border/70 p-1">
+          <div className="flex flex-wrap rounded-2xl border border-border/70 p-1">
             {MODES.map((mode) => (
               <Button
                 key={mode.id}
                 variant={currentMode === mode.id ? 'default' : 'ghost'}
                 size="sm"
-                className="px-4"
+                className="px-2 text-xs sm:px-4 sm:text-sm"
                 onClick={() => handleModeChange(mode.id)}
                 title={mode.description}
               >

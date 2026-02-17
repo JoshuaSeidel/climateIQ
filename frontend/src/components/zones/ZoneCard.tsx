@@ -27,7 +27,7 @@ export const ZoneCard = ({ zone }: ZoneCardProps) => {
             </span>
             <span className="text-sm text-muted-foreground">Target {formatTemperature(zone.targetTemperature, temperatureUnit === 'celsius' ? 'c' : 'f')}</span>
           </div>
-          <div className="grid grid-cols-3 gap-4 text-sm text-muted-foreground">
+          <div className="grid grid-cols-1 gap-4 text-sm text-muted-foreground sm:grid-cols-3">
             <div className="flex flex-col gap-1">
               <span className="flex items-center gap-2 text-foreground">
                 <Droplets className="h-4 w-4" /> Humidity

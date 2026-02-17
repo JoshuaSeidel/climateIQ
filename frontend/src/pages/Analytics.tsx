@@ -84,7 +84,7 @@ export const Analytics = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-xs uppercase tracking-widest text-muted-foreground">Analytics</p>
           <h2 className="flex items-center gap-2 text-2xl font-semibold">
@@ -100,7 +100,7 @@ export const Analytics = () => {
                 key={opt.value}
                 variant={hours === opt.value ? 'default' : 'ghost'}
                 size="sm"
-                className="px-3"
+                className="px-2 text-xs sm:px-3 sm:text-sm"
                 onClick={() => setHours(opt.value)}
               >
                 {opt.label}
@@ -121,7 +121,7 @@ export const Analytics = () => {
             onClick={() => setActiveTab(tab.id)}
           >
             <tab.icon className="h-4 w-4" />
-            {tab.label}
+            <span className="hidden sm:inline">{tab.label}</span>
           </Button>
         ))}
       </div>
@@ -197,7 +197,7 @@ function TemperatureTab({
     <div className="space-y-6">
       {/* Summary Stats */}
       {history && (
-        <div className="grid gap-4 sm:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Card className="border-border/60">
             <CardContent className="p-4">
               <p className="text-xs text-muted-foreground">Avg Temperature</p>

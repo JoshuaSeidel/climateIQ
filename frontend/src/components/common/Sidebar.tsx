@@ -41,7 +41,7 @@ export const Sidebar = () => {
           <p className="text-xs uppercase tracking-widest text-muted-foreground">ClimateIQ</p>
           <p className="text-lg font-semibold text-foreground">Home Climate</p>
         </div>
-        <button className="rounded-xl border border-border p-2 lg:hidden" onClick={toggleSidebar}>
+        <button className="rounded-xl border border-border p-2.5 lg:hidden" onClick={toggleSidebar}>
           <PanelLeft className="h-5 w-5" />
         </button>
       </div>

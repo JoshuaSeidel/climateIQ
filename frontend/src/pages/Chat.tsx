@@ -40,7 +40,9 @@ export const Chat = () => {
   ])
   const [input, setInput] = useState('')
   const [sessionId, setSessionId] = useState<string | null>(null)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 1024 : false
+  )
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -215,11 +217,19 @@ export const Chat = () => {
   )
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] gap-4">
-      {/* Conversation Sidebar */}
+    <div className="relative flex h-[calc(100vh-7rem)] gap-0 sm:gap-4">
+      {/* Conversation Sidebar - overlay on mobile, inline on desktop */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-background/80 backdrop-blur-sm lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
       <div
-        className={`flex flex-col border-r border-border/60 transition-all ${
-          sidebarOpen ? 'w-72' : 'w-0 overflow-hidden'
+        className={`flex flex-col border-r border-border/60 bg-card transition-all ${
+          sidebarOpen
+            ? 'fixed inset-y-0 left-0 z-40 w-72 lg:static lg:z-auto'
+            : 'w-0 overflow-hidden'
         }`}
       >
         <div className="flex items-center justify-between border-b border-border/60 p-3">
@@ -298,12 +308,12 @@ export const Chat = () => {
 
       {/* Main Chat Area */}
       <div className="flex flex-1 flex-col space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8"
+              className="h-9 w-9 shrink-0"
               onClick={() => setSidebarOpen(!sidebarOpen)}
             >
               {sidebarOpen ? (
@@ -312,20 +322,20 @@ export const Chat = () => {
                 <ChevronRight className="h-4 w-4" />
               )}
             </Button>
-            <div>
+            <div className="min-w-0">
               <p className="text-xs uppercase tracking-widest text-muted-foreground">Assistant</p>
-              <h2 className="flex items-center gap-2 text-2xl font-semibold">
-                <Sparkles className="h-6 w-6 text-primary" />
-                ClimateIQ Copilot
+              <h2 className="flex items-center gap-2 truncate text-lg font-semibold sm:text-2xl">
+                <Sparkles className="h-5 w-5 shrink-0 text-primary sm:h-6 sm:w-6" />
+                <span className="truncate">ClimateIQ Copilot</span>
               </h2>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
             <Button variant="outline" size="sm" onClick={handleNewConversation}>
-              <MessageSquarePlus className="mr-2 h-4 w-4" />
-              New Chat
+              <MessageSquarePlus className="h-4 w-4 sm:mr-2" />
+              <span className="hidden sm:inline">New Chat</span>
             </Button>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <div className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex">
               <div className="h-2 w-2 rounded-full bg-green-500" />
               Online
             </div>
@@ -435,7 +445,7 @@ export const Chat = () => {
                 ) : (
                   <Send className="h-4 w-4" />
                 )}
-                Send
+                <span className="hidden sm:inline">Send</span>
               </Button>
             </div>
           </div>

@@ -1,5 +1,5 @@
 name: ClimateIQ
-version: "0.4.0"
+version: "0.4.1"
 slug: climateiq
 description: AI-Powered Intelligent Climate Management for Home Assistant
 url: "https://github.com/JoshuaSeidel/climateIQ"

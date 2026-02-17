@@ -550,7 +550,7 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
 
         {/* Entity Filters Section */}
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
               <h4 className="text-sm font-medium">Entity Filters</h4>
@@ -562,7 +562,7 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
                   value={entitySearch}
                   onChange={(e) => setEntitySearch(e.target.value)}
                   placeholder="Search entities..."
-                  className="h-8 w-48 pl-8 text-xs"
+                  className="h-8 w-full pl-8 text-xs sm:w-48"
                 />
               </div>
               <Button
@@ -610,9 +610,9 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
                         onChange={() => toggleEntity(setSelectedClimate, entity.entity_id)}
                         className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
                       />
-                      <div className="flex-1 min-w-0">
+                      <div className="min-w-0 flex-1 truncate">
                         <span className="text-sm">{entity.name}</span>
-                        <span className="ml-1.5 text-xs text-muted-foreground">{entity.entity_id}</span>
+                        <span className="ml-1.5 hidden text-xs text-muted-foreground sm:inline">{entity.entity_id}</span>
                       </div>
                       <span className="shrink-0 text-xs text-muted-foreground">{entity.state}</span>
                     </label>
@@ -654,9 +654,9 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
                         onChange={() => toggleEntity(setSelectedSensors, entity.entity_id)}
                         className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
                       />
-                      <div className="flex-1 min-w-0">
+                      <div className="min-w-0 flex-1 truncate">
                         <span className="text-sm">{entity.name}</span>
-                        <span className="ml-1.5 text-xs text-muted-foreground">{entity.entity_id}</span>
+                        <span className="ml-1.5 hidden text-xs text-muted-foreground sm:inline">{entity.entity_id}</span>
                       </div>
                       <span className="shrink-0 text-xs text-muted-foreground">{entity.state}</span>
                     </label>
