@@ -7,7 +7,7 @@ import { useUIStore } from '@/stores/uiStore'
 import { api } from '@/lib/api'
 import type { SystemMode, SystemSettings } from '@/types'
 import { MonitorSmartphone, SlidersHorizontal, AlertCircle } from 'lucide-react'
-import { useNavigate } from '@tanstack/react-router'
+import { Link } from '@tanstack/react-router'
 
 const MODES: { id: SystemMode; label: string; description: string }[] = [
   { id: 'learn', label: 'Learn', description: 'Observing patterns' },
@@ -19,7 +19,6 @@ const MODES: { id: SystemMode; label: string; description: string }[] = [
 export const Header = () => {
   const { toggleSidebar } = useUIStore()
   const { temperatureUnit } = useSettingsStore()
-  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [modeError, setModeError] = useState<string | null>(null)
 
@@ -83,10 +82,13 @@ export const Header = () => {
         <div className="rounded-2xl border border-border/60 px-4 py-2 text-sm text-muted-foreground">
           Unit: {temperatureUnit === 'celsius' ? '°C' : '°F'}
         </div>
-        <Button variant="outline" size="sm" className="gap-2" onClick={() => navigate({ to: '/settings' })}>
+        <Link
+          to="/settings"
+          className="inline-flex items-center justify-center gap-2 rounded-xl border border-input bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+        >
           <SlidersHorizontal className="h-4 w-4" />
           Tuning
-        </Button>
+        </Link>
         <ThemeToggle />
       </div>
     </header>
