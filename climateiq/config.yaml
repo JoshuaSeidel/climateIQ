@@ -3,10 +3,10 @@ version: "0.1.0"
 slug: climateiq
 description: AI-Powered Intelligent Climate Management for Home Assistant
 url: "https://github.com/JoshuaSeidel/climateIQ"
+image: ghcr.io/joshuaseidel/climateiq-addon-{arch}
 arch:
   - amd64
   - aarch64
-  - armv7
 startup: application
 boot: auto
 init: false

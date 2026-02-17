@@ -105,7 +105,7 @@ WORKDIR /app
 LABEL \
     io.hass.name="ClimateIQ" \
     io.hass.description="AI-Powered Intelligent Climate Management" \
-    io.hass.arch="amd64|aarch64|armv7" \
+    io.hass.arch="amd64|aarch64" \
     io.hass.type="addon" \
     io.hass.version="0.1.0"
 
