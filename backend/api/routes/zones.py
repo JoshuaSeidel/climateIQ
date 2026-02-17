@@ -229,18 +229,18 @@ async def _enrich_zone_response(
         if thermostat and thermostat.capabilities:
             resp.target_temp = thermostat.capabilities.get("target_temp")
 
-    # Try to get live thermostat data from HA
+    # Fetch live thermostat data from HA — PREFER live data over stale DB readings
     if ha_client and zone.devices:
         for device in zone.devices:
             if device.type.value == "thermostat" and device.ha_entity_id:
                 try:
                     state = await ha_client.get_state(device.ha_entity_id)
                     attrs = state.attributes
-                    # Current temperature reading from the thermostat
-                    if resp.current_temp is None and attrs.get("current_temperature") is not None:
+                    # Current temperature reading from the thermostat (always prefer live)
+                    if attrs.get("current_temperature") is not None:
                         resp.current_temp = float(attrs["current_temperature"])
-                    # Target / setpoint temperature
-                    if resp.target_temp is None and attrs.get("temperature") is not None:
+                    # Target / setpoint temperature (always prefer live)
+                    if attrs.get("temperature") is not None:
                         resp.target_temp = float(attrs["temperature"])
                     break
                 except (HAClientError, Exception) as exc:

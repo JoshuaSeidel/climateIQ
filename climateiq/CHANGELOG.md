@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.2
+
+### Fixed
+
+- **Sidebar closes on navigation** — tapping a nav link on mobile now
+  closes the sidebar automatically instead of leaving it covering the
+  content. Added explicit `left-0` to the fixed sidebar for reliable
+  positioning in HA ingress webviews. Overlay z-index lowered so sidebar
+  links remain clickable.
+- **Live thermostat data now shown** — zone enrichment now **prefers**
+  live Home Assistant thermostat data (current_temperature, target
+  temperature) over stale database readings. Previously, any existing DB
+  sensor reading (even zeroes from init) would take priority and the live
+  HA data was silently skipped.
+
 ## 0.4.1
 
 ### Fixed

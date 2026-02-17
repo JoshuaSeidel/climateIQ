@@ -21,7 +21,7 @@ const links = [
 ]
 
 export const Sidebar = () => {
-  const { sidebarOpen, toggleSidebar } = useUIStore()
+  const { sidebarOpen, toggleSidebar, setSidebarOpen } = useUIStore()
   const routerState = useRouterState()
   const { data: versionData } = useQuery({
     queryKey: ['system-version'],
@@ -29,10 +29,17 @@ export const Sidebar = () => {
     staleTime: Infinity,
   })
 
+  // Close sidebar on mobile when a nav link is clicked
+  const handleNavClick = () => {
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setSidebarOpen(false)
+    }
+  }
+
   return (
     <aside
       className={cn(
-        'fixed inset-y-0 z-40 flex w-72 flex-col border-r border-border/60 bg-card/70 backdrop-blur transition-transform lg:static',
+        'fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-border/60 bg-card/70 backdrop-blur transition-transform lg:static',
         sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
       )}
     >
@@ -52,6 +59,7 @@ export const Sidebar = () => {
             <Link
               key={link.to}
               to={link.to}
+              onClick={handleNavClick}
               className={cn(
                 'flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-colors',
                 isActive
