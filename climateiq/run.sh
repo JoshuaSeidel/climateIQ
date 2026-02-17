@@ -49,7 +49,7 @@ else
 fi
 
 echo "============================================"
-echo "  ClimateIQ Home Assistant Add-on v0.2.2"
+echo "  ClimateIQ Home Assistant Add-on v0.2.3"
 echo "============================================"
 echo "Log level:          ${LOG_LEVEL}"
 echo "Temperature unit:   ${TEMPERATURE_UNIT}"
@@ -71,6 +71,21 @@ if [ -z "$REDIS_URL" ]; then
     echo "[ClimateIQ] ERROR: Redis URL is not configured."
     echo "[ClimateIQ] Set redis_url in the add-on configuration."
     exit 1
+fi
+
+# =============================================================================
+# Network connectivity check
+# =============================================================================
+
+echo "[ClimateIQ] Checking network connectivity to ${DB_HOST}:${DB_PORT}..."
+if nc -z -w3 "$DB_HOST" "$DB_PORT" 2>/dev/null; then
+    echo "[ClimateIQ] Database host is reachable."
+else
+    echo "[ClimateIQ] WARNING: Cannot reach ${DB_HOST}:${DB_PORT}"
+    echo "[ClimateIQ] Network info:"
+    ip route 2>/dev/null || route -n 2>/dev/null || echo "  (route command not available)"
+    echo "[ClimateIQ] Attempting ping..."
+    ping -c 1 -W 2 "$DB_HOST" 2>&1 || echo "  (ping failed)"
 fi
 
 # =============================================================================
