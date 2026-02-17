@@ -1,0 +1,16 @@
+#!/usr/bin/execlineb -P
+# S6 service: ClimateIQ backend
+# This is used if the add-on base image uses S6 overlay instead of run.sh
+
+fdmove -c 2 1
+
+importas -D "info" LOG_LEVEL CLIMATEIQ_LOG_LEVEL
+
+cd /app
+
+exec python3 -m uvicorn backend.api.main:app
+    --host 127.0.0.1
+    --port 8420
+    --log-level ${LOG_LEVEL}
+    --no-access-log
+    --workers 1

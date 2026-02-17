@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  climateiq:
+    build: .
+    container_name: climateiq
+    ports:
+      - "8420:8420"
+    environment:
+      - CLIMATEIQ_PORT=8420
+      - CLIMATEIQ_DB_URL=postgresql+asyncpg://climateiq:climateiq@timescaledb:5432/climateiq
+      - CLIMATEIQ_REDIS_URL=redis://redis:6379/0
+      - CLIMATEIQ_MQTT_BROKER=mosquitto
+      - CLIMATEIQ_MQTT_PORT=1883
+      - CLIMATEIQ_HOME_ASSISTANT_URL=http://homeassistant:8123
+      - CLIMATEIQ_HOME_ASSISTANT_TOKEN=your_token_here
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg18
+    container_name: climateiq-db
+    environment:
+      - POSTGRES_DB=climateiq
+      - POSTGRES_USER=climateiq
+      - POSTGRES_PASSWORD=climateiq
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U climateiq"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:8-alpine
+    container_name: climateiq-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

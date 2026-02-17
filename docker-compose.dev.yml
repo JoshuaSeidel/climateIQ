@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  climateiq:
+    build:
+      context: .
+      target: backend
+    volumes:
+      - ./backend:/app/backend:ro
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: uvicorn backend.main:app --host 0.0.0.0 --port ${CLIMATEIQ_PORT:-8420} --reload
+    networks:
+      - climateiq-network
+
+  frontend-dev:
+    image: node:24-alpine
+    container_name: climateiq-frontend-dev
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    command: npm run dev -- --host
+    networks:
+      - climateiq-network
+
+networks:
+  climateiq-network:
+    driver: bridge

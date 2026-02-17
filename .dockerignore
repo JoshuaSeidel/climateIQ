@@ -1,0 +1,41 @@
+# Version control
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+.venv
+backend/.venv
+*.egg-info
+.mypy_cache
+.ruff_cache
+.pytest_cache
+
+# Node
+frontend/node_modules
+frontend/dist
+frontend/tests
+frontend/playwright-report
+frontend/test-results
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Docker
+docker-compose*.yml
+.dockerignore
+Dockerfile
+
+# Misc
+*.md
+LICENSE
+Makefile
+.env
+.env.*
+ha-addon
+scripts

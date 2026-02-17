@@ -1,0 +1,13 @@
+PLACEHOLDER: Replace this file with an actual icon.png
+
+Requirements for Home Assistant add-on icons:
+- Format: PNG
+- Size: 128x128 pixels
+- Background: Transparent or solid color
+- Content: Should represent climate/thermostat functionality
+
+Suggested design: A stylized thermostat with an "IQ" indicator or brain icon,
+using Home Assistant's blue color palette (#03A9F4).
+
+To generate, use any image editor or AI image generator with the prompt:
+"Flat design thermostat icon with AI brain symbol, blue gradient, 128x128px, transparent background"

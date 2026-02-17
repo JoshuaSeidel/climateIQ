@@ -1,0 +1,84 @@
+services:
+  climateiq:
+    build: .
+    image: ghcr.io/joshuaseidel/climateiq:latest
+    container_name: climateiq
+    ports:
+      - "${CLIMATEIQ_PORT:-8420}:${CLIMATEIQ_PORT:-8420}"
+    environment:
+      - CLIMATEIQ_PORT=${CLIMATEIQ_PORT:-8420}
+      - CLIMATEIQ_DB_URL=postgresql+asyncpg://${CLIMATEIQ_DB_USER:-climateiq}:${CLIMATEIQ_DB_PASSWORD:-climateiq}@timescaledb:5432/${CLIMATEIQ_DB_NAME:-climateiq}
+      - CLIMATEIQ_REDIS_URL=redis://redis:6379/0
+      - CLIMATEIQ_MQTT_BROKER=${CLIMATEIQ_MQTT_BROKER:-}
+      - CLIMATEIQ_MQTT_PORT=${CLIMATEIQ_MQTT_PORT:-1883}
+      - CLIMATEIQ_MQTT_USERNAME=${CLIMATEIQ_MQTT_USERNAME:-}
+      - CLIMATEIQ_MQTT_PASSWORD=${CLIMATEIQ_MQTT_PASSWORD:-}
+      - CLIMATEIQ_HOME_ASSISTANT_URL=${CLIMATEIQ_HOME_ASSISTANT_URL:-}
+      - CLIMATEIQ_HOME_ASSISTANT_TOKEN=${CLIMATEIQ_HOME_ASSISTANT_TOKEN:-}
+      - CLIMATEIQ_SECRET_KEY=${CLIMATEIQ_SECRET_KEY:-}
+      - CLIMATEIQ_ANTHROPIC_API_KEY=${CLIMATEIQ_ANTHROPIC_API_KEY:-}
+      - CLIMATEIQ_OPENAI_API_KEY=${CLIMATEIQ_OPENAI_API_KEY:-}
+      - CLIMATEIQ_GEMINI_API_KEY=${CLIMATEIQ_GEMINI_API_KEY:-}
+      - CLIMATEIQ_OLLAMA_URL=${CLIMATEIQ_OLLAMA_URL:-}
+      - CLIMATEIQ_GROK_API_KEY=${CLIMATEIQ_GROK_API_KEY:-}
+      - CLIMATEIQ_MQTT_USE_TLS=${CLIMATEIQ_MQTT_USE_TLS:-false}
+      - CLIMATEIQ_TEMPERATURE_UNIT=${CLIMATEIQ_TEMPERATURE_UNIT:-fahrenheit}
+    volumes:
+      - climateiq-config:/app/config
+      - climateiq-backups:/app/backups
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - climateiq-network
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg18
+    container_name: climateiq-db
+    environment:
+      - POSTGRES_DB=${CLIMATEIQ_DB_NAME:-climateiq}
+      - POSTGRES_USER=${CLIMATEIQ_DB_USER:-climateiq}
+      - POSTGRES_PASSWORD=${CLIMATEIQ_DB_PASSWORD:-climateiq}
+    volumes:
+      - climateiq-db:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/002_init_climateiq.sql:ro
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CLIMATEIQ_DB_USER:-climateiq}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - climateiq-network
+
+  redis:
+    image: redis:8-alpine
+    container_name: climateiq-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - climateiq-redis:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - climateiq-network
+
+volumes:
+  climateiq-config:
+  climateiq-backups:
+  climateiq-db:
+  climateiq-redis:
+
+networks:
+  climateiq-network:
+    driver: bridge

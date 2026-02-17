@@ -1,0 +1,61 @@
+name: "Feature request"
+description: "Suggest an idea or enhancement for ClimateIQ"
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us understand the value of your idea by providing as much detail as possible.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence describing the feature
+      placeholder: "Add support for ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem definition
+      description: What problem are you trying to solve?
+      placeholder: Describe the pain point or user story
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work?
+      placeholder: Describe UI, API, configuration, etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you tried other approaches?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      multiple: true
+      options:
+        - Backend API
+        - Frontend UI
+        - Infrastructure / DevOps
+        - Documentation
+        - Integrations
+        - Other / Unsure
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links, mockups, metrics, or anything else to help us evaluate the request

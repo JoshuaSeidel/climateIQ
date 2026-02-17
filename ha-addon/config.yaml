@@ -1,0 +1,78 @@
+name: ClimateIQ
+version: "0.1.0"
+slug: climateiq
+description: AI-Powered Intelligent Climate Management for Home Assistant
+url: "https://github.com/joshuaseidel/climateiq"
+arch:
+  - amd64
+  - aarch64
+  - armv7
+startup: application
+boot: auto
+init: false
+
+# Ingress configuration - proxied through HA UI
+ingress: true
+ingress_port: 8099
+ingress_stream: true
+panel_icon: mdi:thermostat-auto
+panel_title: ClimateIQ
+
+# Port mappings (optional direct access, null = not exposed by default)
+ports:
+  8420/tcp: null
+ports_description:
+  8420/tcp: ClimateIQ Web UI (direct access)
+
+# User-configurable options
+options:
+  log_level: info
+  mqtt_auto_discover: true
+  temperature_unit: F
+  use_internal_database: true
+  use_internal_redis: true
+  external_db_host: ""
+  external_db_port: 5432
+  external_db_name: climateiq
+  external_db_user: climateiq
+  external_db_password: ""
+  external_db_ssl: false
+  external_redis_url: ""
+  anthropic_api_key: ""
+  openai_api_key: ""
+  gemini_api_key: ""
+  grok_api_key: ""
+  ollama_url: ""
+schema:
+  log_level: list(debug|info|warning|error)
+  mqtt_auto_discover: bool
+  temperature_unit: list(F|C)
+  use_internal_database: bool
+  use_internal_redis: bool
+  external_db_host: str?
+  external_db_port: port
+  external_db_name: str?
+  external_db_user: str?
+  external_db_password: str?
+  external_db_ssl: bool
+  external_redis_url: url?
+  anthropic_api_key: str?
+  openai_api_key: str?
+  gemini_api_key: str?
+  grok_api_key: str?
+  ollama_url: url?
+
+# Permissions
+hassio_api: true
+homeassistant_api: true
+auth_api: true
+
+# Map add-on data directory
+map:
+  - config:rw
+  - ssl:ro
+  - share:rw
+
+# Environment variables injected by Supervisor
+environment:
+  SUPERVISOR_TOKEN: "{{ .token }}"

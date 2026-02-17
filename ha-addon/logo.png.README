@@ -1,0 +1,13 @@
+PLACEHOLDER: Replace this file with an actual logo.png
+
+Requirements for Home Assistant add-on logos:
+- Format: PNG
+- Size: 256x256 pixels
+- Background: Transparent
+- Content: Full ClimateIQ logo/wordmark
+
+Suggested design: "ClimateIQ" text with a thermostat icon, using the project's
+brand colors.
+
+To generate, use any image editor or AI image generator with the prompt:
+"ClimateIQ logo, modern clean design, thermostat with AI brain, 256x256px, transparent background"
