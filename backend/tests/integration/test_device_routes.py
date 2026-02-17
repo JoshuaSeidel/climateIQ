@@ -386,7 +386,7 @@ class TestUpdateDevice:
 
         resp = await client.put(
             f"/api/v1/devices/{DEVICE_ID_1}",
-            json={"control_method": "mqtt_direct"},
+            json={"control_method": "ha_service_call"},
         )
 
         assert resp.status_code == 200
@@ -487,7 +487,7 @@ class TestDeviceAction:
         device = _make_device(
             name="Ceiling Fan",
             device_type=DeviceType.fan,
-            control_method=ControlMethod.mqtt_direct,
+            control_method=ControlMethod.ha_service_call,
         )
         device.id = DEVICE_ID_1
 
@@ -685,7 +685,7 @@ class TestDeviceAction:
         device = _make_device(
             name="Smart Vent",
             device_type=DeviceType.smart_vent,
-            control_method=ControlMethod.mqtt_direct,
+            control_method=ControlMethod.ha_service_call,
         )
         device.id = DEVICE_ID_1
 

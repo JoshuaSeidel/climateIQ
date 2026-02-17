@@ -62,7 +62,7 @@ export type Device = {
   manufacturer?: string
   model?: string
   ha_entity_id?: string
-  control_method: 'ha_service_call' | 'mqtt_direct'
+  control_method: 'ha_service_call'
   capabilities: Record<string, unknown>
   constraints: Record<string, unknown>
   is_primary: boolean
@@ -268,11 +268,7 @@ export type SystemSettings = {
   energy_cost_per_kwh: number
   currency: string
   weather_entity: string
-  mqtt_broker: string
-  mqtt_port: number
-  mqtt_username: string
-  mqtt_password: string
-  mqtt_use_tls: boolean
+
   home_assistant_url: string
   home_assistant_token: string
   llm_settings: Record<string, unknown>

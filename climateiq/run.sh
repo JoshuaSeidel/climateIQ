@@ -14,7 +14,6 @@ DATA_DIR="/data/climateiq"
 # Read options from HA add-on config
 if [ -f "$CONFIG_PATH" ]; then
     LOG_LEVEL=$(jq -r '.log_level // "info"' "$CONFIG_PATH")
-    MQTT_AUTO_DISCOVER=$(jq -r '.mqtt_auto_discover // true' "$CONFIG_PATH")
     TEMPERATURE_UNIT=$(jq -r '.temperature_unit // "F"' "$CONFIG_PATH")
 
     # Database (required)
@@ -35,7 +34,6 @@ if [ -f "$CONFIG_PATH" ]; then
     OLLAMA_URL=$(jq -r '.ollama_url // ""' "$CONFIG_PATH")
 else
     LOG_LEVEL="info"
-    MQTT_AUTO_DISCOVER="true"
     TEMPERATURE_UNIT="F"
     DB_HOST=""
     DB_PORT="5432"
@@ -51,10 +49,9 @@ else
 fi
 
 echo "============================================"
-echo "  ClimateIQ Home Assistant Add-on v0.1.0"
+echo "  ClimateIQ Home Assistant Add-on v0.2.0"
 echo "============================================"
 echo "Log level:          ${LOG_LEVEL}"
-echo "MQTT auto-discover: ${MQTT_AUTO_DISCOVER}"
 echo "Temperature unit:   ${TEMPERATURE_UNIT}"
 echo "Database host:      ${DB_HOST:-<not set>}"
 echo "Redis URL:          ${REDIS_URL:-<not set>}"
@@ -95,31 +92,6 @@ cleanup() {
 trap cleanup SIGTERM SIGINT SIGHUP
 
 # =============================================================================
-# MQTT Auto-Discovery via HA Supervisor
-# =============================================================================
-
-MQTT_BROKER=""
-MQTT_PORT=""
-MQTT_USERNAME=""
-MQTT_PASSWORD=""
-
-if [ "$MQTT_AUTO_DISCOVER" = "true" ] && [ -n "${SUPERVISOR_TOKEN:-}" ]; then
-    echo "[ClimateIQ] Discovering MQTT configuration from Home Assistant..."
-    MQTT_RESPONSE=$(curl -s -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
-        http://supervisor/services/mqtt 2>/dev/null || echo "{}")
-
-    if echo "$MQTT_RESPONSE" | jq -e '.data.host' >/dev/null 2>&1; then
-        MQTT_BROKER=$(echo "$MQTT_RESPONSE" | jq -r '.data.host')
-        MQTT_PORT=$(echo "$MQTT_RESPONSE" | jq -r '.data.port')
-        MQTT_USERNAME=$(echo "$MQTT_RESPONSE" | jq -r '.data.username // ""')
-        MQTT_PASSWORD=$(echo "$MQTT_RESPONSE" | jq -r '.data.password // ""')
-        echo "[ClimateIQ] MQTT discovered: ${MQTT_BROKER}:${MQTT_PORT}"
-    else
-        echo "[ClimateIQ] MQTT service not found in Home Assistant."
-    fi
-fi
-
-# =============================================================================
 # Persistent secret key
 # =============================================================================
 
@@ -155,13 +127,6 @@ export CLIMATEIQ_REDIS_URL="${REDIS_URL}"
 export CLIMATEIQ_HOME_ASSISTANT_URL="http://supervisor/core"
 export CLIMATEIQ_HOME_ASSISTANT_TOKEN="${SUPERVISOR_TOKEN:-}"
 export CLIMATEIQ_HA_ADDON_MODE="true"
-export CLIMATEIQ_MQTT_AUTO_DISCOVER="${MQTT_AUTO_DISCOVER}"
-
-# MQTT (from auto-discovery or empty — backend skips MQTT if broker is empty)
-export CLIMATEIQ_MQTT_BROKER="${MQTT_BROKER}"
-export CLIMATEIQ_MQTT_PORT="${MQTT_PORT:-1883}"
-export CLIMATEIQ_MQTT_USERNAME="${MQTT_USERNAME}"
-export CLIMATEIQ_MQTT_PASSWORD="${MQTT_PASSWORD}"
 
 # LLM API keys
 export CLIMATEIQ_ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}"

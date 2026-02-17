@@ -151,8 +151,6 @@ async def execute_device_action(
 
     The action is dispatched based on the device's control_method:
     - ha_service_call: forwards to Home Assistant via REST API
-    - mqtt_direct: publishes a command to the MQTT broker
-
     If the integration is unreachable the action is still recorded with an
     error result so the audit trail is preserved.
     """
@@ -274,10 +272,7 @@ async def _dispatch_action(
     """
     if device.control_method == ControlMethod.ha_service_call:
         return await _dispatch_via_home_assistant(device, payload)
-    elif device.control_method == ControlMethod.mqtt_direct:
-        return await _dispatch_via_mqtt(device, payload)
-    else:
-        return {"success": False, "error": f"Unknown control method: {device.control_method}"}
+    return {"success": False, "error": f"Unknown control method: {device.control_method}"}
 
 
 async def _dispatch_via_home_assistant(
@@ -313,36 +308,6 @@ async def _dispatch_via_home_assistant(
             return {"success": True, "ha_status": resp.status_code, "ha_response": resp.json()}
     except Exception as exc:
         return {"success": False, "error": f"HA call failed: {exc}"}
-
-
-async def _dispatch_via_mqtt(
-    device: Device,
-    payload: DeviceActionRequest,
-) -> dict[str, Any]:
-    """Publish the action command directly to MQTT."""
-    from backend.api.dependencies import get_mqtt_client
-    from backend.config import get_settings
-
-    settings = get_settings()
-    if not settings.mqtt_broker:
-        return {"success": False, "error": "MQTT broker not configured"}
-
-    # Build MQTT command payload
-    mqtt_payload = _build_mqtt_command(device, payload)
-    # Derive topic from device capabilities/constraints, falling back to zigbee2mqtt convention
-    topic: str = (
-        device.capabilities.get("mqtt_topic")
-        or device.constraints.get("mqtt_topic")
-        or f"zigbee2mqtt/{device.name}/set"
-    )
-
-    try:
-        client = await get_mqtt_client(settings)
-        await client.connect()
-        await client.publish(topic, mqtt_payload)
-        return {"success": True, "topic": topic, "payload": mqtt_payload}
-    except Exception as exc:
-        return {"success": False, "error": f"MQTT publish failed: {exc}"}
 
 
 def _build_ha_service_call(
@@ -408,36 +373,6 @@ def _build_ha_service_call(
         )
     else:
         return "homeassistant", "toggle", {"entity_id": params["entity_id"]}
-
-
-def _build_mqtt_command(
-    device: Device,
-    payload: DeviceActionRequest,
-) -> dict[str, Any]:
-    """Build an MQTT command payload for zigbee2mqtt."""
-    action = payload.action_type
-    params = dict(payload.parameters)
-
-    if action == ActionType.set_temperature:
-        return {
-            "current_heating_setpoint": params.get("temperature", params.get("target_c", 22)),
-        }
-    elif action == ActionType.set_mode:
-        return {"system_mode": params.get("mode", "auto")}
-    elif action == ActionType.turn_on:
-        return {"state": "ON"}
-    elif action == ActionType.turn_off:
-        return {"state": "OFF"}
-    elif action == ActionType.set_vent_position:
-        return {"position": params.get("position", 100)}
-    elif action in (ActionType.open_cover, ActionType.close_cover):
-        return {"state": "OPEN" if action == ActionType.open_cover else "CLOSE"}
-    elif action == ActionType.set_cover_position:
-        return {"position": params.get("position", 50)}
-    elif action == ActionType.set_fan_speed:
-        return {"fan_mode": params.get("speed", params.get("fan_mode", "auto"))}
-    else:
-        return params
 
 
 __all__ = ["router"]

@@ -50,20 +50,12 @@ class Settings(BaseSettings):
     redis_db: int = Field(default=0)
     redis_url: AnyUrl | str = Field(default="redis://localhost:6379/0")
 
-    # MQTT — empty broker means MQTT is not configured
-    mqtt_broker: str = Field(default="")
-    mqtt_port: int = Field(default=1883)
-    mqtt_username: str = Field(default="")
-    mqtt_password: str = Field(default="")
-    mqtt_use_tls: bool = Field(default=False)
-
     # Home Assistant
     home_assistant_url: AnyUrl | str = Field(default="http://localhost:8123")
     home_assistant_token: str = Field(default="")
 
     # Home Assistant Add-on mode
     ha_addon_mode: bool = Field(default=False)
-    mqtt_auto_discover: bool = Field(default=False)
     temperature_unit: str = Field(default="F")
     log_level: str = Field(default="info")
 

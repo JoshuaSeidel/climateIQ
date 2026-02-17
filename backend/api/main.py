@@ -483,22 +483,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         await app_state.ws_manager.subscribe_redis()
 
-        # Connect to MQTT only if a broker is explicitly configured
-        if settings_instance.mqtt_broker:
-            logger.info("Connecting to MQTT broker at %s...", settings_instance.mqtt_broker)
-            try:
-                await app_state.ws_manager.connect_mqtt(
-                    broker=settings_instance.mqtt_broker,
-                    port=settings_instance.mqtt_port,
-                    username=settings_instance.mqtt_username or None,
-                    password=settings_instance.mqtt_password or None,
-                    use_tls=settings_instance.mqtt_use_tls,
-                )
-            except Exception as e:
-                logger.warning("MQTT connection failed (non-fatal): %s", e)
-        else:
-            logger.info("No MQTT broker configured — skipping MQTT connection")
-
         # Initialize and start scheduler
         logger.info("Starting background scheduler...")
         app_state.scheduler = init_scheduler()

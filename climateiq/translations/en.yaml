@@ -1,0 +1,63 @@
+---
+configuration:
+  log_level:
+    name: Log Level
+    description: >-
+      Logging verbosity for the ClimateIQ backend.
+  temperature_unit:
+    name: Temperature Unit
+    description: >-
+      Display temperatures in Fahrenheit (F) or Celsius (C).
+  db_host:
+    name: Database Host
+    description: >-
+      Hostname or IP address of your TimescaleDB or PostgreSQL server.
+      Examples: 192.168.1.50, core-timescaledb
+  db_port:
+    name: Database Port
+    description: >-
+      TCP port for the database connection. Default is 5432.
+  db_name:
+    name: Database Name
+    description: >-
+      Name of the PostgreSQL database to use. Example: climateiq
+  db_user:
+    name: Database User
+    description: >-
+      Username for the database connection. Example: climateiq
+  db_password:
+    name: Database Password
+    description: >-
+      Password for the database user.
+  redis_url:
+    name: Redis URL
+    description: >-
+      Full Redis connection URL including protocol, host, port, and database number.
+      Example: redis://192.168.1.50:6379/0
+  anthropic_api_key:
+    name: Anthropic API Key
+    description: >-
+      API key for Anthropic Claude AI chat features. Starts with sk-ant-.
+      Leave blank to disable.
+  openai_api_key:
+    name: OpenAI API Key
+    description: >-
+      API key for OpenAI GPT chat features. Starts with sk-.
+      Leave blank to disable.
+  gemini_api_key:
+    name: Gemini API Key
+    description: >-
+      API key for Google Gemini AI chat features.
+      Leave blank to disable.
+  grok_api_key:
+    name: Grok API Key
+    description: >-
+      API key for xAI Grok AI chat features.
+      Leave blank to disable.
+  ollama_url:
+    name: Ollama URL
+    description: >-
+      URL of a local Ollama instance for local LLM inference (no API key needed).
+      Example: http://192.168.1.50:11434 — Leave blank to disable.
+network:
+  8099/tcp: ClimateIQ Web UI (direct access)

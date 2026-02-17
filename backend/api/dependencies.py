@@ -10,7 +10,7 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import SETTINGS, Settings
-from backend.integrations import HAClient, MQTTClient
+from backend.integrations import HAClient
 from backend.models.database import get_session_maker
 
 # ---------------------------------------------------------------------------
@@ -70,30 +70,6 @@ type RedisDep = Annotated[redis.Redis, Depends(get_redis)]
 
 
 # ---------------------------------------------------------------------------
-# MQTT dependency
-# ---------------------------------------------------------------------------
-
-
-_mqtt_client: MQTTClient | None = None
-
-
-async def get_mqtt_client(settings: SettingsDep) -> MQTTClient:
-    global _mqtt_client
-    if _mqtt_client is None:
-        _mqtt_client = MQTTClient(
-            broker=settings.mqtt_broker,
-            port=settings.mqtt_port,
-            username=settings.mqtt_username or None,
-            password=settings.mqtt_password or None,
-            use_tls=settings.mqtt_use_tls,
-        )
-    return _mqtt_client
-
-
-type MQTTDep = Annotated[MQTTClient, Depends(get_mqtt_client)]
-
-
-# ---------------------------------------------------------------------------
 # Home Assistant client dependency
 # ---------------------------------------------------------------------------
 
@@ -123,12 +99,10 @@ type HADep = Annotated[HAClient, Depends(get_ha_client)]
 
 __all__ = [
     "HADep",
-    "MQTTDep",
     "RedisDep",
     "SettingsDep",
     "get_db",
     "get_ha_client",
-    "get_mqtt_client",
     "get_redis",
     "set_shared_redis",
 ]

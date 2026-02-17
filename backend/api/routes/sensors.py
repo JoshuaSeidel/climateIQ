@@ -1,10 +1,10 @@
-"""Sensor CRUD and discovery API routes for ClimateIQ."""
+"""Sensor CRUD API routes for ClimateIQ."""
 
 from __future__ import annotations
 
 import logging
 import uuid
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -121,95 +121,6 @@ async def delete_sensor(
     sensor = await _fetch_sensor(db, sensor_id)
     await db.delete(sensor)
     await db.commit()
-
-
-# ---------------------------------------------------------------------------
-# POST /sensors/discover — trigger MQTT device discovery
-# ---------------------------------------------------------------------------
-@router.post("/discover", response_model=dict[str, Any])
-async def discover_sensors(
-    db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict[str, Any]:
-    """Trigger MQTT device discovery via zigbee2mqtt bridge.
-
-    Attempts to connect to the configured MQTT broker and request the device
-    list from zigbee2mqtt. Returns discovered devices with their capabilities.
-    If the broker is unreachable the endpoint returns a structured error.
-    """
-    from backend.config import get_settings
-    from backend.integrations.mqtt_client import MQTTClient
-
-    settings = get_settings()
-    broker = settings.mqtt_broker
-    port = settings.mqtt_port
-    username = settings.mqtt_username or None
-    password = settings.mqtt_password or None
-    use_tls = settings.mqtt_use_tls
-
-    if not broker:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="MQTT broker not configured. Set CLIMATEIQ_MQTT_BROKER.",
-        )
-
-    client = MQTTClient(
-        broker=broker,
-        port=port,
-        username=username,
-        password=password,
-        use_tls=use_tls,
-    )
-
-    try:
-        await client.connect()
-        devices = await client.discover_devices(force_refresh=True)
-        await client.disconnect()
-    except Exception as exc:
-        logger.exception("MQTT discovery failed")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"MQTT discovery failed: {exc}",
-        ) from exc
-
-    # Build a summary of discovered devices with sensor-relevant info
-    discovered: list[dict[str, Any]] = []
-    for friendly_name, info in devices.items():
-        definition = info.get("definition") or {}
-        exposes = definition.get("exposes") or []
-
-        # Determine sensor capabilities from exposed features
-        capabilities: list[str] = []
-        for feature in exposes:
-            if isinstance(feature, dict):
-                feat_type = feature.get("type", "")
-                feat_name = feature.get("name") or feature.get("property") or ""
-                if feat_type in ("numeric", "binary", "enum"):
-                    capabilities.append(str(feat_name))
-                # Nested features (e.g. climate clusters)
-                for sub in feature.get("features", []):
-                    if isinstance(sub, dict):
-                        sub_name = sub.get("name") or sub.get("property") or ""
-                        if sub_name:
-                            capabilities.append(str(sub_name))
-
-        discovered.append(
-            {
-                "friendly_name": friendly_name,
-                "ieee_address": info.get("ieee_address"),
-                "type": info.get("type"),
-                "vendor": (definition.get("vendor") or info.get("manufacturer")),
-                "model": (definition.get("model") or info.get("model_id")),
-                "description": definition.get("description"),
-                "capabilities": capabilities,
-                "supported": info.get("supported", True),
-            }
-        )
-
-    return {
-        "broker": broker,
-        "discovered_count": len(discovered),
-        "devices": discovered,
-    }
 
 
 # ---------------------------------------------------------------------------

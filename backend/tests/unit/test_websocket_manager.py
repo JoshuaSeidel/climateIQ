@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -218,37 +218,6 @@ class TestSendLocal:
     async def test_no_clients_is_noop(self, manager: ConnectionManager) -> None:
         # Should not raise
         await manager._send_local({"type": "test"})
-
-
-# ===================================================================
-# Sensor callbacks
-# ===================================================================
-
-
-class TestSensorCallbacks:
-    """Tests for sensor callback registration."""
-
-    def test_register_callback(self, manager: ConnectionManager) -> None:
-        cb = MagicMock()
-        manager.register_sensor_callback(cb)
-        assert cb in manager._sensor_callbacks
-
-    def test_register_no_duplicates(self, manager: ConnectionManager) -> None:
-        cb = MagicMock()
-        manager.register_sensor_callback(cb)
-        manager.register_sensor_callback(cb)
-        assert len(manager._sensor_callbacks) == 1
-
-    def test_unregister_callback(self, manager: ConnectionManager) -> None:
-        cb = MagicMock()
-        manager.register_sensor_callback(cb)
-        manager.unregister_sensor_callback(cb)
-        assert cb not in manager._sensor_callbacks
-
-    def test_unregister_nonexistent_is_safe(self, manager: ConnectionManager) -> None:
-        cb = MagicMock()
-        # Should not raise
-        manager.unregister_sensor_callback(cb)
 
 
 # ===================================================================

@@ -46,11 +46,7 @@ export const mockApi = async (page: Page) => {
           energy_cost_per_kwh: 0.12,
           currency: 'USD',
           weather_entity: 'weather.home',
-          mqtt_broker: 'localhost',
-          mqtt_port: 1883,
-          mqtt_username: '',
-          mqtt_password: '',
-          mqtt_use_tls: false,
+
           home_assistant_url: 'http://homeassistant.local:8123',
           home_assistant_token: 'test-token',
           llm_settings: {},

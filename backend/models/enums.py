@@ -41,7 +41,6 @@ class DeviceType(StrEnum):
 
 class ControlMethod(StrEnum):
     ha_service_call = "ha_service_call"
-    mqtt_direct = "mqtt_direct"
 
 
 class ActionType(StrEnum):

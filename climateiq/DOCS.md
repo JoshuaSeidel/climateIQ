@@ -12,11 +12,10 @@ recommendations, and automated scheduling for multi-zone HVAC systems.
 
 - **Multi-Zone Management** - Monitor and control individual HVAC zones
 - **AI-Powered Recommendations** - Natural language climate control via LLM integration
-- **Real-Time Monitoring** - Live temperature, humidity, and device status updates
+- **Real-Time Monitoring** - Live temperature, humidity, and device status updates via WebSocket
 - **Smart Scheduling** - Time-based and occupancy-aware temperature schedules
 - **Weather Integration** - Proactive adjustments based on weather forecasts
 - **Energy Analytics** - Track energy usage and identify savings opportunities
-- **MQTT Support** - Auto-discovers MQTT broker from Home Assistant
 
 ## Prerequisites
 
@@ -52,19 +51,17 @@ add-ons) or external services on your network.
 | `db_password` | password | **Yes** | | Database password |
 | `redis_url` | string | **Yes** | | Redis URL (e.g., `redis://host:6379/0`) |
 | `log_level` | list | No | `info` | Logging verbosity: `debug`, `info`, `warning`, `error` |
-| `mqtt_auto_discover` | bool | No | `true` | Auto-discover MQTT broker from Home Assistant |
 | `temperature_unit` | list | No | `F` | Temperature display unit: `F` or `C` |
 | `anthropic_api_key` | string | No | | API key for Anthropic Claude (AI chat) |
 | `openai_api_key` | string | No | | API key for OpenAI (AI chat) |
 | `gemini_api_key` | string | No | | API key for Google Gemini (AI chat) |
 | `grok_api_key` | string | No | | API key for xAI Grok (AI chat) |
-| `ollama_url` | url | No | | URL for local Ollama instance |
+| `ollama_url` | string | No | | URL for local Ollama instance |
 
 ### Example Configuration
 
 ```yaml
 log_level: info
-mqtt_auto_discover: true
 temperature_unit: F
 db_host: "192.168.1.50"
 db_port: 5432
@@ -103,12 +100,6 @@ The add-on runs a single lightweight container:
 All persistent data (zones, schedules, analytics) is stored in the external
 database. The add-on itself stores only a secret key in `/data/climateiq/`.
 
-## MQTT Integration
-
-When `mqtt_auto_discover` is enabled, ClimateIQ automatically discovers your
-MQTT broker configuration from Home Assistant's Supervisor API. No manual
-MQTT configuration is needed.
-
 ## AI Chat Features
 
 ClimateIQ includes an AI-powered chat interface for natural language climate
@@ -141,12 +132,6 @@ Supported providers:
 2. Check that the database user and password are correct
 3. Ensure the `climateiq` database exists and the user has access
 4. If using TimescaleDB, confirm the `uuid-ossp` extension is available
-
-### MQTT not connecting
-
-1. Verify MQTT is configured in Home Assistant (**Settings > Devices & Services > MQTT**)
-2. Check that `mqtt_auto_discover` is enabled
-3. Review the add-on logs for MQTT connection errors
 
 ## Support
 

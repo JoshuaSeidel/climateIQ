@@ -2,7 +2,7 @@
 
 This is the PRIMARY sensor data ingestion path for ClimateIQ. It subscribes
 to HA's state_changed events via WebSocket and dispatches normalized readings
-to registered callbacks. MQTT ingestion is secondary/optional.
+to registered callbacks.
 """
 
 from __future__ import annotations

@@ -1,11 +1,11 @@
-"""WebSocket connection manager with Redis fan-out and MQTT bridge."""
+"""WebSocket connection manager with Redis fan-out."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
@@ -14,7 +14,6 @@ import redis.asyncio as redis
 from fastapi import WebSocket
 
 from backend.api.dependencies import get_redis
-from backend.integrations import MQTTClient, SensorReading
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +38,6 @@ class ConnectionManager:
 
         self._connections: dict[str, set[WebSocket]] = {}
         self._lock = asyncio.Lock()
-
-        self._mqtt: MQTTClient | None = None
-        self._sensor_callbacks: list[Callable[[SensorReading], Awaitable[None] | None]] = []
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -107,7 +103,6 @@ class ConnectionManager:
     async def shutdown(self) -> None:
         await self.disconnect_all()
         await self._disconnect_redis()
-        await self._disconnect_mqtt()
 
     async def connect_redis(self, redis_url: str | None = None) -> None:
         if redis_url:
@@ -156,29 +151,6 @@ class ConnectionManager:
 
         self._listener_task = asyncio.create_task(_listen(), name="climateiq-ws-redis")
 
-    async def connect_mqtt(
-        self,
-        *,
-        broker: str,
-        port: int,
-        username: str | None,
-        password: str | None,
-        use_tls: bool,
-    ) -> None:
-        if self._mqtt:
-            return
-        logger.info("Connecting WebSocket manager to MQTT at %s:%s", broker, port)
-        mqtt = MQTTClient(
-            broker=broker,
-            port=port,
-            username=username,
-            password=password,
-            use_tls=use_tls,
-        )
-        mqtt.add_callback(self._handle_sensor_reading)
-        await mqtt.connect()
-        self._mqtt = mqtt
-
     async def shutdown_manager(self) -> None:
         await self.shutdown()
 
@@ -223,13 +195,9 @@ class ConnectionManager:
     async def broadcast_sensor_update(
         self,
         sensor_id: str | None,
-        reading: Mapping[str, Any] | SensorReading,
+        reading: Mapping[str, Any],
     ) -> None:
-        if isinstance(reading, SensorReading):
-            payload = self._serialize_sensor_reading(sensor_id, reading)
-        else:
-            payload = self._serialize_sensor_payload(sensor_id, reading)
-
+        payload = self._serialize_sensor_payload(sensor_id, reading)
         await self.broadcast(payload)
 
     async def broadcast_device_state(
@@ -263,43 +231,6 @@ class ConnectionManager:
             logger.exception("Failed to publish WebSocket payload to Redis")
 
     # ------------------------------------------------------------------
-    # Sensor callbacks
-    # ------------------------------------------------------------------
-    def register_sensor_callback(
-        self,
-        callback: Callable[[SensorReading], Awaitable[None] | None],
-    ) -> None:
-        if callback not in self._sensor_callbacks:
-            self._sensor_callbacks.append(callback)
-
-    def unregister_sensor_callback(
-        self,
-        callback: Callable[[SensorReading], Awaitable[None] | None],
-    ) -> None:
-        with suppress(ValueError):
-            self._sensor_callbacks.remove(callback)
-
-    def _handle_sensor_reading(self, reading: SensorReading) -> None:
-        async def _dispatch() -> None:
-            await self.broadcast_sensor_update(reading.device_name, reading)
-            for callback in list(self._sensor_callbacks):
-                try:
-                    result = callback(reading)
-                    if asyncio.iscoroutine(result):
-                        await result
-                except Exception:
-                    logger.exception("Sensor callback failed")
-
-        task = asyncio.create_task(_dispatch())
-        task.add_done_callback(
-            lambda t: (
-                logger.debug("Sensor dispatch task error", exc_info=t.exception())
-                if t.exception()
-                else None
-            )
-        )
-
-    # ------------------------------------------------------------------
     # Redis helpers
     # ------------------------------------------------------------------
     async def _ensure_redis(self) -> redis.Redis | None:
@@ -331,14 +262,6 @@ class ConnectionManager:
                 await self._redis.close()
         self._redis = None
 
-    async def _disconnect_mqtt(self) -> None:
-        if not self._mqtt:
-            return
-        self._mqtt.remove_callback(self._handle_sensor_reading)
-        with suppress(Exception):
-            await self._mqtt.disconnect()
-        self._mqtt = None
-
     # ------------------------------------------------------------------
     # Serialization helpers
     # ------------------------------------------------------------------
@@ -366,25 +289,6 @@ class ConnectionManager:
             async with self._lock:
                 for ch_set in self._connections.values():
                     ch_set.discard(websocket)
-
-    def _serialize_sensor_reading(
-        self,
-        sensor_id: str | None,
-        reading: SensorReading,
-    ) -> dict[str, Any]:
-        return {
-            "type": "sensor_update",
-            "sensor_id": sensor_id or reading.device_name,
-            "timestamp": _utcnow().isoformat(),
-            "data": {
-                "temperature": reading.temperature,
-                "humidity": reading.humidity,
-                "occupancy": reading.occupancy,
-                "illuminance": reading.illuminance,
-                "battery": reading.battery,
-                "raw": reading.raw_payload,
-            },
-        }
 
     def _serialize_sensor_payload(
         self,

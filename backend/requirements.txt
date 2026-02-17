@@ -14,9 +14,6 @@ alembic>=1.14.0
 # Redis
 redis>=5.2.0
 
-# MQTT
-aiomqtt>=2.3.0
-
 # HTTP Client
 httpx>=0.28.0
 

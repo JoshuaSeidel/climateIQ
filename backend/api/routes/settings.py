@@ -43,11 +43,6 @@ class SystemSettingsResponse(BaseModel):
     energy_cost_per_kwh: float = 0.12
     currency: str = "USD"
     weather_entity: str = ""
-    mqtt_broker: str = "localhost"
-    mqtt_port: int = 1883
-    mqtt_username: str = ""
-    mqtt_password: str = ""
-    mqtt_use_tls: bool = False
     home_assistant_url: str = ""
     home_assistant_token: str = ""
     llm_settings: dict[str, Any] = Field(default_factory=dict)
@@ -72,11 +67,6 @@ class SystemSettingsUpdate(BaseModel):
     energy_cost_per_kwh: float | None = None
     currency: str | None = None
     weather_entity: str | None = None
-    mqtt_broker: str | None = None
-    mqtt_port: int | None = None
-    mqtt_username: str | None = None
-    mqtt_password: str | None = None
-    mqtt_use_tls: bool | None = None
     home_assistant_url: str | None = None
     home_assistant_token: str | None = None
     default_schedule: dict[str, Any] | None = None
@@ -127,11 +117,6 @@ _SETTINGS_KEYS: dict[str, Any] = {
     "energy_cost_per_kwh": 0.12,
     "currency": "USD",
     "weather_entity": "",
-    "mqtt_broker": "localhost",
-    "mqtt_port": 1883,
-    "mqtt_username": "",
-    "mqtt_password": "",
-    "mqtt_use_tls": False,
     "home_assistant_url": "",
     "home_assistant_token": "",
 }
@@ -191,11 +176,6 @@ async def get_settings(
         energy_cost_per_kwh=kv["energy_cost_per_kwh"],
         currency=kv["currency"],
         weather_entity=kv["weather_entity"],
-        mqtt_broker=kv["mqtt_broker"],
-        mqtt_port=int(kv["mqtt_port"]),
-        mqtt_username=kv["mqtt_username"],
-        mqtt_password=kv["mqtt_password"],
-        mqtt_use_tls=bool(kv["mqtt_use_tls"]),
         home_assistant_url=str(kv["home_assistant_url"]),
         home_assistant_token=kv["home_assistant_token"],
         llm_settings=config.llm_settings or {},

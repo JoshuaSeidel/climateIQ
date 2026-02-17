@@ -1,5 +1,5 @@
 name: ClimateIQ
-version: "0.1.0"
+version: "0.2.0"
 slug: climateiq
 description: AI-Powered Intelligent Climate Management for Home Assistant
 url: "https://github.com/JoshuaSeidel/climateIQ"
@@ -28,7 +28,6 @@ ports_description:
 # User-configurable options
 options:
   log_level: info
-  mqtt_auto_discover: true
   temperature_unit: F
   db_host: ""
   db_port: 5432
@@ -43,7 +42,6 @@ options:
   ollama_url: ""
 schema:
   log_level: list(debug|info|warning|error)
-  mqtt_auto_discover: bool
   temperature_unit: list(F|C)
   db_host: str
   db_port: port
@@ -55,7 +53,7 @@ schema:
   openai_api_key: str?
   gemini_api_key: str?
   grok_api_key: str?
-  ollama_url: url?
+  ollama_url: str?
 
 # Permissions
 hassio_api: true

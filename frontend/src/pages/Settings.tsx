@@ -13,7 +13,7 @@ import {
   AlertCircle,
   Thermometer,
   Home,
-  Wifi,
+
   Settings2,
   Loader2,
   Globe,
@@ -27,11 +27,11 @@ import {
   EyeOff,
 } from 'lucide-react'
 
-type SettingsTab = 'general' | 'mqtt' | 'homeassistant' | 'llm' | 'modes' | 'backup' | 'about'
+type SettingsTab = 'general' | 'homeassistant' | 'llm' | 'modes' | 'backup' | 'about'
 
 const TABS: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'general', label: 'General', icon: Settings2 },
-  { id: 'mqtt', label: 'MQTT', icon: Wifi },
+
   { id: 'homeassistant', label: 'Home Assistant', icon: Home },
   { id: 'llm', label: 'LLM Providers', icon: Bot },
   { id: 'modes', label: 'Modes', icon: Zap },
@@ -113,7 +113,7 @@ export const Settings = () => {
 
       {/* Tab Content */}
       {activeTab === 'general' && <GeneralTab key={settings ? 'loaded' : 'loading'} settings={settings} loading={settingsLoading} />}
-      {activeTab === 'mqtt' && <MQTTTab key={settings ? 'loaded' : 'loading'} settings={settings} />}
+
       {activeTab === 'homeassistant' && <HomeAssistantTab key={settings ? 'loaded' : 'loading'} settings={settings} />}
       {activeTab === 'llm' && (
         <LLMTab
@@ -322,173 +322,6 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
         )}
       </div>
     </div>
-  )
-}
-
-// ============================================================================
-// MQTT Tab
-// ============================================================================
-function MQTTTab({ settings }: { settings?: SystemSettings }) {
-  const queryClient = useQueryClient()
-  const [form, setForm] = useState({
-    broker: settings?.mqtt_broker ?? '',
-    port: String(settings?.mqtt_port ?? 1883),
-    username: settings?.mqtt_username ?? '',
-    password: settings?.mqtt_password ?? '',
-    use_tls: settings?.mqtt_use_tls ?? false,
-  })
-  const [showPassword, setShowPassword] = useState(false)
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
-
-  const saveMqttConfig = useMutation({
-    mutationFn: (data: Record<string, unknown>) =>
-      api.put('/settings', {
-        mqtt_broker: data.broker,
-        mqtt_port: data.port,
-        mqtt_username: data.username,
-        mqtt_password: data.password,
-        mqtt_use_tls: data.use_tls,
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] })
-    },
-  })
-
-  const handleSave = () => {
-    saveMqttConfig.mutate({
-      broker: form.broker,
-      port: Number(form.port),
-      username: form.username,
-      password: form.password,
-      use_tls: form.use_tls,
-    })
-  }
-
-  const testConnection = useMutation({
-    mutationFn: async () => {
-      // Trigger sensor discovery as a connection test
-      return api.post<{ broker: string; discovered_count: number }>('/sensors/discover')
-    },
-    onSuccess: (data) => {
-      setTestResult({
-        success: true,
-        message: `Connected to ${data.broker}. Found ${data.discovered_count} devices.`,
-      })
-    },
-    onError: (error) => {
-      setTestResult({ success: false, message: error.message })
-    },
-  })
-
-  return (
-    <Card className="border-border/60">
-      <CardHeader>
-        <div className="flex items-center gap-2">
-          <Wifi className="h-5 w-5 text-purple-500" />
-          <CardTitle>MQTT Broker</CardTitle>
-        </div>
-        <CardDescription>
-          Configure the MQTT broker for real-time sensor communication. Settings are configured via
-          environment variables (CLIMATEIQ_MQTT_BROKER, etc.)
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <label className="text-sm font-medium">Broker Host</label>
-            <Input
-              value={form.broker}
-              onChange={(e) => setForm((f) => ({ ...f, broker: e.target.value }))}
-              placeholder="e.g. 192.168.1.100"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium">Port</label>
-            <Input
-              type="number"
-              value={form.port}
-              onChange={(e) => setForm((f) => ({ ...f, port: e.target.value }))}
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium">Username</label>
-            <Input
-              value={form.username}
-              onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
-              placeholder="Optional"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium">Password</label>
-            <div className="flex gap-2">
-              <Input
-                type={showPassword ? 'text' : 'password'}
-                value={form.password}
-                onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                placeholder="Optional"
-              />
-              <Button variant="outline" size="icon" onClick={() => setShowPassword(!showPassword)}>
-                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </Button>
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <input
-            type="checkbox"
-            checked={form.use_tls}
-            onChange={(e) => setForm((f) => ({ ...f, use_tls: e.target.checked }))}
-            className="h-4 w-4 rounded border-border"
-          />
-          <label className="text-sm font-medium">Use TLS</label>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <Button onClick={handleSave} disabled={saveMqttConfig.isPending}>
-            {saveMqttConfig.isPending ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Check className="mr-2 h-4 w-4" />
-            )}
-            Save MQTT Settings
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => testConnection.mutate()}
-            disabled={testConnection.isPending}
-          >
-            {testConnection.isPending ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Wifi className="mr-2 h-4 w-4" />
-            )}
-            Test Connection
-          </Button>
-        </div>
-        {saveMqttConfig.isSuccess && (
-          <span className="text-sm text-green-600">MQTT settings saved successfully</span>
-        )}
-        {saveMqttConfig.isError && (
-          <span className="text-sm text-red-500">
-            Failed to save: {saveMqttConfig.error?.message}
-          </span>
-        )}
-        {testResult && (
-          <div className={`flex items-center gap-2 text-sm ${testResult.success ? 'text-green-600' : 'text-red-500'}`}>
-            {testResult.success ? (
-              <Check className="h-4 w-4" />
-            ) : (
-              <AlertCircle className="h-4 w-4" />
-            )}
-            {testResult.message}
-          </div>
-        )}
-
-        <p className="text-xs text-muted-foreground">
-          Runtime overrides are saved here. Environment variables take precedence if set.
-        </p>
-      </CardContent>
-    </Card>
   )
 }
 
@@ -1107,8 +940,8 @@ function AboutTab({
             <p className="text-sm text-muted-foreground">Description</p>
             <p className="mt-1 text-sm">
               ClimateIQ is an intelligent HVAC zone management system that uses AI to optimize home
-              comfort and energy efficiency. It integrates with Home Assistant and MQTT-based sensors
-              to provide real-time monitoring and automated climate control.
+              comfort and energy efficiency. It integrates with Home Assistant to provide real-time
+              monitoring and automated climate control.
             </p>
           </div>
 
@@ -1123,7 +956,7 @@ function AboutTab({
                 'TanStack Query',
                 'Recharts',
                 'Tailwind CSS',
-                'MQTT',
+
                 'Home Assistant',
                 'LLM Integration',
               ].map((tech) => (

@@ -315,10 +315,10 @@ class TestZoneStateRegisterDevice:
     def test_control_method_string_fallback(self) -> None:
         zs = _make_zone()
         mock_device = _make_device_orm()
-        mock_device.control_method = "mqtt_direct"
+        mock_device.control_method = "ha_service_call"
         zs.register_device(mock_device)
         ds = zs.devices[mock_device.id]
-        assert ds.control_method == "mqtt_direct"
+        assert ds.control_method == "ha_service_call"
 
     def test_none_capabilities_becomes_empty_dict(self) -> None:
         zs = _make_zone()
