@@ -1,6 +1,6 @@
 # ClimateIQ Home Assistant Add-on Dockerfile
 # Single-container deployment with embedded PostgreSQL, Redis, and Nginx
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:2026.02.0
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.12-alpine3.18
 
 # =============================================================================
 # Stage 1: Build frontend
