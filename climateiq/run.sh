@@ -49,7 +49,7 @@ else
 fi
 
 echo "============================================"
-echo "  ClimateIQ Home Assistant Add-on v0.2.9"
+echo "  ClimateIQ Home Assistant Add-on v0.2.10"
 echo "============================================"
 echo "Log level:          ${LOG_LEVEL}"
 echo "Temperature unit:   ${TEMPERATURE_UNIT}"

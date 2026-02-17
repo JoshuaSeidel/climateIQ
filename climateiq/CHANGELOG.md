@@ -1,14 +1,18 @@
 # Changelog
 
+## 0.2.10
+
+### Fixed
+
+- URL-encode database username and password with `quote_plus` so special
+  characters (like `@`) in passwords don't break the connection URL parsing.
+  This was the root cause of the "Name does not resolve" errors.
+
 ## 0.2.9
 
 ### Changed
 
 - Replace `asyncpg` with `psycopg` (psycopg3) as the async PostgreSQL driver.
-  `asyncpg` routes all connections through `asyncio.loop.create_connection()`
-  which calls `getaddrinfo` in a thread-pool — broken on Alpine/musl.
-  `psycopg` connects directly without this indirection.
-- Remove all DNS resolver patches and workarounds from previous versions.
 
 ## 0.2.7
 

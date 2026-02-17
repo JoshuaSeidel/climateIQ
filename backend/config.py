@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Final
+from urllib.parse import quote_plus
 
 from pydantic import AnyUrl, Field, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -93,7 +94,7 @@ class Settings(BaseSettings):
         if self.db_url:
             return str(self.db_url)
         return (
-            f"postgresql+psycopg://{self.db_user}:{self.db_password}@"
+            f"postgresql+psycopg://{quote_plus(self.db_user)}:{quote_plus(self.db_password)}@"
             f"{self.db_host}:{self.db_port}/{self.db_name}"
         )
 
