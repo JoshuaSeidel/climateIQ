@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { api } from '@/lib/api'
 import type { Zone, ZoneBackend, Sensor, ZoneType, SensorType, HistoryResponse, HAEntity } from '@/types'
+import { useSettingsStore } from '@/stores/settingsStore'
+import { formatTemperature, toDisplayTemp, toStorageCelsius, tempUnitLabel } from '@/lib/utils'
 import {
   Plus,
   Thermometer,
@@ -89,6 +91,8 @@ const defaultZoneForm: ZoneFormData = {
 
 export const Zones = () => {
   const queryClient = useQueryClient()
+  const { temperatureUnit } = useSettingsStore()
+  const unitKey: 'c' | 'f' = temperatureUnit === 'celsius' ? 'c' : 'f'
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null)
   const [zoneForm, setZoneForm] = useState<ZoneFormData>(defaultZoneForm)
@@ -257,8 +261,8 @@ export const Zones = () => {
     mutationFn: ({ id, prefs }: { id: string; prefs: ComfortPrefs }) =>
       api.put<ZoneBackend>(`/zones/${id}`, {
         comfort_preferences: {
-          temp_min: Number(prefs.temp_min),
-          temp_max: Number(prefs.temp_max),
+          temp_min: Number(toStorageCelsius(Number(prefs.temp_min), unitKey).toFixed(2)),
+          temp_max: Number(toStorageCelsius(Number(prefs.temp_max), unitKey).toFixed(2)),
           humidity_min: Number(prefs.humidity_min),
           humidity_max: Number(prefs.humidity_max),
         },
@@ -279,18 +283,26 @@ export const Zones = () => {
     const zoneRaw = (zonesRaw ?? []).find((z) => z.id === zoneId)
     if (zoneRaw?.comfort_preferences) {
       const cp = zoneRaw.comfort_preferences as Record<string, unknown>
+      // Backend stores in Celsius — convert to display unit
+      const minC = Number(cp.temp_min ?? 20)
+      const maxC = Number(cp.temp_max ?? 24)
       setComfortPrefs({
-        temp_min: String(cp.temp_min ?? 20),
-        temp_max: String(cp.temp_max ?? 24),
+        temp_min: String(Number(toDisplayTemp(minC, unitKey).toFixed(1))),
+        temp_max: String(Number(toDisplayTemp(maxC, unitKey).toFixed(1))),
         humidity_min: String(cp.humidity_min ?? 30),
         humidity_max: String(cp.humidity_max ?? 60),
       })
     } else {
-      setComfortPrefs({ temp_min: '20', temp_max: '24', humidity_min: '30', humidity_max: '60' })
+      setComfortPrefs({
+        temp_min: String(Number(toDisplayTemp(20, unitKey).toFixed(1))),
+        temp_max: String(Number(toDisplayTemp(24, unitKey).toFixed(1))),
+        humidity_min: '30',
+        humidity_max: '60',
+      })
     }
     setSelectedZoneId(zoneId)
     setViewMode('detail')
-  }, [zonesRaw])
+  }, [zonesRaw, unitKey])
 
   const handleEditZone = useCallback(
     (zone: Zone) => {
@@ -312,10 +324,10 @@ export const Zones = () => {
     if (!zoneHistory?.readings?.length) return []
     return zoneHistory.readings.map((r) => ({
       time: new Date(r.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      temperature: r.temperature_c,
+      temperature: r.temperature_c != null ? toDisplayTemp(r.temperature_c, unitKey) : null,
       humidity: r.humidity,
     }))
-  }, [zoneHistory])
+  }, [zoneHistory, unitKey])
 
   // ============================================================================
   // CREATE VIEW
@@ -452,7 +464,7 @@ export const Zones = () => {
               </div>
               <p className="text-2xl font-semibold">
                 {zoneHistory?.avg_temperature_c != null
-                  ? `${zoneHistory.avg_temperature_c.toFixed(1)}°C`
+                  ? formatTemperature(zoneHistory.avg_temperature_c, unitKey)
                   : '--'}
               </p>
             </CardContent>
@@ -476,7 +488,7 @@ export const Zones = () => {
               </div>
               <p className="text-2xl font-semibold">
                 {zoneHistory?.min_temperature_c != null && zoneHistory?.max_temperature_c != null
-                  ? `${zoneHistory.min_temperature_c.toFixed(0)}-${zoneHistory.max_temperature_c.toFixed(0)}°C`
+                  ? `${toDisplayTemp(zoneHistory.min_temperature_c, unitKey).toFixed(0)}-${toDisplayTemp(zoneHistory.max_temperature_c, unitKey).toFixed(0)}${tempUnitLabel(unitKey)}`
                   : '--'}
               </p>
             </CardContent>
@@ -524,7 +536,7 @@ export const Zones = () => {
                     stroke="hsl(25, 95%, 53%)"
                     strokeWidth={2}
                     dot={false}
-                    name="Temperature (°C)"
+                    name={`Temperature (${tempUnitLabel(unitKey)})`}
                   />
                   <Line
                     yAxisId="humidity"
@@ -686,7 +698,7 @@ export const Zones = () => {
           <CardContent>
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="text-sm font-medium">Min Temperature (°C)</label>
+                <label className="text-sm font-medium">Min Temperature ({tempUnitLabel(unitKey)})</label>
                 <Input
                   type="number"
                   step="0.5"
@@ -695,7 +707,7 @@ export const Zones = () => {
                 />
               </div>
               <div>
-                <label className="text-sm font-medium">Max Temperature (°C)</label>
+                <label className="text-sm font-medium">Max Temperature ({tempUnitLabel(unitKey)})</label>
                 <Input
                   type="number"
                   step="0.5"
@@ -745,7 +757,7 @@ export const Zones = () => {
               )}
             </div>
             <p className="mt-3 text-xs text-muted-foreground">
-              Comfort range: {comfortPrefs.temp_min}-{comfortPrefs.temp_max}°C,{' '}
+              Comfort range: {comfortPrefs.temp_min}-{comfortPrefs.temp_max}{tempUnitLabel(unitKey)},{' '}
               {comfortPrefs.humidity_min}-{comfortPrefs.humidity_max}% humidity
             </p>
           </CardContent>
@@ -849,7 +861,7 @@ export const Zones = () => {
                       <Thermometer className="h-4 w-4" /> Temp
                     </div>
                     <p className="text-2xl font-semibold text-foreground">
-                      {zone.temperature > 0 ? `${zone.temperature.toFixed(1)}°C` : '--'}
+                      {zone.temperature > 0 ? formatTemperature(zone.temperature, unitKey) : '--'}
                     </p>
                   </div>
                   <div className="rounded-2xl border border-border/60 p-4">

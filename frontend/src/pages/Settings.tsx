@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { api, BASE_PATH } from '@/lib/api'
 import type { SystemSettings, SystemMode, LLMProvidersResponse, WeatherEntity, HAEntity } from '@/types'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { toDisplayTemp, toStorageCelsius, tempUnitLabel } from '@/lib/utils'
 import {
   Bot,
   RefreshCw,
@@ -136,17 +137,44 @@ export const Settings = () => {
 // ============================================================================
 function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading: boolean }) {
   const queryClient = useQueryClient()
+
+  // Backend stores temps in Celsius. We keep form values in the DISPLAY unit
+  // so the user sees what they expect. Convert on init and on save.
+  const initUnit = (settings?.temperature_unit ?? 'C') as 'C' | 'F'
+  const initUnitKey: 'c' | 'f' = initUnit === 'F' ? 'f' : 'c'
+  const rawMin = settings?.default_comfort_temp_min ?? 20
+  const rawMax = settings?.default_comfort_temp_max ?? 24
+
   const [form, setForm] = useState({
     system_name: settings?.system_name ?? 'ClimateIQ',
     timezone: settings?.timezone ?? 'UTC',
-    temperature_unit: settings?.temperature_unit ?? 'C',
-    default_comfort_temp_min: String(settings?.default_comfort_temp_min ?? 20),
-    default_comfort_temp_max: String(settings?.default_comfort_temp_max ?? 24),
+    temperature_unit: initUnit,
+    default_comfort_temp_min: String(Number(toDisplayTemp(rawMin, initUnitKey).toFixed(1))),
+    default_comfort_temp_max: String(Number(toDisplayTemp(rawMax, initUnitKey).toFixed(1))),
     default_humidity_min: String(settings?.default_humidity_min ?? 30),
     default_humidity_max: String(settings?.default_humidity_max ?? 60),
     energy_cost_per_kwh: String(settings?.energy_cost_per_kwh ?? 0.12),
     currency: settings?.currency ?? 'USD',
   })
+
+  // Derived: current display unit key
+  const unitKey: 'c' | 'f' = form.temperature_unit === 'F' ? 'f' : 'c'
+
+  // When the user toggles the unit, convert the displayed temp values
+  const handleUnitChange = (newUnit: 'C' | 'F') => {
+    if (newUnit === form.temperature_unit) return
+    const oldKey: 'c' | 'f' = form.temperature_unit === 'F' ? 'f' : 'c'
+    const newKey: 'c' | 'f' = newUnit === 'F' ? 'f' : 'c'
+    // Convert current display values back to Celsius, then to the new unit
+    const minC = toStorageCelsius(Number(form.default_comfort_temp_min), oldKey)
+    const maxC = toStorageCelsius(Number(form.default_comfort_temp_max), oldKey)
+    setForm((f) => ({
+      ...f,
+      temperature_unit: newUnit,
+      default_comfort_temp_min: String(Number(toDisplayTemp(minC, newKey).toFixed(1))),
+      default_comfort_temp_max: String(Number(toDisplayTemp(maxC, newKey).toFixed(1))),
+    }))
+  }
 
   const updateSettings = useMutation({
     mutationFn: (data: Record<string, unknown>) => api.put<SystemSettings>('/settings', data),
@@ -171,12 +199,15 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
 
   const handleSave = () => {
     if (validationError) return
+    // Convert display temps back to Celsius for backend storage
+    const minC = toStorageCelsius(Number(form.default_comfort_temp_min), unitKey)
+    const maxC = toStorageCelsius(Number(form.default_comfort_temp_max), unitKey)
     updateSettings.mutate({
       system_name: form.system_name,
       timezone: form.timezone,
       temperature_unit: form.temperature_unit,
-      default_comfort_temp_min: Number(form.default_comfort_temp_min),
-      default_comfort_temp_max: Number(form.default_comfort_temp_max),
+      default_comfort_temp_min: Number(minC.toFixed(2)),
+      default_comfort_temp_max: Number(maxC.toFixed(2)),
       default_humidity_min: Number(form.default_humidity_min),
       default_humidity_max: Number(form.default_humidity_max),
       energy_cost_per_kwh: Number(form.energy_cost_per_kwh),
@@ -220,14 +251,14 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
               <Button
                 variant={form.temperature_unit === 'C' ? 'default' : 'outline'}
                 size="sm"
-                onClick={() => setForm((f) => ({ ...f, temperature_unit: 'C' }))}
+                onClick={() => handleUnitChange('C')}
               >
                 Celsius (°C)
               </Button>
               <Button
                 variant={form.temperature_unit === 'F' ? 'default' : 'outline'}
                 size="sm"
-                onClick={() => setForm((f) => ({ ...f, temperature_unit: 'F' }))}
+                onClick={() => handleUnitChange('F')}
               >
                 Fahrenheit (°F)
               </Button>
@@ -247,7 +278,7 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
         <CardContent className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="text-sm font-medium">Min Temp (°C)</label>
+              <label className="text-sm font-medium">Min Temp ({tempUnitLabel(unitKey)})</label>
               <Input
                 type="number"
                 step="0.5"
@@ -256,7 +287,7 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
               />
             </div>
             <div>
-              <label className="text-sm font-medium">Max Temp (°C)</label>
+              <label className="text-sm font-medium">Max Temp ({tempUnitLabel(unitKey)})</label>
               <Input
                 type="number"
                 step="0.5"

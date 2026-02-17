@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
+import { useSettingsStore } from '@/stores/settingsStore'
+import { formatTemperature, toDisplayTemp, tempUnitLabel } from '@/lib/utils'
 import type {
   ZoneBackend,
   HistoryResponse,
@@ -69,6 +71,8 @@ const COLORS = [
 ]
 
 export const Analytics = () => {
+  const { temperatureUnit } = useSettingsStore()
+  const unitKey: 'c' | 'f' = temperatureUnit === 'celsius' ? 'c' : 'f'
   const [activeTab, setActiveTab] = useState<AnalyticsTab>('temperature')
   const [hours, setHours] = useState(24)
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null)
@@ -144,13 +148,13 @@ export const Analytics = () => {
 
       {/* Tab Content */}
       {activeTab === 'temperature' && (
-        <TemperatureTab zoneId={effectiveZoneId} hours={hours} zones={zones} />
+        <TemperatureTab zoneId={effectiveZoneId} hours={hours} zones={zones} unitKey={unitKey} />
       )}
       {activeTab === 'occupancy' && (
         <OccupancyTab zoneId={effectiveZoneId} hours={hours} />
       )}
       {activeTab === 'energy' && <EnergyTab hours={hours} />}
-      {activeTab === 'comfort' && <ComfortTab hours={hours} />}
+      {activeTab === 'comfort' && <ComfortTab hours={hours} unitKey={unitKey} />}
       {activeTab === 'decisions' && <DecisionsTab hours={hours} />}
     </div>
   )
@@ -163,10 +167,12 @@ function TemperatureTab({
   zoneId,
   hours,
   zones,
+  unitKey,
 }: {
   zoneId: string | null
   hours: number
   zones?: ZoneBackend[]
+  unitKey: 'c' | 'f'
 }) {
   const { data: history, isLoading } = useQuery<HistoryResponse>({
     queryKey: ['zone-history', zoneId, hours],
@@ -186,10 +192,10 @@ function TemperatureTab({
         minute: '2-digit',
         ...(hours > 24 ? { month: 'short', day: 'numeric' } : {}),
       }),
-      temperature: r.temperature_c,
+      temperature: r.temperature_c != null ? toDisplayTemp(r.temperature_c, unitKey) : null,
       humidity: r.humidity,
     }))
-  }, [history, hours])
+  }, [history, hours, unitKey])
 
   const zoneName = zones?.find((z) => z.id === zoneId)?.name ?? 'Zone'
 
@@ -203,7 +209,7 @@ function TemperatureTab({
               <p className="text-xs text-muted-foreground">Avg Temperature</p>
               <p className="text-2xl font-semibold">
                 {history.avg_temperature_c != null
-                  ? `${history.avg_temperature_c.toFixed(1)}°C`
+                  ? formatTemperature(history.avg_temperature_c, unitKey)
                   : '--'}
               </p>
             </CardContent>
@@ -213,7 +219,7 @@ function TemperatureTab({
               <p className="text-xs text-muted-foreground">Min / Max</p>
               <p className="text-2xl font-semibold">
                 {history.min_temperature_c != null && history.max_temperature_c != null
-                  ? `${history.min_temperature_c.toFixed(1)} / ${history.max_temperature_c.toFixed(1)}°C`
+                  ? `${toDisplayTemp(history.min_temperature_c, unitKey).toFixed(1)} / ${toDisplayTemp(history.max_temperature_c, unitKey).toFixed(1)}${tempUnitLabel(unitKey)}`
                   : '--'}
               </p>
             </CardContent>
@@ -241,6 +247,7 @@ function TemperatureTab({
           <CardTitle>
             {zoneName} - Temperature & Humidity ({hours}h)
           </CardTitle>
+          <CardDescription>Temperature shown in {tempUnitLabel(unitKey)}</CardDescription>
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -269,7 +276,7 @@ function TemperatureTab({
                   stroke={COLORS[0]}
                   strokeWidth={2}
                   dot={false}
-                  name="Temperature (°C)"
+                  name={`Temperature (${tempUnitLabel(unitKey)})`}
                 />
                 <Line
                   yAxisId="humidity"
@@ -597,7 +604,7 @@ function EnergyTab({ hours }: { hours: number }) {
 // ============================================================================
 // Comfort Score Tab
 // ============================================================================
-function ComfortTab({ hours }: { hours: number }) {
+function ComfortTab({ hours, unitKey }: { hours: number; unitKey: 'c' | 'f' }) {
   const { data: comfort, isLoading } = useQuery<ComfortResponse>({
     queryKey: ['comfort', hours],
     queryFn: () => api.get<ComfortResponse>('/analytics/comfort', { hours }),
@@ -704,7 +711,7 @@ function ComfortTab({ hours }: { hours: number }) {
                   </div>
                   <div className="flex justify-between text-xs text-muted-foreground">
                     <span>
-                      Avg: {zone.avg_temperature_c?.toFixed(1) ?? '--'}°C /{' '}
+                      Avg: {zone.avg_temperature_c != null ? formatTemperature(zone.avg_temperature_c, unitKey) : '--'} /{' '}
                       {zone.avg_humidity?.toFixed(0) ?? '--'}%
                     </span>
                     <span>{zone.reading_count} readings</span>

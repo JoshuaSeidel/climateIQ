@@ -7,6 +7,7 @@ import { ZoneCard } from '@/components/zones/ZoneCard'
 import { api, BASE_PATH } from '@/lib/api'
 import { ReconnectingWebSocket } from '@/lib/websocket'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { formatTemperature } from '@/lib/utils'
 import type { Zone, ZonesResponse, SystemSettings, UpcomingSchedule } from '@/types'
 import {
   Activity,
@@ -267,6 +268,8 @@ export const Dashboard = () => {
   const weather = weatherEnvelope?.data ?? null
   const WeatherIcon = weather ? getWeatherIcon(weather.state) : Sun
   const currentMode = settings?.current_mode ?? 'learn'
+  const { temperatureUnit } = useSettingsStore()
+  const unitKey: 'c' | 'f' = temperatureUnit === 'celsius' ? 'c' : 'f'
 
   return (
     <div className="space-y-6">
@@ -299,7 +302,7 @@ export const Dashboard = () => {
             <div>
               <p className="text-xs uppercase tracking-widest text-muted-foreground">Avg Temp</p>
               <p className="text-2xl font-semibold text-foreground">
-                {stats.avgTemp > 0 ? `${stats.avgTemp.toFixed(1)}°C` : '--'}
+                {stats.avgTemp > 0 ? formatTemperature(stats.avgTemp, unitKey) : '--'}
               </p>
             </div>
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-orange-500/10">
@@ -597,7 +600,7 @@ export const Dashboard = () => {
                         </p>
                       </div>
                       <div className="text-right">
-                        <p className="text-sm font-medium">{schedule.target_temp_c}°C</p>
+                        <p className="text-sm font-medium">{formatTemperature(schedule.target_temp_c, unitKey)}</p>
                         <p className="flex items-center gap-1 text-xs text-muted-foreground">
                           <Clock className="h-3 w-3" />
                           {new Date(schedule.start_time).toLocaleTimeString([], {

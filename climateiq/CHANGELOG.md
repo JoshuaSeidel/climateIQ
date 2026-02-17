@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.4
+
+### Fixed
+
+- **Temperature unit respect throughout UI** — all temperature displays
+  now honor the user's chosen unit (°C or °F) from Settings. Previously
+  every page hardcoded °C. Affected locations:
+  - **Settings** — comfort temp min/max labels, input values, and
+    live-converting when toggling the unit selector. Values convert back
+    to Celsius before saving to the backend.
+  - **Dashboard** — average temperature stat card, upcoming schedule
+    target temps.
+  - **Zones** — list view temperature stat, detail view avg/range stats,
+    24-hour history chart data + legend, comfort preference labels/values
+    and save-back conversion.
+  - **Analytics** — temperature history chart data + legend, avg/min/max
+    stat cards, comfort zone averages.
+- Added `toDisplayTemp`, `toStorageCelsius`, and `tempUnitLabel` utility
+  helpers in `lib/utils.ts`.
+
 ## 0.4.3
 
 ### Fixed
