@@ -18,7 +18,7 @@ RUN npm run build
 
 
 # Stage 2: Python backend
-FROM python:3.13-slim AS backend
+FROM python:3.14-slim AS backend
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
