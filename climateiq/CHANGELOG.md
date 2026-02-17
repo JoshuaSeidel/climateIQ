@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.3
+
+### Fixed
+
+- **Sidebar fully opaque on mobile** — the sidebar used `bg-card/70`
+  (70% opacity) with `backdrop-blur`, making text blurry and hard to read
+  on phones where the main content bled through. Now uses solid `bg-card`
+  on mobile and only applies the translucent glass effect on desktop
+  (`lg:bg-card/70 lg:backdrop-blur`) where the sidebar is static.
+
 ## 0.4.2
 
 ### Fixed

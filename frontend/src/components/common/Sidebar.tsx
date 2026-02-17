@@ -39,7 +39,7 @@ export const Sidebar = () => {
   return (
     <aside
       className={cn(
-        'fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-border/60 bg-card/70 backdrop-blur transition-transform lg:static',
+        'fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-border/60 bg-card transition-transform lg:static lg:bg-card/70 lg:backdrop-blur',
         sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
       )}
     >
