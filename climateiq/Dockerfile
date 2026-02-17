@@ -23,8 +23,8 @@ FROM ${BUILD_FROM}
 # Install system dependencies
 RUN apk add --no-cache \
     nginx \
-    postgresql16 \
-    postgresql16-contrib \
+    postgresql15 \
+    postgresql15-contrib \
     redis \
     build-base \
     libpq-dev \
