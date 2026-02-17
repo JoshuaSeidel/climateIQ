@@ -5,6 +5,7 @@ import { Settings } from '@/pages/Settings'
 import { Chat } from '@/pages/Chat'
 import { Analytics } from '@/pages/Analytics'
 import { Layout } from '@/components/layout/Layout'
+import { BASE_PATH } from '@/lib/api'
 
 const rootRoute = new RootRoute({
   component: Layout,
@@ -18,7 +19,7 @@ const analyticsRoute = new Route({ getParentRoute: () => rootRoute, path: '/anal
 
 const routeTree = rootRoute.addChildren([dashboardRoute, zonesRoute, settingsRoute, chatRoute, analyticsRoute])
 
-const router = createRouter({ routeTree })
+const router = createRouter({ routeTree, basepath: BASE_PATH || '/' })
 
 declare module '@tanstack/react-router' {
   interface Register {
