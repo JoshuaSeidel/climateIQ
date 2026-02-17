@@ -477,8 +477,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if settings_instance.db_password:
             masked = db_url.replace(settings_instance.db_password, "***")
         logger.info("Connecting to database: %s", masked)
-        from backend.models.database import _patch_loop_getaddrinfo
-        _patch_loop_getaddrinfo()
         await init_db()
 
         # Initialize Redis and share with dependencies

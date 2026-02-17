@@ -1,12 +1,14 @@
 # Changelog
 
-## 0.2.8
+## 0.2.9
 
-### Fixed
+### Changed
 
-- Patch the asyncio event loop's `getaddrinfo` to resolve IP-address literals
-  synchronously (no thread-pool) so Alpine musl's broken threaded resolver
-  never fires. Called once during app startup before `init_db()`.
+- Replace `asyncpg` with `psycopg` (psycopg3) as the async PostgreSQL driver.
+  `asyncpg` routes all connections through `asyncio.loop.create_connection()`
+  which calls `getaddrinfo` in a thread-pool — broken on Alpine/musl.
+  `psycopg` connects directly without this indirection.
+- Remove all DNS resolver patches and workarounds from previous versions.
 
 ## 0.2.7
 

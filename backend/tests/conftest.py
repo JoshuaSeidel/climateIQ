@@ -35,7 +35,7 @@ async def setup_db() -> AsyncGenerator[None]:
     try:
         await init_db()
         _db_available = True
-    except OSError:
+    except Exception:
         # No PostgreSQL reachable — allow pure unit tests to continue.
         _db_available = False
     yield

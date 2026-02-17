@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import socket
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -367,52 +365,6 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 _db_logger = logging.getLogger(__name__)
 
 
-def _patch_loop_getaddrinfo() -> None:
-    """Patch the running event loop so ``getaddrinfo`` for IP-address
-    literals returns instantly instead of going through ``run_in_executor``.
-
-    On Alpine/musl, the C-level ``getaddrinfo`` is not safe to call from
-    secondary threads.  asyncio's ``create_connection`` always calls
-    ``loop.getaddrinfo`` which dispatches to a thread-pool — and that
-    fails with ``[Errno -2] Name does not resolve`` even for bare IPs.
-
-    This patch intercepts those calls: if the host is already an IP
-    address it resolves synchronously in the current (main) thread and
-    wraps the result in a future, completely bypassing the thread-pool.
-    """
-    loop = asyncio.get_event_loop()
-    if getattr(loop, "_climateiq_patched", False):
-        return  # already patched
-
-    _original = loop.getaddrinfo
-
-    async def _fast_getaddrinfo(
-        host: str | None,
-        port: int | str | None,
-        *,
-        family: int = 0,
-        type: int = 0,
-        proto: int = 0,
-        flags: int = 0,
-    ) -> list[Any]:
-        # If the host looks like an IP address, resolve it synchronously
-        # in the current coroutine (no thread-pool).
-        if host is not None:
-            try:
-                socket.inet_aton(host)  # IPv4 literal check
-                return socket.getaddrinfo(host, port, family=family, type=type,
-                                          proto=proto, flags=flags)
-            except OSError:
-                pass
-        # Fall back to the original (threaded) implementation.
-        return await _original(host, port, family=family, type=type,
-                               proto=proto, flags=flags)
-
-    loop.getaddrinfo = _fast_getaddrinfo  # type: ignore[assignment]
-    loop._climateiq_patched = True  # type: ignore[attr-defined]
-    _db_logger.info("Patched event loop getaddrinfo — IP literals resolve synchronously")
-
-
 def get_engine() -> AsyncEngine:
     """Get the global async engine."""
     global _engine
@@ -420,10 +372,6 @@ def get_engine() -> AsyncEngine:
         from backend.config import get_settings
 
         settings = get_settings()
-
-        connect_args: dict[str, object] = {}
-        if not settings.db_ssl:
-            connect_args["ssl"] = False
 
         _db_logger.info(
             "Creating engine -> %s:%s/%s",
@@ -438,7 +386,6 @@ def get_engine() -> AsyncEngine:
             future=True,
             pool_size=5,
             max_overflow=10,
-            connect_args=connect_args,
         )
     return _engine
 

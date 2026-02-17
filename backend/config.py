@@ -93,7 +93,7 @@ class Settings(BaseSettings):
         if self.db_url:
             return str(self.db_url)
         return (
-            f"postgresql+asyncpg://{self.db_user}:{self.db_password}@"
+            f"postgresql+psycopg://{self.db_user}:{self.db_password}@"
             f"{self.db_host}:{self.db_port}/{self.db_name}"
         )
 
