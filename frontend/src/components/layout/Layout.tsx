@@ -8,10 +8,7 @@ export const Layout = () => {
 
   return (
     <div className="flex h-screen bg-background">
-      {/* Spacer to reserve width for the fixed sidebar on desktop */}
-      <div className="hidden lg:block lg:w-72 lg:flex-shrink-0" />
-
-      {/* Single Sidebar instance — handles its own fixed positioning and mobile toggle */}
+      {/* Sidebar is position:fixed on mobile, lg:static on desktop (takes its own space) */}
       <Sidebar />
 
       {/* Mobile overlay */}

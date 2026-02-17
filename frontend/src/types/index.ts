@@ -256,6 +256,13 @@ export type WeatherEntity = {
   state: string
 }
 
+export type HAEntity = {
+  entity_id: string
+  name: string
+  state: string
+  domain: string
+}
+
 export type SystemSettings = {
   system_name: string
   current_mode: SystemMode
@@ -268,6 +275,8 @@ export type SystemSettings = {
   energy_cost_per_kwh: number
   currency: string
   weather_entity: string
+  climate_entities: string
+  sensor_entities: string
 
   home_assistant_url: string
   home_assistant_token: string

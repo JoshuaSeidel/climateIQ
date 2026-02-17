@@ -11,13 +11,15 @@ import logging
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.dependencies import get_db
+from backend.api.dependencies import get_db, get_ha_client
 from backend.config import get_settings as get_app_settings
+from backend.integrations import HAClient
+from backend.integrations.ha_client import HAClientError
 from backend.models.database import SystemConfig, SystemSetting
 from backend.models.enums import SystemMode
 
@@ -45,6 +47,8 @@ class SystemSettingsResponse(BaseModel):
     weather_entity: str = ""
     home_assistant_url: str = ""
     home_assistant_token: str = ""
+    climate_entities: str = ""
+    sensor_entities: str = ""
     llm_settings: dict[str, Any] = Field(default_factory=dict)
     default_schedule: dict[str, Any] | None = None
     last_synced_at: datetime | None = None
@@ -69,6 +73,8 @@ class SystemSettingsUpdate(BaseModel):
     weather_entity: str | None = None
     home_assistant_url: str | None = None
     home_assistant_token: str | None = None
+    climate_entities: str | None = None
+    sensor_entities: str | None = None
     default_schedule: dict[str, Any] | None = None
     llm_settings: dict[str, Any] | None = Field(default=None, exclude=True)
 
@@ -103,6 +109,15 @@ class LLMRefreshResponse(BaseModel):
     models: list[LLMModelInfo] = Field(default_factory=list)
 
 
+class HAEntityInfo(BaseModel):
+    """A Home Assistant entity discovered via the HA API."""
+
+    entity_id: str
+    name: str
+    state: str
+    domain: str
+
+
 # ---------------------------------------------------------------------------
 # Keys stored in the SystemSetting key-value table
 # ---------------------------------------------------------------------------
@@ -119,6 +134,8 @@ _SETTINGS_KEYS: dict[str, Any] = {
     "weather_entity": "",
     "home_assistant_url": "",
     "home_assistant_token": "",
+    "climate_entities": "",
+    "sensor_entities": "",
 }
 
 
@@ -178,6 +195,8 @@ async def get_settings(
         weather_entity=kv["weather_entity"],
         home_assistant_url=str(kv["home_assistant_url"]),
         home_assistant_token=kv["home_assistant_token"],
+        climate_entities=kv["climate_entities"],
+        sensor_entities=kv["sensor_entities"],
         llm_settings=config.llm_settings or {},
         default_schedule=config.default_schedule,
         last_synced_at=config.last_synced_at,
@@ -218,6 +237,57 @@ async def update_settings(
     await db.refresh(config)
 
     return await get_settings(db)
+
+
+# ---------------------------------------------------------------------------
+# GET /settings/ha/entities — discover Home Assistant entities
+# ---------------------------------------------------------------------------
+_DEFAULT_ENTITY_DOMAINS = [
+    "sensor",
+    "binary_sensor",
+    "climate",
+    "fan",
+    "cover",
+    "switch",
+    "weather",
+]
+
+
+@router.get("/ha/entities", response_model=list[HAEntityInfo])
+async def list_ha_entities(
+    ha_client: Annotated[HAClient, Depends(get_ha_client)],
+    domain: Annotated[str | None, Query(description="Filter by entity domain")] = None,
+) -> list[HAEntityInfo]:
+    """Return Home Assistant entities, optionally filtered by domain.
+
+    If no *domain* is specified the default set of HVAC-relevant domains is
+    returned (sensor, binary_sensor, climate, fan, cover, switch, weather).
+    """
+    try:
+        states = await ha_client.get_states()
+    except HAClientError as exc:
+        logger.error("Failed to fetch HA states: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to reach Home Assistant",
+        ) from exc
+
+    domains = [domain] if domain else _DEFAULT_ENTITY_DOMAINS
+
+    entities: list[HAEntityInfo] = []
+    for entity in states:
+        for d in domains:
+            if entity.entity_id.startswith(f"{d}."):
+                entities.append(
+                    HAEntityInfo(
+                        entity_id=entity.entity_id,
+                        name=entity.attributes.get("friendly_name", entity.entity_id),
+                        state=entity.state,
+                        domain=d,
+                    )
+                )
+                break
+    return entities
 
 
 # ---------------------------------------------------------------------------

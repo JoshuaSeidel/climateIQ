@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.1
+
+### Added
+
+- **Entity discovery UI** — Settings > Home Assistant tab now shows
+  interactive multi-select lists for climate and sensor entities, populated
+  live from Home Assistant. Users can search, select, and save entity
+  filters directly from the web UI instead of editing add-on YAML.
+- `GET /api/v1/settings/ha/entities` endpoint with optional `domain`
+  query parameter for discovering available HA entities.
+- `climate_entities` and `sensor_entities` are now persisted in the
+  database settings table so they survive add-on restarts when set via UI.
+
+### Fixed
+
+- **Layout gap in HA ingress** — removed a redundant spacer `div` in the
+  Layout component that doubled the sidebar width, causing ~2 inches of
+  blank space to the right of the navigation column.
+
 ## 0.3.0
 
 ### Added

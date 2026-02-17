@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { api, BASE_PATH } from '@/lib/api'
-import type { SystemSettings, SystemMode, LLMProvidersResponse, WeatherEntity } from '@/types'
+import type { SystemSettings, SystemMode, LLMProvidersResponse, WeatherEntity, HAEntity } from '@/types'
 import { useSettingsStore } from '@/stores/settingsStore'
 import {
   Bot,
@@ -25,6 +25,8 @@ import {
   Brain,
   Eye,
   EyeOff,
+  Filter,
+  Search,
 } from 'lucide-react'
 
 type SettingsTab = 'general' | 'homeassistant' | 'llm' | 'modes' | 'backup' | 'about'
@@ -337,6 +339,67 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
   const [showToken, setShowToken] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
 
+  // Entity filter state
+  const [selectedClimate, setSelectedClimate] = useState<Set<string>>(() => {
+    const raw = settings?.climate_entities ?? ''
+    return new Set(raw.split(',').map(s => s.trim()).filter(Boolean))
+  })
+  const [selectedSensors, setSelectedSensors] = useState<Set<string>>(() => {
+    const raw = settings?.sensor_entities ?? ''
+    return new Set(raw.split(',').map(s => s.trim()).filter(Boolean))
+  })
+  const [entitySearch, setEntitySearch] = useState('')
+
+  // Fetch climate entities from HA
+  const { data: climateEntities, isLoading: climateLoading, refetch: refetchClimate } = useQuery<HAEntity[]>({
+    queryKey: ['ha-entities', 'climate'],
+    queryFn: () => api.get<HAEntity[]>('/settings/ha/entities', { domain: 'climate' }),
+  })
+
+  // Fetch sensor entities (sensor + binary_sensor) from HA
+  const { data: sensorEntities, isLoading: sensorLoading, refetch: refetchSensors } = useQuery<HAEntity[]>({
+    queryKey: ['ha-entities', 'sensor'],
+    queryFn: async () => {
+      const [sensors, binarySensors] = await Promise.all([
+        api.get<HAEntity[]>('/settings/ha/entities', { domain: 'sensor' }),
+        api.get<HAEntity[]>('/settings/ha/entities', { domain: 'binary_sensor' }),
+      ])
+      return [...sensors, ...binarySensors]
+    },
+  })
+
+  // Save entity filters
+  const saveEntityFilters = useMutation({
+    mutationFn: () => api.put('/settings', {
+      climate_entities: Array.from(selectedClimate).join(','),
+      sensor_entities: Array.from(selectedSensors).join(','),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+
+  // Toggle an entity in a set
+  const toggleEntity = (set: Set<string>, setFn: React.Dispatch<React.SetStateAction<Set<string>>>, entityId: string) => {
+    setFn(prev => {
+      const next = new Set(prev)
+      if (next.has(entityId)) {
+        next.delete(entityId)
+      } else {
+        next.add(entityId)
+      }
+      return next
+    })
+  }
+
+  // Filter entities by search query
+  const filterEntities = (entities: HAEntity[] | undefined) => {
+    if (!entities) return []
+    if (!entitySearch) return entities
+    const q = entitySearch.toLowerCase()
+    return entities.filter(e => e.entity_id.toLowerCase().includes(q) || e.name.toLowerCase().includes(q))
+  }
+
   const saveHaConfig = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       api.put('/settings', {
@@ -454,6 +517,150 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
               Failed to update: {updateWeatherEntity.error?.message}
             </p>
           )}
+        </div>
+
+        {/* Entity Filters Section */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Filter className="h-4 w-4 text-muted-foreground" />
+              <h4 className="text-sm font-medium">Entity Filters</h4>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={entitySearch}
+                  onChange={(e) => setEntitySearch(e.target.value)}
+                  placeholder="Search entities..."
+                  className="h-8 w-48 pl-8 text-xs"
+                />
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { refetchClimate(); refetchSensors() }}
+                disabled={climateLoading || sensorLoading}
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${climateLoading || sensorLoading ? 'animate-spin' : ''}`} />
+              </Button>
+            </div>
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            Select specific entities to monitor. When no entities are selected, all entities in each domain are tracked.
+          </p>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* Climate Entities */}
+            <div className="rounded-lg border border-border/60 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <h5 className="text-sm font-medium">Climate</h5>
+                {selectedClimate.size > 0 && (
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                    {selectedClimate.size} selected
+                  </span>
+                )}
+              </div>
+              <div className="max-h-48 space-y-0.5 overflow-y-auto">
+                {climateLoading ? (
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  </div>
+                ) : filterEntities(climateEntities)?.length ? (
+                  filterEntities(climateEntities).map((entity) => (
+                    <label
+                      key={entity.entity_id}
+                      className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 transition-colors hover:bg-muted/50 ${
+                        selectedClimate.has(entity.entity_id) ? 'bg-primary/5' : ''
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedClimate.has(entity.entity_id)}
+                        onChange={() => toggleEntity(selectedClimate, setSelectedClimate, entity.entity_id)}
+                        className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm">{entity.name}</span>
+                        <span className="ml-1.5 text-xs text-muted-foreground">{entity.entity_id}</span>
+                      </div>
+                      <span className="shrink-0 text-xs text-muted-foreground">{entity.state}</span>
+                    </label>
+                  ))
+                ) : (
+                  <p className="py-2 text-center text-xs text-muted-foreground">
+                    {climateEntities?.length === 0 ? 'No climate entities found in HA' : 'No matching entities'}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Sensor Entities */}
+            <div className="rounded-lg border border-border/60 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <h5 className="text-sm font-medium">Sensors</h5>
+                {selectedSensors.size > 0 && (
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                    {selectedSensors.size} selected
+                  </span>
+                )}
+              </div>
+              <div className="max-h-48 space-y-0.5 overflow-y-auto">
+                {sensorLoading ? (
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  </div>
+                ) : filterEntities(sensorEntities)?.length ? (
+                  filterEntities(sensorEntities).map((entity) => (
+                    <label
+                      key={entity.entity_id}
+                      className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 transition-colors hover:bg-muted/50 ${
+                        selectedSensors.has(entity.entity_id) ? 'bg-primary/5' : ''
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedSensors.has(entity.entity_id)}
+                        onChange={() => toggleEntity(selectedSensors, setSelectedSensors, entity.entity_id)}
+                        className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm">{entity.name}</span>
+                        <span className="ml-1.5 text-xs text-muted-foreground">{entity.entity_id}</span>
+                      </div>
+                      <span className="shrink-0 text-xs text-muted-foreground">{entity.state}</span>
+                    </label>
+                  ))
+                ) : (
+                  <p className="py-2 text-center text-xs text-muted-foreground">
+                    {sensorEntities?.length === 0 ? 'No sensor entities found in HA' : 'No matching entities'}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              onClick={() => saveEntityFilters.mutate()}
+              disabled={saveEntityFilters.isPending}
+            >
+              {saveEntityFilters.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Check className="mr-2 h-4 w-4" />
+              )}
+              Save Entity Filters
+            </Button>
+            {saveEntityFilters.isSuccess && (
+              <span className="text-xs text-green-600">Entity filters saved</span>
+            )}
+            {saveEntityFilters.isError && (
+              <span className="text-xs text-red-500">Failed: {saveEntityFilters.error?.message}</span>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
