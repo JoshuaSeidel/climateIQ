@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     db_user: str = Field(default="climateiq")
     db_password: str = Field(default="climateiq")
     db_url: AnyUrl | str | None = Field(default=None)
+    db_ssl: bool = Field(default=False)
 
     # Redis
     redis_host: str = Field(default="localhost")
@@ -91,10 +92,13 @@ class Settings(BaseSettings):
 
         if self.db_url:
             return str(self.db_url)
-        return (
+        base = (
             f"postgresql+asyncpg://{self.db_user}:{self.db_password}@"
             f"{self.db_host}:{self.db_port}/{self.db_name}"
         )
+        if not self.db_ssl:
+            base += "?ssl=disable"
+        return base
 
     @computed_field  # type: ignore[prop-decorator]
     @property

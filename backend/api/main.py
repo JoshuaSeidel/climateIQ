@@ -471,7 +471,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     try:
         # Initialize database
-        logger.info("Initializing database connection...")
+        db_url = settings_instance.database_url
+        # Mask password in log output
+        masked = db_url
+        if settings_instance.db_password:
+            masked = db_url.replace(settings_instance.db_password, "***")
+        logger.info("Connecting to database: %s", masked)
         await init_db()
 
         # Initialize Redis and share with dependencies
