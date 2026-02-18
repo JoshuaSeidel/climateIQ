@@ -393,6 +393,131 @@ async def execute_quick_action(
         ) from exc
 
 
+@router.get("/logic-reference")
+async def get_logic_reference() -> dict:
+    """Return the ClimateIQ logic reference for UI display and LLM context."""
+    return {
+        "sections": [
+            {
+                "id": "architecture",
+                "title": "System Architecture",
+                "description": "ClimateIQ is a Home Assistant add-on that provides intelligent HVAC management through a React frontend, FastAPI backend, TimescaleDB for time-series data, and Redis for caching/pub-sub.",
+                "details": [
+                    "All sensor data flows from Home Assistant via WebSocket API — no MQTT.",
+                    "One global thermostat (e.g., Ecobee) controls the whole house. Per-zone Zigbee sensors provide room-level temperature, humidity, and occupancy.",
+                    "Backend stores all temperatures in Celsius internally. Frontend converts to the user's preferred display unit (°C or °F).",
+                    "Home Assistant's unit system is auto-detected via GET /api/config. If HA is in Imperial (°F), raw values are converted to Celsius before storage.",
+                    "The system_settings table (key-value store) persists all user preferences across restarts.",
+                ]
+            },
+            {
+                "id": "modes",
+                "title": "Operating Modes",
+                "description": "ClimateIQ has four operating modes that determine how the system interacts with your HVAC.",
+                "details": [
+                    "Learn Mode: Passive observation only. The system monitors sensor data, occupancy patterns, and temperature preferences without making any HVAC changes. Use this when first setting up to let the system build a baseline.",
+                    "Scheduled Mode: The system follows user-created schedules. Each schedule specifies days, times, target temperature, and HVAC mode. The schedule executor checks every 60 seconds and fires matching schedules within a 2-minute window. Schedules can target specific zones or all zones.",
+                    "Follow-Me Mode: Occupancy-driven automation. Every 90 seconds, the system checks which zones have detected occupancy (from Zigbee motion/presence sensors). If one zone is occupied, the thermostat targets that zone's comfort preference. If multiple zones are occupied, their preferences are averaged. If no zones are occupied, falls back to eco temperature (18°C / 64°F). Only adjusts if the change exceeds 0.5°C to prevent thermostat chatter.",
+                    "Active/AI Mode: Full LLM-driven control. Every 5 minutes, the system gathers all zone data (temps, humidity, occupancy), current weather, thermostat state, today's schedules, and comfort preferences. It sends this context to the configured LLM (Anthropic/OpenAI/etc.) and asks for an optimal temperature recommendation with reasoning. Safety clamps prevent extreme values. The LLM's reasoning is logged for transparency.",
+                ]
+            },
+            {
+                "id": "schedules",
+                "title": "Schedule System",
+                "description": "Schedules let you program temperature changes at specific times and days.",
+                "details": [
+                    "Each schedule has: name, target zone (or all zones), days of week, start time, optional end time, target temperature, HVAC mode (auto/heat/cool/off), and priority (1-10).",
+                    "The executor runs every 60 seconds. It matches the current day and time against enabled schedules using a 2-minute window.",
+                    "A dedup mechanism prevents the same schedule from firing twice in the same occurrence — uses a key of schedule_id + start_time + date.",
+                    "Higher priority schedules take precedence when conflicts exist. The conflicts endpoint detects overlapping schedules.",
+                    "Schedules can also be created through the AI chat using natural language (e.g., 'Set up a weekday morning schedule for 72°F at 7am').",
+                ]
+            },
+            {
+                "id": "zones",
+                "title": "Zones & Sensors",
+                "description": "Zones represent rooms or areas in your home. Each zone can have sensors and devices assigned to it.",
+                "details": [
+                    "Zones track: current temperature, humidity, occupancy, and comfort preferences (target temp, acceptable ranges).",
+                    "Current temperature and humidity come from per-zone Zigbee sensors ONLY — the global thermostat's reading is NOT used for individual zones since it only measures the hallway/unit location.",
+                    "The target/setpoint temperature is shared across all zones from the global thermostat (e.g., Ecobee). Since there's one thermostat for the whole house, all zones show the same target.",
+                    "When no sensor data exists for a zone, the UI shows '--' instead of fake defaults.",
+                    "Comfort preferences per zone (target temp, min/max ranges) are used by Follow-Me mode to determine what temperature to set when that zone is occupied.",
+                    "Zone data refreshes every 30 seconds via the polling background task and is broadcast to connected frontends via WebSocket.",
+                ]
+            },
+            {
+                "id": "thermostat",
+                "title": "Thermostat Integration",
+                "description": "ClimateIQ integrates with your thermostat through Home Assistant's climate entity.",
+                "details": [
+                    "The global thermostat entity is configured via the climate_entities setting (e.g., 'climate.ecobee').",
+                    "Ecobee thermostats use target_temp_low in heat mode, target_temp_high in cool mode, and both in auto/heat_cool mode. The system detects the HVAC mode and reads the correct attribute.",
+                    "Quick actions (Eco, Away, Boost Heat, Boost Cool) call HA climate services directly — set_preset_mode for Eco/Away, set_temperature for Boost.",
+                    "Temperature commands are converted between Celsius and the HA unit system automatically. Backend stores Celsius; if HA is in Fahrenheit, values are converted before sending commands.",
+                    "The thermostat state is cached for 15 seconds to avoid excessive API calls when enriching multiple zones.",
+                ]
+            },
+            {
+                "id": "notifications",
+                "title": "Notifications",
+                "description": "ClimateIQ sends push notifications through Home Assistant's mobile app integration.",
+                "details": [
+                    "Configure your notification target in Settings (e.g., 'mobile_app_joshua_s_iphone'). This maps to HA's notify.mobile_app_* service.",
+                    "Notifications are sent for: schedule activations, sensor offline alerts (30+ minutes without data), Follow-Me mode adjustments, and AI mode decisions.",
+                    "If no notification target is configured, notifications go to the default HA notify.notify service (persistent notifications in the HA UI).",
+                    "Notification history is kept in memory (last 100) for debugging via the NotificationService.",
+                ]
+            },
+            {
+                "id": "energy",
+                "title": "Energy Monitoring",
+                "description": "Energy data is only shown when a real HA energy entity is configured — no fabricated estimates.",
+                "details": [
+                    "Configure an energy_entity in Settings (e.g., a utility meter sensor from HA).",
+                    "The analytics energy endpoint reads live data from the configured HA entity.",
+                    "If no energy entity is configured, the energy section on the Dashboard and Analytics is hidden or shows 'Not configured'.",
+                    "Energy cost calculations use the energy_cost_per_kwh and currency settings.",
+                ]
+            },
+            {
+                "id": "weather",
+                "title": "Weather Integration",
+                "description": "Weather data is fetched from a Home Assistant weather entity and cached in Redis.",
+                "details": [
+                    "Configure a weather_entity in Settings (e.g., 'weather.home').",
+                    "Weather is polled every 15 minutes and cached in Redis. The Dashboard shows current conditions.",
+                    "Weather context is included in the AI chat system prompt and Active mode decisions so the LLM can factor in outdoor conditions.",
+                    "Forecast data (12-hour) is available through the weather API and used by the AI mode for proactive adjustments.",
+                ]
+            },
+            {
+                "id": "chat",
+                "title": "AI Chat Assistant",
+                "description": "The chat interface lets you control your HVAC system and ask questions using natural language.",
+                "details": [
+                    "Supports multiple LLM providers: Anthropic (Claude), OpenAI (GPT), Gemini, Grok, Ollama, and LlamaCPP.",
+                    "The LLM has access to tools: set_zone_temperature, get_zone_status, get_weather, create_schedule, set_device_state.",
+                    "Quick commands (like 'Set living room to 72') are first parsed by regex for speed, with LLM fallback for complex requests.",
+                    "Conversation history is persisted in the database, organized by session. Sessions can be loaded and continued.",
+                    "The system prompt includes current zone data, sensor conditions, and this logic reference for full context.",
+                ]
+            },
+            {
+                "id": "data",
+                "title": "Data & Storage",
+                "description": "All data is stored in TimescaleDB (time-series optimized PostgreSQL) with Redis for caching.",
+                "details": [
+                    "Sensor readings are stored in the sensor_readings table with timestamps. Raw readings older than 90 days are automatically cleaned up (daily at 3am UTC).",
+                    "System settings use a key-value table (system_settings) with JSONB values for flexibility.",
+                    "Backups can be created and restored through the Settings > Backup tab. Exports include all zones, sensors, devices, schedules, and settings.",
+                    "Redis caches: weather data, WebSocket pub/sub for real-time updates, and the global thermostat state (15s TTL).",
+                ]
+            },
+        ]
+    }
+
+
 async def _get_or_create_system_config(session: AsyncSession) -> SystemConfig:
     result = await session.execute(select(SystemConfig).limit(1))
     config = result.scalar_one_or_none()

@@ -28,9 +28,10 @@ import {
   EyeOff,
   Filter,
   Search,
+  BookOpen,
 } from 'lucide-react'
 
-type SettingsTab = 'general' | 'homeassistant' | 'llm' | 'modes' | 'backup' | 'about'
+type SettingsTab = 'general' | 'homeassistant' | 'llm' | 'modes' | 'logic' | 'backup' | 'about'
 
 const TABS: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'general', label: 'General', icon: Settings2 },
@@ -38,6 +39,7 @@ const TABS: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'homeassistant', label: 'Home Assistant', icon: Home },
   { id: 'llm', label: 'LLM Providers', icon: Bot },
   { id: 'modes', label: 'Modes', icon: Zap },
+  { id: 'logic', label: 'Logic', icon: BookOpen },
   { id: 'backup', label: 'Backup', icon: Database },
   { id: 'about', label: 'About', icon: Info },
 ]
@@ -75,6 +77,14 @@ export const Settings = () => {
     queryKey: ['llm-providers'],
     queryFn: () => api.get<LLMProvidersResponse>('/settings/llm/providers'),
     enabled: activeTab === 'llm',
+  })
+
+  // Fetch logic reference
+  const { data: logicRef } = useQuery<{sections: Array<{id: string; title: string; description: string; details: string[]}>}>({
+    queryKey: ['logic-reference'],
+    queryFn: () => api.get('/system/logic-reference'),
+    enabled: activeTab === 'logic',
+    staleTime: Infinity,
   })
 
   // Fetch system health
@@ -126,6 +136,7 @@ export const Settings = () => {
         />
       )}
       {activeTab === 'modes' && <ModesTab settings={settings} />}
+      {activeTab === 'logic' && <LogicTab sections={logicRef?.sections ?? []} />}
       {activeTab === 'backup' && <BackupTab />}
       {activeTab === 'about' && <AboutTab health={healthData} version={versionData} />}
     </div>
@@ -1149,6 +1160,43 @@ function BackupTab() {
     </div>
   )
 }
+
+// ============================================================================
+// Logic Tab
+// ============================================================================
+const LogicTab = ({ sections }: { sections: Array<{ id: string; title: string; description: string; details: string[] }> }) => (
+  <div className="space-y-4">
+    <Card className="border-border/60">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <BookOpen className="h-5 w-5" />
+          Logic Reference
+        </CardTitle>
+        <CardDescription>
+          How ClimateIQ works — the logic and reasoning behind each feature. This same information is available to the AI chat assistant.
+        </CardDescription>
+      </CardHeader>
+    </Card>
+    {sections.map((section) => (
+      <Card key={section.id} className="border-border/60">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">{section.title}</CardTitle>
+          <CardDescription>{section.description}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ul className="space-y-2 text-sm text-muted-foreground">
+            {section.details.map((detail, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary/60" />
+                <span>{detail}</span>
+              </li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
+    ))}
+  </div>
+)
 
 // ============================================================================
 // About Tab

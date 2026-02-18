@@ -88,9 +88,11 @@ You can:
 - Check current temperatures and conditions
 - Set schedules and automations
 - Provide energy-saving recommendations
-- Explain HVAC system status
+- Explain HVAC system status and how ClimateIQ works
 
 When users request changes, use the available tools to execute them. Always confirm what action you're taking.
+
+{logic_reference}
 
 Current zones available:
 {zones}
@@ -98,7 +100,53 @@ Current zones available:
 Current conditions:
 {conditions}
 
-Be concise, helpful, and proactive about energy savings while maintaining comfort."""
+When users ask how something works, reference the logic above. Be concise, helpful, and proactive about energy savings while maintaining comfort."""
+
+
+def _get_logic_reference_text() -> str:
+    """Return the logic reference as plain text for the LLM system prompt."""
+    sections = [
+        ("System Architecture", [
+            "ClimateIQ is a Home Assistant add-on with React frontend, FastAPI backend, TimescaleDB, and Redis.",
+            "All sensor data flows from HA via WebSocket. One global thermostat controls the whole house.",
+            "Backend stores temps in Celsius. Frontend converts to user's preferred unit.",
+        ]),
+        ("Operating Modes", [
+            "Learn: Passive observation, no HVAC changes.",
+            "Scheduled: Follows user schedules. Executor checks every 60s, fires within 2-min window.",
+            "Follow-Me: Tracks occupancy every 90s. Sets thermostat to occupied zone's comfort temp. Averages if multiple zones occupied. Eco temp (18°C) if none occupied. Dead-band of 0.5°C.",
+            "Active/AI: Full LLM control every 5min. Gathers all data, asks LLM for optimal temp with reasoning. Safety clamped.",
+        ]),
+        ("Schedules", [
+            "Each schedule: name, zone, days, start/end time, target temp (Celsius), HVAC mode, priority 1-10.",
+            "Higher priority wins conflicts. Dedup prevents double-firing.",
+        ]),
+        ("Zones & Sensors", [
+            "Zones = rooms. Current temp/humidity from per-zone Zigbee sensors ONLY, not the thermostat.",
+            "Target setpoint is shared from the global thermostat.",
+            "Comfort preferences per zone used by Follow-Me mode.",
+        ]),
+        ("Thermostat", [
+            "Global climate entity (e.g., climate.ecobee). Ecobee uses target_temp_low (heat), target_temp_high (cool).",
+            "Quick actions: Eco, Away, Boost Heat (+2°), Boost Cool (-2°).",
+        ]),
+        ("Notifications", [
+            "Push via HA mobile app (notify.mobile_app_*). Alerts for: schedules, sensor offline, mode changes.",
+        ]),
+        ("Energy", [
+            "Only shown when a real HA energy entity is configured. No heuristic estimates.",
+        ]),
+        ("Weather", [
+            "Polled every 15min from HA weather entity, cached in Redis. Used by AI mode and chat context.",
+        ]),
+    ]
+
+    lines = ["=== ClimateIQ System Logic Reference ===\n"]
+    for title, details in sections:
+        lines.append(f"\n## {title}")
+        for d in details:
+            lines.append(f"- {d}")
+    return "\n".join(lines)
 
 
 # ============================================================================
@@ -761,6 +809,7 @@ async def send_chat_message(
     conditions_context = await get_conditions_context(db, settings.temperature_unit)
 
     system_prompt = SYSTEM_PROMPT.format(
+        logic_reference=_get_logic_reference_text(),
         zones=zone_context,
         conditions=conditions_context,
     )
@@ -1248,6 +1297,7 @@ async def chat_websocket(
                     response = await llm.chat(
                         messages=[{"role": "user", "content": user_message}],
                         system=SYSTEM_PROMPT.format(
+                            logic_reference=_get_logic_reference_text(),
                             zones=zone_context,
                             conditions=conditions_context,
                         ),

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.1
+
+### Added
+
+- **Logic Reference system** — new `GET /system/logic-reference` endpoint
+  returns structured documentation of how ClimateIQ works (10 sections:
+  architecture, modes, schedules, zones, thermostat, notifications, energy,
+  weather, chat, data storage).
+
+- **Settings > Logic tab** — new tab in Settings displays the full logic
+  reference as styled cards. Users can read how every feature works
+  without leaving the UI.
+
+- **AI chat now has full system context** — the LLM system prompt now
+  includes a condensed version of the logic reference, so the AI
+  assistant can accurately explain how Follow-Me mode, schedules,
+  Active/AI mode, and all other features work when asked.
+
 ## 0.6.0
 
 ### Added
