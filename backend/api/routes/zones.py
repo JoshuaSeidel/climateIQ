@@ -430,15 +430,12 @@ async def _enrich_zone_response(
                 logger.debug("Could not fetch per-zone thermostat %s: %s", thermostat_entity, exc)
         else:
             # No per-zone thermostat — use global (whole-house) climate entity
+            # ONLY for target setpoint. Current temp must come from per-zone
+            # sensors — the thermostat's reading is just the hallway/unit temp.
             climate = await _get_global_climate_state(ha_client, db)
             if climate:
-                # Target temp is always global (one thermostat for the house)
                 if climate["target_temp"] is not None:
                     resp.target_temp = climate["target_temp"]
-                # Current temp from global thermostat as fallback only
-                # (per-zone sensors take priority when they exist)
-                if resp.current_temp is None and climate["current_temp"] is not None:
-                    resp.current_temp = climate["current_temp"]
 
     return resp
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1
+
+### Fixed
+
+- **Zone current temp no longer shows thermostat reading** — the global
+  climate fallback was setting `current_temp` on every zone from the
+  Ecobee's own sensor, making all rooms show the same temperature.
+  Now only the target setpoint is shared from the global thermostat.
+  Current temp will show "--" until per-zone Zigbee sensors are assigned.
+
 ## 0.5.0
 
 ### Changed
