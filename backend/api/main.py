@@ -431,23 +431,31 @@ async def execute_schedules() -> None:
                     await ha_client.set_temperature(climate_entity, target_temp)
                     _last_executed_schedules.add(exec_key)
 
-                    # Determine zone name for logging/notification
-                    zone_name = "All zones"
-                    if schedule.zone_id:
+                    # Determine zone names for logging/notification
+                    zone_display = "All zones"
+                    raw_zone_ids = schedule.zone_ids or []
+                    if raw_zone_ids:
                         from backend.models.database import Zone
 
-                        zone_result = await db.execute(
-                            sa_select(Zone).where(Zone.id == schedule.zone_id)
-                        )
-                        zone = zone_result.scalar_one_or_none()
-                        if zone:
-                            zone_name = zone.name
+                        zone_uuids = []
+                        for zid_str in raw_zone_ids:
+                            try:
+                                zone_uuids.append(uuid.UUID(str(zid_str)))
+                            except (ValueError, AttributeError):
+                                pass
+                        if zone_uuids:
+                            zone_result = await db.execute(
+                                sa_select(Zone).where(Zone.id.in_(zone_uuids))
+                            )
+                            zone_names = [z.name for z in zone_result.scalars().all()]
+                            if zone_names:
+                                zone_display = ", ".join(zone_names)
 
                     temp_display = f"{target_temp:.1f}°{'F' if temp_unit == 'F' else 'C'}"
                     logger.info(
                         "Schedule executed: '%s' → %s set to %s (entity: %s)",
                         schedule.name,
-                        zone_name,
+                        zone_display,
                         temp_display,
                         climate_entity,
                     )
@@ -457,7 +465,7 @@ async def execute_schedules() -> None:
                         try:
                             await _notification_service.send_ha_notification(
                                 title=f"Schedule Activated: {schedule.name}",
-                                message=f"{zone_name}: Target set to {temp_display} at {current_time_str}",
+                                message=f"{zone_display}: Target set to {temp_display} at {current_time_str}",
                                 target=notif_target,
                             )
                         except Exception as notif_err:
@@ -478,7 +486,7 @@ async def execute_schedules() -> None:
 
                             action = DeviceAction(
                                 device_id=device.id,
-                                zone_id=schedule.zone_id,
+                                zone_id=None,
                                 triggered_by=TriggerType.schedule,
                                 action_type=ActionType.set_temperature,
                                 parameters={
@@ -486,6 +494,7 @@ async def execute_schedules() -> None:
                                     "unit": temp_unit,
                                     "schedule_id": str(schedule.id),
                                     "schedule_name": schedule.name,
+                                    "zone_ids": [str(zid) for zid in raw_zone_ids],
                                 },
                                 reasoning=f"Scheduled execution: {schedule.name}",
                             )

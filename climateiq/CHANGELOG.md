@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.3
+
+### Improved
+
+- **Multi-zone schedule selection** — schedules now support selecting
+  multiple specific zones (e.g., "all bedrooms") instead of only one zone
+  or all zones. The zone picker uses toggle chips similar to the day-of-week
+  selector, with "All zones" and "Select all" shortcuts.
+
+- **Priority explanation** — the priority slider in the schedule form now
+  includes helper text: 1-3 for defaults, 4-7 for regular schedules, 8-10
+  for overrides. Higher priority schedules take precedence when overlapping.
+
+### Changed
+
+- **Schedule data model** — `zone_id` (single UUID) replaced by `zone_ids`
+  (JSONB array of UUIDs). Empty array = all zones. The old `zone_id` column
+  is preserved for backwards compatibility. A migration in `init_db()` auto-
+  converts existing schedules on startup.
+
+- **API schema** — `zone_id`/`zone_name` fields replaced by `zone_ids`/
+  `zone_names` arrays on all schedule endpoints. Conflict detection updated
+  to handle set-based zone overlap.
+
 ## 0.6.2
 
 ### Improved

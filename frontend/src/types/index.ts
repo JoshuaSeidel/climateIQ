@@ -308,8 +308,8 @@ export type LLMProvidersResponse = {
 export type Schedule = {
   id: string
   name: string
-  zone_id?: string
-  zone_name?: string
+  zone_ids: string[]
+  zone_names: string[]
   days_of_week: number[]
   start_time: string
   end_time?: string
@@ -324,8 +324,8 @@ export type Schedule = {
 export type UpcomingSchedule = {
   schedule_id: string
   schedule_name: string
-  zone_id?: string
-  zone_name?: string
+  zone_ids: string[]
+  zone_names: string[]
   start_time: string
   end_time?: string
   target_temp_c: number

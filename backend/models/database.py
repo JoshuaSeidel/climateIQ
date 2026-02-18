@@ -280,9 +280,11 @@ class Schedule(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid_pk)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # DEPRECATED: use zone_ids instead. Kept for backwards compatibility with create_all().
     zone_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("zones.id", ondelete="CASCADE")
     )
+    zone_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)  # list of zone UUID strings; empty = all zones
     days_of_week: Mapped[list[int]] = mapped_column(JSONB, default=lambda: [0, 1, 2, 3, 4, 5, 6])
     start_time: Mapped[str] = mapped_column(String(5), nullable=False)  # HH:MM
     end_time: Mapped[str | None] = mapped_column(String(5))  # HH:MM
@@ -419,6 +421,28 @@ async def init_db() -> None:
                     "Ensure it is pre-installed on the database.", ext,
                 )
         await conn.run_sync(Base.metadata.create_all)
+
+        # --- Migration: add zone_ids column to schedules if missing ----------
+        # create_all() won't add columns to existing tables, so we do it manually.
+        try:
+            await conn.execute(text(
+                "ALTER TABLE schedules ADD COLUMN IF NOT EXISTS zone_ids JSONB DEFAULT '[]'::jsonb"
+            ))
+        except Exception:
+            _db_logger.warning("Could not add zone_ids column to schedules")
+
+        # Migrate legacy zone_id -> zone_ids for rows that haven't been migrated yet
+        try:
+            await conn.execute(text("""
+                UPDATE schedules
+                SET zone_ids = CASE
+                    WHEN zone_id IS NOT NULL THEN jsonb_build_array(zone_id::text)
+                    ELSE '[]'::jsonb
+                END
+                WHERE zone_ids IS NULL OR zone_ids = 'null'::jsonb
+            """))
+        except Exception:
+            _db_logger.warning("Could not migrate schedule zone_id -> zone_ids")
 
 
 async def close_db() -> None:

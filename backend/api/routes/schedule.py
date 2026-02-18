@@ -8,7 +8,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.dependencies import get_db
@@ -25,10 +25,10 @@ router = APIRouter()
 class ScheduleCreate(BaseModel):
     """Schedule creation request."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     name: str = Field(..., min_length=1, max_length=100)
-    zone_id: uuid.UUID | None = None  # None = all zones
+    zone_ids: list[uuid.UUID] = Field(default_factory=list)  # empty = all zones
     days_of_week: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5, 6])  # 0=Mon, 6=Sun
     start_time: str = Field(..., pattern=r"^\d{2}:\d{2}$")  # HH:MM format
     end_time: str | None = Field(None, pattern=r"^\d{2}:\d{2}$")
@@ -61,8 +61,10 @@ class ScheduleCreate(BaseModel):
 class ScheduleUpdate(BaseModel):
     """Schedule update request."""
 
+    model_config = {"extra": "ignore"}
+
     name: str | None = None
-    zone_id: uuid.UUID | None = None
+    zone_ids: list[uuid.UUID] | None = None
     days_of_week: list[int] | None = None
     start_time: str | None = Field(None, pattern=r"^\d{2}:\d{2}$")
     end_time: str | None = Field(None, pattern=r"^\d{2}:\d{2}$")
@@ -77,7 +79,8 @@ class ScheduleResponse(BaseModel):
 
     id: uuid.UUID
     name: str
-    zone_id: uuid.UUID | None
+    zone_ids: list[uuid.UUID] = []
+    zone_names: list[str] = []
     days_of_week: list[int]
     start_time: str
     end_time: str | None
@@ -87,7 +90,6 @@ class ScheduleResponse(BaseModel):
     priority: int
     created_at: datetime
     updated_at: datetime
-    zone_name: str | None = None
     next_occurrence: datetime | None = None
 
 
@@ -96,8 +98,8 @@ class UpcomingSchedule(BaseModel):
 
     schedule_id: uuid.UUID
     schedule_name: str
-    zone_id: uuid.UUID | None
-    zone_name: str | None
+    zone_ids: list[uuid.UUID] = []
+    zone_names: list[str] = []
     start_time: datetime
     end_time: datetime | None
     target_temp_c: float
@@ -117,6 +119,67 @@ class ScheduleConflict(BaseModel):
 # ============================================================================
 # Helper Functions
 # ============================================================================
+
+
+def _parse_zone_ids(schedule: Schedule) -> list[uuid.UUID]:
+    """Read zone_ids JSONB from a Schedule ORM instance and return as list[uuid.UUID]."""
+    raw = schedule.zone_ids
+    if not raw or not isinstance(raw, list):
+        return []
+    result: list[uuid.UUID] = []
+    for item in raw:
+        try:
+            result.append(uuid.UUID(str(item)))
+        except (ValueError, AttributeError):
+            pass
+    return result
+
+
+async def _build_zone_map(db: AsyncSession, zone_uuids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """Bulk-fetch zone names for a list of zone UUIDs."""
+    if not zone_uuids:
+        return {}
+    result = await db.execute(select(Zone).where(Zone.id.in_(zone_uuids)))
+    return {zone.id: zone.name for zone in result.scalars().all()}
+
+
+async def _collect_all_zone_uuids(schedules: list[Schedule]) -> list[uuid.UUID]:
+    """Collect all unique zone UUIDs across a list of schedules."""
+    all_ids: set[uuid.UUID] = set()
+    for s in schedules:
+        all_ids.update(_parse_zone_ids(s))
+    return list(all_ids)
+
+
+def _build_schedule_response(
+    schedule: Schedule,
+    zone_map: dict[uuid.UUID, str],
+    include_next: bool = True,
+) -> ScheduleResponse:
+    """Build a ScheduleResponse from an ORM Schedule + zone name map."""
+    zone_uuids = _parse_zone_ids(schedule)
+    zone_names = [zone_map[zid] for zid in zone_uuids if zid in zone_map]
+
+    next_occurrence = None
+    if include_next and schedule.is_enabled:
+        next_occurrence = get_next_occurrence(schedule.days_of_week, schedule.start_time)
+
+    return ScheduleResponse(
+        id=schedule.id,
+        name=schedule.name,
+        zone_ids=zone_uuids,
+        zone_names=zone_names,
+        days_of_week=schedule.days_of_week,
+        start_time=schedule.start_time,
+        end_time=schedule.end_time,
+        target_temp_c=schedule.target_temp_c,
+        hvac_mode=schedule.hvac_mode,
+        is_enabled=schedule.is_enabled,
+        priority=schedule.priority,
+        created_at=schedule.created_at,
+        updated_at=schedule.updated_at,
+        next_occurrence=next_occurrence,
+    )
 
 
 def parse_time(time_str: str) -> time:
@@ -169,7 +232,7 @@ def check_schedule_overlap(
     schedule1: dict[str, Any],
     schedule2: dict[str, Any],
 ) -> bool:
-    """Check if two schedules overlap in time."""
+    """Check if two schedules overlap in time and zones."""
     # Check if they share any days
     days1 = set(schedule1.get("days_of_week", []))
     days2 = set(schedule2.get("days_of_week", []))
@@ -177,12 +240,15 @@ def check_schedule_overlap(
     if not days1 & days2:
         return False
 
-    # Check if they share zones (None = all zones, always overlaps)
-    zone1 = schedule1.get("zone_id")
-    zone2 = schedule2.get("zone_id")
+    # Check if they share zones (empty = all zones, always overlaps)
+    zone_ids1: list[str] = schedule1.get("zone_ids", [])
+    zone_ids2: list[str] = schedule2.get("zone_ids", [])
 
-    if zone1 is not None and zone2 is not None and zone1 != zone2:
-        return False
+    # If either targets all zones (empty list), they overlap on zones
+    if zone_ids1 and zone_ids2:
+        # Both have specific zones — check for intersection
+        if not set(zone_ids1) & set(zone_ids2):
+            return False
 
     # Check time overlap
     start1 = parse_time(schedule1.get("start_time", "00:00"))
@@ -216,57 +282,24 @@ async def list_schedules(
     """List all schedules with optional filtering."""
     stmt = select(Schedule).order_by(Schedule.priority.desc(), Schedule.name)
 
-    if zone_id:
-        stmt = stmt.where(or_(Schedule.zone_id == zone_id, Schedule.zone_id.is_(None)))
-
     if enabled_only:
         stmt = stmt.where(Schedule.is_enabled.is_(True))
 
     result = await db.execute(stmt)
-    schedules = result.scalars().all()
+    schedules = list(result.scalars().all())
 
-    zone_map: dict[uuid.UUID, str] = {}
-    zone_ids = [s.zone_id for s in schedules if s.zone_id]
-    if zone_ids:
-        zone_result = await db.execute(select(Zone).where(Zone.id.in_(zone_ids)))
-        zone_map = {zone.id: zone.name for zone in zone_result.scalars().all()}
+    # If filtering by zone_id, filter in Python (JSONB contains check)
+    if zone_id:
+        zone_id_str = str(zone_id)
+        schedules = [
+            s for s in schedules
+            if not s.zone_ids or zone_id_str in [str(zid) for zid in (s.zone_ids or [])]
+        ]
 
-    # Enrich with zone names and next occurrence
-    responses = []
-    for schedule in schedules:
-        zone_name = None
-        if schedule.zone_id:
-            zone_name = zone_map.get(schedule.zone_id)
+    all_zone_uuids = await _collect_all_zone_uuids(schedules)
+    zone_map = await _build_zone_map(db, all_zone_uuids)
 
-        next_occurrence = (
-            get_next_occurrence(
-                schedule.days_of_week,
-                schedule.start_time,
-            )
-            if schedule.is_enabled
-            else None
-        )
-
-        responses.append(
-            ScheduleResponse(
-                id=schedule.id,
-                name=schedule.name,
-                zone_id=schedule.zone_id,
-                zone_name=zone_name,
-                days_of_week=schedule.days_of_week,
-                start_time=schedule.start_time,
-                end_time=schedule.end_time,
-                target_temp_c=schedule.target_temp_c,
-                hvac_mode=schedule.hvac_mode,
-                is_enabled=schedule.is_enabled,
-                priority=schedule.priority,
-                created_at=schedule.created_at,
-                updated_at=schedule.updated_at,
-                next_occurrence=next_occurrence,
-            )
-        )
-
-    return responses
+    return [_build_schedule_response(s, zone_map) for s in schedules]
 
 
 @router.get("/upcoming", response_model=list[UpcomingSchedule])
@@ -282,36 +315,41 @@ async def get_upcoming_schedules(
     sorted by start time.
     """
     now = datetime.now(UTC)
-    end_time = now + timedelta(hours=hours)
+    end_window = now + timedelta(hours=hours)
 
     # Get enabled schedules
     stmt = select(Schedule).where(Schedule.is_enabled.is_(True))
-    if zone_id:
-        stmt = stmt.where(or_(Schedule.zone_id == zone_id, Schedule.zone_id.is_(None)))
-
     result = await db.execute(stmt)
-    schedules = result.scalars().all()
+    schedules = list(result.scalars().all())
 
-    zone_map: dict[uuid.UUID, str] = {}
-    zone_ids = [s.zone_id for s in schedules if s.zone_id]
-    if zone_ids:
-        zone_result = await db.execute(select(Zone).where(Zone.id.in_(zone_ids)))
-        zone_map = {zone.id: zone.name for zone in zone_result.scalars().all()}
+    # Filter by zone if requested
+    if zone_id:
+        zone_id_str = str(zone_id)
+        schedules = [
+            s for s in schedules
+            if not s.zone_ids or zone_id_str in [str(zid) for zid in (s.zone_ids or [])]
+        ]
 
-    upcoming = []
+    all_zone_uuids = await _collect_all_zone_uuids(schedules)
+    zone_map = await _build_zone_map(db, all_zone_uuids)
+
+    upcoming: list[UpcomingSchedule] = []
 
     for schedule in schedules:
+        zone_uuids = _parse_zone_ids(schedule)
+        zone_names = [zone_map[zid] for zid in zone_uuids if zid in zone_map]
+
         # Calculate occurrences within the window
         current_check = now
 
-        while current_check < end_time:
+        while current_check < end_window:
             next_start = get_next_occurrence(
                 schedule.days_of_week,
                 schedule.start_time,
                 current_check,
             )
 
-            if next_start >= end_time:
+            if next_start >= end_window:
                 break
 
             # Calculate end time
@@ -322,17 +360,12 @@ async def get_upcoming_schedules(
                 if end_dt <= next_start:
                     end_dt += timedelta(days=1)
 
-            # Get zone name
-            zone_name = None
-            if schedule.zone_id:
-                zone_name = zone_map.get(schedule.zone_id)
-
             upcoming.append(
                 UpcomingSchedule(
                     schedule_id=schedule.id,
                     schedule_name=schedule.name,
-                    zone_id=schedule.zone_id,
-                    zone_name=zone_name,
+                    zone_ids=zone_uuids,
+                    zone_names=zone_names,
                     start_time=next_start,
                     end_time=end_dt,
                     target_temp_c=schedule.target_temp_c,
@@ -362,19 +395,19 @@ async def check_conflicts(
     result = await db.execute(select(Schedule).where(Schedule.is_enabled.is_(True)))
     schedules = result.scalars().all()
 
-    conflicts = []
+    conflicts: list[ScheduleConflict] = []
 
     # Check each pair of schedules
     for i, s1 in enumerate(schedules):
         for s2 in schedules[i + 1 :]:
-            s1_dict = {
-                "zone_id": s1.zone_id,
+            s1_dict: dict[str, Any] = {
+                "zone_ids": [str(zid) for zid in (s1.zone_ids or [])],
                 "days_of_week": s1.days_of_week,
                 "start_time": s1.start_time,
                 "end_time": s1.end_time,
             }
-            s2_dict = {
-                "zone_id": s2.zone_id,
+            s2_dict: dict[str, Any] = {
+                "zone_ids": [str(zid) for zid in (s2.zone_ids or [])],
                 "days_of_week": s2.days_of_week,
                 "start_time": s2.start_time,
                 "end_time": s2.end_time,
@@ -413,37 +446,10 @@ async def get_schedule(
             detail=f"Schedule {schedule_id} not found",
         )
 
-    zone_name = None
-    if schedule.zone_id:
-        zone_result = await db.execute(select(Zone).where(Zone.id == schedule.zone_id))
-        zone = zone_result.scalar_one_or_none()
-        zone_name = zone.name if zone else None
+    zone_uuids = _parse_zone_ids(schedule)
+    zone_map = await _build_zone_map(db, zone_uuids)
 
-    next_occurrence = (
-        get_next_occurrence(
-            schedule.days_of_week,
-            schedule.start_time,
-        )
-        if schedule.is_enabled
-        else None
-    )
-
-    return ScheduleResponse(
-        id=schedule.id,
-        name=schedule.name,
-        zone_id=schedule.zone_id,
-        zone_name=zone_name,
-        days_of_week=schedule.days_of_week,
-        start_time=schedule.start_time,
-        end_time=schedule.end_time,
-        target_temp_c=schedule.target_temp_c,
-        hvac_mode=schedule.hvac_mode,
-        is_enabled=schedule.is_enabled,
-        priority=schedule.priority,
-        created_at=schedule.created_at,
-        updated_at=schedule.updated_at,
-        next_occurrence=next_occurrence,
-    )
+    return _build_schedule_response(schedule, zone_map)
 
 
 @router.post("", response_model=ScheduleResponse, status_code=status.HTTP_201_CREATED)
@@ -452,19 +458,22 @@ async def create_schedule(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ScheduleResponse:
     """Create a new schedule."""
-    # Validate zone exists if specified
-    if payload.zone_id:
-        zone_result = await db.execute(select(Zone).where(Zone.id == payload.zone_id))
-        zone = zone_result.scalar_one_or_none()
-        if not zone:
+    # Validate all zone_ids exist
+    if payload.zone_ids:
+        zone_result = await db.execute(select(Zone).where(Zone.id.in_(payload.zone_ids)))
+        found_zones = {z.id for z in zone_result.scalars().all()}
+        missing = set(payload.zone_ids) - found_zones
+        if missing:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Zone {payload.zone_id} not found",
+                detail=f"Zone(s) not found: {', '.join(str(z) for z in missing)}",
             )
+
+    zone_ids_json = [str(zid) for zid in payload.zone_ids]
 
     schedule = Schedule(
         name=payload.name,
-        zone_id=payload.zone_id,
+        zone_ids=zone_ids_json,
         days_of_week=payload.days_of_week,
         start_time=payload.start_time,
         end_time=payload.end_time,
@@ -478,37 +487,10 @@ async def create_schedule(
     await db.commit()
     await db.refresh(schedule)
 
-    zone_name = None
-    if schedule.zone_id:
-        zone_result = await db.execute(select(Zone).where(Zone.id == schedule.zone_id))
-        zone = zone_result.scalar_one_or_none()
-        zone_name = zone.name if zone else None
+    zone_uuids = _parse_zone_ids(schedule)
+    zone_map = await _build_zone_map(db, zone_uuids)
 
-    next_occurrence = (
-        get_next_occurrence(
-            schedule.days_of_week,
-            schedule.start_time,
-        )
-        if schedule.is_enabled
-        else None
-    )
-
-    return ScheduleResponse(
-        id=schedule.id,
-        name=schedule.name,
-        zone_id=schedule.zone_id,
-        zone_name=zone_name,
-        days_of_week=schedule.days_of_week,
-        start_time=schedule.start_time,
-        end_time=schedule.end_time,
-        target_temp_c=schedule.target_temp_c,
-        hvac_mode=schedule.hvac_mode,
-        is_enabled=schedule.is_enabled,
-        priority=schedule.priority,
-        created_at=schedule.created_at,
-        updated_at=schedule.updated_at,
-        next_occurrence=next_occurrence,
-    )
+    return _build_schedule_response(schedule, zone_map)
 
 
 @router.put("/{schedule_id}", response_model=ScheduleResponse)
@@ -527,18 +509,28 @@ async def update_schedule(
             detail=f"Schedule {schedule_id} not found",
         )
 
-    # Validate zone if being changed
-    if payload.zone_id is not None:
-        zone_result = await db.execute(select(Zone).where(Zone.id == payload.zone_id))
-        zone = zone_result.scalar_one_or_none()
-        if not zone:
+    # Validate zone_ids if being changed
+    if payload.zone_ids is not None and payload.zone_ids:
+        zone_result = await db.execute(select(Zone).where(Zone.id.in_(payload.zone_ids)))
+        found_zones = {z.id for z in zone_result.scalars().all()}
+        missing = set(payload.zone_ids) - found_zones
+        if missing:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Zone {payload.zone_id} not found",
+                detail=f"Zone(s) not found: {', '.join(str(z) for z in missing)}",
             )
 
     # Update fields
     update_data = payload.model_dump(exclude_unset=True)
+
+    # Handle zone_ids specially — convert UUIDs to strings for JSONB storage
+    if "zone_ids" in update_data:
+        raw_zone_ids = update_data.pop("zone_ids")
+        if raw_zone_ids is not None:
+            schedule.zone_ids = [str(zid) for zid in raw_zone_ids]
+        else:
+            schedule.zone_ids = []
+
     for key, value in update_data.items():
         setattr(schedule, key, value)
 
@@ -547,37 +539,10 @@ async def update_schedule(
     await db.commit()
     await db.refresh(schedule)
 
-    zone_name = None
-    if schedule.zone_id:
-        zone_result = await db.execute(select(Zone).where(Zone.id == schedule.zone_id))
-        zone = zone_result.scalar_one_or_none()
-        zone_name = zone.name if zone else None
+    zone_uuids = _parse_zone_ids(schedule)
+    zone_map = await _build_zone_map(db, zone_uuids)
 
-    next_occurrence = (
-        get_next_occurrence(
-            schedule.days_of_week,
-            schedule.start_time,
-        )
-        if schedule.is_enabled
-        else None
-    )
-
-    return ScheduleResponse(
-        id=schedule.id,
-        name=schedule.name,
-        zone_id=schedule.zone_id,
-        zone_name=zone_name,
-        days_of_week=schedule.days_of_week,
-        start_time=schedule.start_time,
-        end_time=schedule.end_time,
-        target_temp_c=schedule.target_temp_c,
-        hvac_mode=schedule.hvac_mode,
-        is_enabled=schedule.is_enabled,
-        priority=schedule.priority,
-        created_at=schedule.created_at,
-        updated_at=schedule.updated_at,
-        next_occurrence=next_occurrence,
-    )
+    return _build_schedule_response(schedule, zone_map)
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -620,33 +585,10 @@ async def enable_schedule(
     await db.commit()
     await db.refresh(schedule)
 
-    zone_name = None
-    if schedule.zone_id:
-        zone_result = await db.execute(select(Zone).where(Zone.id == schedule.zone_id))
-        zone = zone_result.scalar_one_or_none()
-        zone_name = zone.name if zone else None
+    zone_uuids = _parse_zone_ids(schedule)
+    zone_map = await _build_zone_map(db, zone_uuids)
 
-    next_occurrence = get_next_occurrence(
-        schedule.days_of_week,
-        schedule.start_time,
-    )
-
-    return ScheduleResponse(
-        id=schedule.id,
-        name=schedule.name,
-        zone_id=schedule.zone_id,
-        zone_name=zone_name,
-        days_of_week=schedule.days_of_week,
-        start_time=schedule.start_time,
-        end_time=schedule.end_time,
-        target_temp_c=schedule.target_temp_c,
-        hvac_mode=schedule.hvac_mode,
-        is_enabled=schedule.is_enabled,
-        priority=schedule.priority,
-        created_at=schedule.created_at,
-        updated_at=schedule.updated_at,
-        next_occurrence=next_occurrence,
-    )
+    return _build_schedule_response(schedule, zone_map)
 
 
 @router.post("/{schedule_id}/disable", response_model=ScheduleResponse)
@@ -670,25 +612,7 @@ async def disable_schedule(
     await db.commit()
     await db.refresh(schedule)
 
-    zone_name = None
-    if schedule.zone_id:
-        zone_result = await db.execute(select(Zone).where(Zone.id == schedule.zone_id))
-        zone = zone_result.scalar_one_or_none()
-        zone_name = zone.name if zone else None
+    zone_uuids = _parse_zone_ids(schedule)
+    zone_map = await _build_zone_map(db, zone_uuids)
 
-    return ScheduleResponse(
-        id=schedule.id,
-        name=schedule.name,
-        zone_id=schedule.zone_id,
-        zone_name=zone_name,
-        days_of_week=schedule.days_of_week,
-        start_time=schedule.start_time,
-        end_time=schedule.end_time,
-        target_temp_c=schedule.target_temp_c,
-        hvac_mode=schedule.hvac_mode,
-        is_enabled=schedule.is_enabled,
-        priority=schedule.priority,
-        created_at=schedule.created_at,
-        updated_at=schedule.updated_at,
-        next_occurrence=None,
-    )
+    return _build_schedule_response(schedule, zone_map, include_next=False)

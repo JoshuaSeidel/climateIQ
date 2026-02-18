@@ -51,7 +51,7 @@ type ViewMode = 'list' | 'create' | 'edit'
 
 interface ScheduleFormData {
   name: string
-  zone_id: string // '' means all zones (null)
+  zone_ids: string[]
   days_of_week: number[]
   start_time: string
   end_time: string
@@ -71,7 +71,7 @@ type ConflictWarning = {
 
 const defaultForm: ScheduleFormData = {
   name: '',
-  zone_id: '',
+  zone_ids: [],
   days_of_week: [0, 1, 2, 3, 4],
   start_time: '08:00',
   end_time: '',
@@ -118,7 +118,7 @@ export const Schedules = () => {
       const targetC = toStorageCelsius(Number(data.target_temp), unitKey)
       return api.post<Schedule>('/schedules', {
         name: data.name,
-        zone_id: data.zone_id || null,
+        zone_ids: data.zone_ids,
         days_of_week: data.days_of_week,
         start_time: data.start_time,
         end_time: data.end_time || null,
@@ -141,7 +141,7 @@ export const Schedules = () => {
       const targetC = toStorageCelsius(Number(data.target_temp), unitKey)
       return api.put<Schedule>(`/schedules/${id}`, {
         name: data.name,
-        zone_id: data.zone_id || null,
+        zone_ids: data.zone_ids,
         days_of_week: data.days_of_week,
         start_time: data.start_time,
         end_time: data.end_time || null,
@@ -193,7 +193,7 @@ export const Schedules = () => {
       setEditingId(schedule.id)
       setForm({
         name: schedule.name,
-        zone_id: schedule.zone_id ?? '',
+        zone_ids: schedule.zone_ids ?? [],
         days_of_week: [...schedule.days_of_week],
         start_time: schedule.start_time,
         end_time: schedule.end_time ?? '',
@@ -277,22 +277,52 @@ export const Schedules = () => {
               />
             </div>
 
-            {/* Zone + HVAC Mode */}
+            {/* Zone Selection + HVAC Mode */}
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="text-sm font-medium">Zone</label>
-                <select
-                  value={form.zone_id}
-                  onChange={(e) => setForm((f) => ({ ...f, zone_id: e.target.value }))}
-                  className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm"
-                >
-                  <option value="">All Zones</option>
+                <label className="text-sm font-medium">Zones</label>
+                <p className="text-xs text-muted-foreground mb-2">
+                  Select specific zones or leave empty for all zones
+                </p>
+                <div className="flex flex-wrap gap-2">
                   {(zones ?? []).map((z) => (
-                    <option key={z.id} value={z.id}>
+                    <button
+                      key={z.id}
+                      type="button"
+                      onClick={() => {
+                        setForm((f) => ({
+                          ...f,
+                          zone_ids: f.zone_ids.includes(z.id)
+                            ? f.zone_ids.filter((id) => id !== z.id)
+                            : [...f.zone_ids, z.id],
+                        }))
+                      }}
+                      className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                        form.zone_ids.includes(z.id)
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border/60 text-muted-foreground hover:border-border hover:text-foreground'
+                      }`}
+                    >
                       {z.name}
-                    </option>
+                    </button>
                   ))}
-                </select>
+                </div>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, zone_ids: [] }))}
+                    className="text-xs text-muted-foreground underline hover:text-foreground"
+                  >
+                    All zones
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, zone_ids: (zones ?? []).map((z) => z.id) }))}
+                    className="text-xs text-muted-foreground underline hover:text-foreground"
+                  >
+                    Select all
+                  </button>
+                </div>
               </div>
               <div>
                 <label className="text-sm font-medium">HVAC Mode</label>
@@ -396,6 +426,10 @@ export const Schedules = () => {
                   />
                   <span className="w-6 text-center text-sm font-semibold">{form.priority}</span>
                 </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Higher priority schedules override lower ones when they overlap.
+                  Use 1-3 for defaults, 4-7 for regular schedules, 8-10 for overrides.
+                </p>
               </div>
             </div>
 
@@ -560,9 +594,11 @@ export const Schedules = () => {
                       </span>
                     )}
                   </div>
-                  {/* Zone */}
+                  {/* Zone names */}
                   <p className="mt-1 text-sm text-muted-foreground">
-                    {schedule.zone_name || 'All Zones'}
+                    {schedule.zone_names?.length
+                      ? schedule.zone_names.join(', ')
+                      : 'All Zones'}
                   </p>
                 </div>
 

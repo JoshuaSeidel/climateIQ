@@ -605,7 +605,9 @@ export const Dashboard = () => {
                       <div>
                         <p className="text-sm font-medium">{schedule.schedule_name}</p>
                         <p className="text-xs text-muted-foreground">
-                          {schedule.zone_name || 'All zones'}
+                          {schedule.zone_names?.length
+                            ? schedule.zone_names.join(', ')
+                            : 'All zones'}
                         </p>
                       </div>
                       <div className="text-right">
