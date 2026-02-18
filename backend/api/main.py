@@ -38,6 +38,7 @@ from backend.api.websocket import ConnectionManager
 from backend.config import get_settings
 from backend.integrations.ha_websocket import HAWebSocketClient
 from backend.models.database import close_db, get_session_maker, init_db
+from backend.services.notification_service import NotificationService
 
 # Configure logging
 settings_instance = get_settings()
@@ -67,6 +68,10 @@ class AppState:
 
 
 app_state = AppState()
+
+# Module-level singletons for schedule execution and notifications
+_notification_service: NotificationService | None = None
+_last_executed_schedules: set[str] = set()
 
 
 # ============================================================================
@@ -278,10 +283,756 @@ async def check_sensor_health() -> None:
                     }
                 )
 
+                # Send HA notification for offline sensor
+                if _notification_service:
+                    try:
+                        # Load zone name for the notification message
+                        zone_name = "unknown zone"
+                        if sensor.zone_id:
+                            from backend.models.database import Zone as _Zone
+
+                            zone_result = await db.execute(
+                                select(_Zone).where(_Zone.id == sensor.zone_id)
+                            )
+                            zone_obj = zone_result.scalar_one_or_none()
+                            if zone_obj:
+                                zone_name = zone_obj.name
+
+                        # Read notification_target from system_settings
+                        from backend.models.database import SystemSetting as _SS
+
+                        notif_result = await db.execute(
+                            select(_SS).where(_SS.key == "notification_target")
+                        )
+                        notif_row = notif_result.scalar_one_or_none()
+                        notif_target = None
+                        if notif_row and notif_row.value:
+                            notif_target = notif_row.value.get("value") or None
+
+                        await _notification_service.send_ha_notification(
+                            title=f"Sensor Offline: {sensor.name}",
+                            message=f"{sensor.name} in {zone_name} hasn't reported in 30+ minutes",
+                            target=notif_target,
+                        )
+                    except Exception as notif_err:
+                        logger.warning("Sensor offline notification failed: %s", notif_err)
+
             if stale_sensors:
                 logger.info("Sensor health check: %d sensors offline", len(stale_sensors))
     except Exception as e:
         logger.error(f"Error checking sensor health: {e}")
+
+
+# ============================================================================
+# Schedule Execution
+# ============================================================================
+
+
+async def execute_schedules() -> None:
+    """Check enabled schedules and fire any whose start_time matches now."""
+    global _last_executed_schedules
+
+    from datetime import timedelta
+
+    from sqlalchemy import select as sa_select
+
+    from backend.models.database import Schedule, SystemSetting
+
+    try:
+        import backend.api.dependencies as _deps
+
+        ha_client = _deps._ha_client
+        if ha_client is None:
+            logger.debug("No HA client available, skipping schedule execution")
+            return
+
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            # Fetch all enabled schedules
+            result = await db.execute(
+                sa_select(Schedule).where(Schedule.is_enabled.is_(True))
+            )
+            schedules = result.scalars().all()
+
+            if not schedules:
+                return
+
+            now_utc = datetime.now(UTC)
+            current_dow = now_utc.weekday()  # 0=Monday … 6=Sunday
+            current_time_str = now_utc.strftime("%H:%M")
+
+            # Determine the climate entity to target
+            climate_entity: str | None = None
+
+            # Try system_settings KV table first
+            setting_result = await db.execute(
+                sa_select(SystemSetting).where(SystemSetting.key == "climate_entities")
+            )
+            setting_row = setting_result.scalar_one_or_none()
+            if setting_row and setting_row.value:
+                val = setting_row.value.get("value", "")
+                if isinstance(val, str) and val.strip():
+                    # Take the first entity if comma-separated
+                    climate_entity = val.strip().split(",")[0].strip()
+
+            # Fall back to config
+            if not climate_entity:
+                _climate_cfg = settings_instance.climate_entities.strip()
+                if _climate_cfg:
+                    climate_entity = _climate_cfg.split(",")[0].strip()
+
+            if not climate_entity:
+                logger.debug("No climate entity configured, skipping schedule execution")
+                return
+
+            # Read notification_target from system_settings
+            notif_target: str | None = None
+            notif_result = await db.execute(
+                sa_select(SystemSetting).where(SystemSetting.key == "notification_target")
+            )
+            notif_row = notif_result.scalar_one_or_none()
+            if notif_row and notif_row.value:
+                notif_target = notif_row.value.get("value") or None
+
+            # Check temperature unit — HA set_temperature passes through raw,
+            # so convert C→F if the system is configured for Fahrenheit.
+            temp_unit = settings_instance.temperature_unit.upper()
+
+            for schedule in schedules:
+                # Check day of week
+                if current_dow not in (schedule.days_of_week or []):
+                    continue
+
+                # Check time window (within 2 minutes of start_time)
+                try:
+                    sched_hour, sched_min = map(int, schedule.start_time.split(":"))
+                    sched_dt = now_utc.replace(
+                        hour=sched_hour, minute=sched_min, second=0, microsecond=0
+                    )
+                    delta = abs((now_utc - sched_dt).total_seconds())
+                    if delta > 120:  # 2-minute window
+                        continue
+                except (ValueError, AttributeError):
+                    logger.warning("Invalid start_time '%s' on schedule %s", schedule.start_time, schedule.id)
+                    continue
+
+                # Dedup: don't re-execute within the same occurrence window
+                exec_key = f"{schedule.id}:{schedule.start_time}:{now_utc.strftime('%Y-%m-%d')}"
+                if exec_key in _last_executed_schedules:
+                    continue
+
+                # Convert temperature if needed
+                target_temp = schedule.target_temp_c
+                if temp_unit == "F":
+                    target_temp = round(schedule.target_temp_c * 9 / 5 + 32, 1)
+
+                # Fire the schedule
+                try:
+                    await ha_client.set_temperature(climate_entity, target_temp)
+                    _last_executed_schedules.add(exec_key)
+
+                    # Determine zone name for logging/notification
+                    zone_name = "All zones"
+                    if schedule.zone_id:
+                        from backend.models.database import Zone
+
+                        zone_result = await db.execute(
+                            sa_select(Zone).where(Zone.id == schedule.zone_id)
+                        )
+                        zone = zone_result.scalar_one_or_none()
+                        if zone:
+                            zone_name = zone.name
+
+                    temp_display = f"{target_temp:.1f}°{'F' if temp_unit == 'F' else 'C'}"
+                    logger.info(
+                        "Schedule executed: '%s' → %s set to %s (entity: %s)",
+                        schedule.name,
+                        zone_name,
+                        temp_display,
+                        climate_entity,
+                    )
+
+                    # Send notification
+                    if _notification_service:
+                        try:
+                            await _notification_service.send_ha_notification(
+                                title=f"Schedule Activated: {schedule.name}",
+                                message=f"{zone_name}: Target set to {temp_display} at {current_time_str}",
+                                target=notif_target,
+                            )
+                        except Exception as notif_err:
+                            logger.warning("Schedule notification failed: %s", notif_err)
+
+                    # Record device action if possible
+                    try:
+                        from backend.models.database import Device, DeviceAction
+
+                        device_result = await db.execute(
+                            sa_select(Device).where(
+                                Device.ha_entity_id == climate_entity
+                            ).limit(1)
+                        )
+                        device = device_result.scalar_one_or_none()
+                        if device:
+                            from backend.models.enums import ActionType, TriggerType
+
+                            action = DeviceAction(
+                                device_id=device.id,
+                                zone_id=schedule.zone_id,
+                                triggered_by=TriggerType.schedule,
+                                action_type=ActionType.set_temperature,
+                                parameters={
+                                    "temperature": target_temp,
+                                    "unit": temp_unit,
+                                    "schedule_id": str(schedule.id),
+                                    "schedule_name": schedule.name,
+                                },
+                                reasoning=f"Scheduled execution: {schedule.name}",
+                            )
+                            db.add(action)
+                            await db.commit()
+                    except Exception as action_err:
+                        logger.debug("Could not record device action: %s", action_err)
+
+                except Exception as exec_err:
+                    logger.error(
+                        "Failed to execute schedule '%s': %s",
+                        schedule.name,
+                        exec_err,
+                    )
+
+        # Prune old dedup keys (keep only today's)
+        today_prefix = now_utc.strftime("%Y-%m-%d")
+        _last_executed_schedules = {
+            k for k in _last_executed_schedules if k.endswith(today_prefix)
+        }
+
+    except Exception as e:
+        logger.error("Error in schedule execution: %s", e)
+
+
+# ============================================================================
+# Follow-Me Mode Execution
+# ============================================================================
+
+
+async def execute_follow_me_mode() -> None:
+    """Adjust thermostat based on zone occupancy (Follow-Me mode).
+
+    Runs every 90 seconds.  Only active when ``SystemConfig.current_mode``
+    is ``follow_me``.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.orm import selectinload
+
+    from backend.models.database import (
+        Device,
+        DeviceAction,
+        SensorReading,
+        SystemConfig,
+        SystemSetting,
+        Zone,
+    )
+    from backend.models.enums import ActionType, SystemMode, TriggerType
+
+    try:
+        import backend.api.dependencies as _deps
+
+        ha_client = _deps._ha_client
+        if ha_client is None:
+            logger.debug("No HA client available, skipping follow-me execution")
+            return
+
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            # ── Check current mode ──────────────────────────────────────
+            cfg_result = await db.execute(sa_select(SystemConfig).limit(1))
+            config = cfg_result.scalar_one_or_none()
+            if config is None or config.current_mode != SystemMode.follow_me:
+                return
+
+            # ── Determine climate entity ────────────────────────────────
+            climate_entity: str | None = None
+
+            setting_result = await db.execute(
+                sa_select(SystemSetting).where(SystemSetting.key == "climate_entities")
+            )
+            setting_row = setting_result.scalar_one_or_none()
+            if setting_row and setting_row.value:
+                val = setting_row.value.get("value", "")
+                if isinstance(val, str) and val.strip():
+                    climate_entity = val.strip().split(",")[0].strip()
+
+            if not climate_entity:
+                _climate_cfg = settings_instance.climate_entities.strip()
+                if _climate_cfg:
+                    climate_entity = _climate_cfg.split(",")[0].strip()
+
+            if not climate_entity:
+                logger.debug("No climate entity configured, skipping follow-me")
+                return
+
+            # ── Notification target ─────────────────────────────────────
+            notif_target: str | None = None
+            notif_result = await db.execute(
+                sa_select(SystemSetting).where(SystemSetting.key == "notification_target")
+            )
+            notif_row = notif_result.scalar_one_or_none()
+            if notif_row and notif_row.value:
+                notif_target = notif_row.value.get("value") or None
+
+            # ── Temperature unit ────────────────────────────────────────
+            temp_unit = settings_instance.temperature_unit.upper()
+
+            # ── Fetch active zones with sensors ─────────────────────────
+            zone_result = await db.execute(
+                sa_select(Zone)
+                .options(selectinload(Zone.sensors))
+                .where(Zone.is_active.is_(True))
+            )
+            zones = zone_result.scalars().unique().all()
+
+            if not zones:
+                return
+
+            # ── Determine occupancy per zone (last 15 min) ─────────────
+            occupancy_cutoff = datetime.now(UTC) - timedelta(minutes=15)
+            occupied_zones: list[tuple[Zone, float]] = []  # (zone, target_temp_c)
+
+            for zone in zones:
+                if not zone.sensors:
+                    continue
+
+                sensor_ids = [s.id for s in zone.sensors]
+                reading_result = await db.execute(
+                    sa_select(SensorReading)
+                    .where(
+                        SensorReading.sensor_id.in_(sensor_ids),
+                        SensorReading.recorded_at >= occupancy_cutoff,
+                        SensorReading.presence.is_(True),
+                    )
+                    .order_by(SensorReading.recorded_at.desc())
+                    .limit(1)
+                )
+                presence_reading = reading_result.scalar_one_or_none()
+
+                if presence_reading is not None:
+                    # Extract comfort preference target temp
+                    prefs = zone.comfort_preferences or {}
+                    target = (
+                        prefs.get("target_temp")
+                        or prefs.get("ideal_temp")
+                        or 21.0
+                    )
+                    try:
+                        target = float(target)
+                    except (TypeError, ValueError):
+                        target = 21.0
+                    occupied_zones.append((zone, target))
+
+            # ── Calculate target temperature ────────────────────────────
+            eco_temp_c = 18.0  # away / eco temperature
+
+            if len(occupied_zones) == 1:
+                target_temp_c = occupied_zones[0][1]
+                zone_names = occupied_zones[0][0].name
+            elif len(occupied_zones) > 1:
+                target_temp_c = round(
+                    sum(t for _, t in occupied_zones) / len(occupied_zones), 1
+                )
+                zone_names = ", ".join(z.name for z, _ in occupied_zones)
+            else:
+                target_temp_c = eco_temp_c
+                zone_names = "no occupied zones (eco mode)"
+
+            # ── Check if change is needed (> 0.5°C diff) ───────────────
+            try:
+                state = await ha_client.get_state(climate_entity)
+                current_target = state.attributes.get("temperature")
+                if current_target is not None:
+                    # If HA is in °F, convert current target to °C for comparison
+                    current_target_c = float(current_target)
+                    if temp_unit == "F":
+                        current_target_c = round((current_target_c - 32) * 5 / 9, 2)
+                    if abs(current_target_c - target_temp_c) <= 0.5:
+                        return  # No meaningful change needed
+            except Exception as state_err:
+                logger.debug("Could not read current thermostat state: %s", state_err)
+                # Proceed anyway — we'll set the temperature
+
+            # ── Convert and apply ───────────────────────────────────────
+            target_for_ha = target_temp_c
+            if temp_unit == "F":
+                target_for_ha = round(target_temp_c * 9 / 5 + 32, 1)
+
+            await ha_client.set_temperature(climate_entity, target_for_ha)
+
+            temp_display = f"{target_for_ha:.1f}°{'F' if temp_unit == 'F' else 'C'}"
+            logger.info(
+                "Follow-Me: Set %s to %s for %s",
+                climate_entity,
+                temp_display,
+                zone_names,
+            )
+
+            # ── Send notification ───────────────────────────────────────
+            if _notification_service:
+                try:
+                    await _notification_service.send_ha_notification(
+                        title="Follow-Me Mode",
+                        message=f"Adjusting to {temp_display} for {zone_names}",
+                        target=notif_target,
+                    )
+                except Exception as notif_err:
+                    logger.warning("Follow-me notification failed: %s", notif_err)
+
+            # ── Record device action ────────────────────────────────────
+            try:
+                device_result = await db.execute(
+                    sa_select(Device)
+                    .where(Device.ha_entity_id == climate_entity)
+                    .limit(1)
+                )
+                device = device_result.scalar_one_or_none()
+                if device:
+                    action = DeviceAction(
+                        device_id=device.id,
+                        zone_id=occupied_zones[0][0].id if len(occupied_zones) == 1 else None,
+                        triggered_by=TriggerType.follow_me,
+                        action_type=ActionType.set_temperature,
+                        parameters={
+                            "temperature": target_for_ha,
+                            "unit": temp_unit,
+                            "occupied_zones": [z.name for z, _ in occupied_zones],
+                        },
+                        reasoning=f"Follow-Me: Adjusting to {temp_display} for {zone_names}",
+                        mode=SystemMode.follow_me,
+                    )
+                    db.add(action)
+                    await db.commit()
+            except Exception as action_err:
+                logger.debug("Could not record follow-me device action: %s", action_err)
+
+    except Exception as e:
+        logger.error("Error in follow-me mode execution: %s", e)
+
+
+# ============================================================================
+# Active / AI Mode Execution
+# ============================================================================
+
+
+async def execute_active_mode() -> None:
+    """Full AI-driven HVAC control (Active mode).
+
+    Runs every 5 minutes.  Only active when ``SystemConfig.current_mode``
+    is ``active``.  Gathers all context, asks the LLM for a recommendation,
+    and applies it.
+    """
+    import json as _json
+    import re
+    from datetime import timedelta
+
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.orm import selectinload
+
+    from backend.models.database import (
+        Device,
+        DeviceAction,
+        Schedule,
+        SensorReading,
+        SystemConfig,
+        SystemSetting,
+        Zone,
+    )
+    from backend.models.enums import ActionType, SystemMode, TriggerType
+
+    try:
+        import backend.api.dependencies as _deps
+
+        ha_client = _deps._ha_client
+        if ha_client is None:
+            logger.debug("No HA client available, skipping active-mode execution")
+            return
+
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            # ── Check current mode ──────────────────────────────────────
+            cfg_result = await db.execute(sa_select(SystemConfig).limit(1))
+            config = cfg_result.scalar_one_or_none()
+            if config is None or config.current_mode != SystemMode.active:
+                return
+
+            # ── Determine climate entity ────────────────────────────────
+            climate_entity: str | None = None
+
+            setting_result = await db.execute(
+                sa_select(SystemSetting).where(SystemSetting.key == "climate_entities")
+            )
+            setting_row = setting_result.scalar_one_or_none()
+            if setting_row and setting_row.value:
+                val = setting_row.value.get("value", "")
+                if isinstance(val, str) and val.strip():
+                    climate_entity = val.strip().split(",")[0].strip()
+
+            if not climate_entity:
+                _climate_cfg = settings_instance.climate_entities.strip()
+                if _climate_cfg:
+                    climate_entity = _climate_cfg.split(",")[0].strip()
+
+            if not climate_entity:
+                logger.debug("No climate entity configured, skipping active-mode")
+                return
+
+            # ── Notification target ─────────────────────────────────────
+            notif_target: str | None = None
+            notif_result = await db.execute(
+                sa_select(SystemSetting).where(SystemSetting.key == "notification_target")
+            )
+            notif_row = notif_result.scalar_one_or_none()
+            if notif_row and notif_row.value:
+                notif_target = notif_row.value.get("value") or None
+
+            # ── Temperature unit & safety limits ────────────────────────
+            temp_unit = settings_instance.temperature_unit.upper()
+            safety_min = settings_instance.safety_min_temp_c
+            safety_max = settings_instance.safety_max_temp_c
+
+            # ── Gather zone data ────────────────────────────────────────
+            zone_result = await db.execute(
+                sa_select(Zone)
+                .options(selectinload(Zone.sensors))
+                .where(Zone.is_active.is_(True))
+            )
+            zones = zone_result.scalars().unique().all()
+
+            zone_summaries: list[str] = []
+            reading_cutoff = datetime.now(UTC) - timedelta(minutes=15)
+
+            for zone in zones:
+                sensor_ids = [s.id for s in zone.sensors] if zone.sensors else []
+                latest_reading = None
+                if sensor_ids:
+                    r_result = await db.execute(
+                        sa_select(SensorReading)
+                        .where(
+                            SensorReading.sensor_id.in_(sensor_ids),
+                            SensorReading.recorded_at >= reading_cutoff,
+                        )
+                        .order_by(SensorReading.recorded_at.desc())
+                        .limit(1)
+                    )
+                    latest_reading = r_result.scalar_one_or_none()
+
+                prefs = zone.comfort_preferences or {}
+                target_pref = prefs.get("target_temp") or prefs.get("ideal_temp") or "not set"
+                temp_str = f"{latest_reading.temperature_c:.1f}°C" if latest_reading and latest_reading.temperature_c is not None else "N/A"
+                hum_str = f"{latest_reading.humidity:.0f}%" if latest_reading and latest_reading.humidity is not None else "N/A"
+                occ_str = "occupied" if latest_reading and latest_reading.presence else "unoccupied"
+
+                zone_summaries.append(
+                    f"- {zone.name}: temp={temp_str}, humidity={hum_str}, "
+                    f"occupancy={occ_str}, comfort_target={target_pref}°C"
+                )
+
+            # ── Current thermostat state ────────────────────────────────
+            thermostat_info = "unavailable"
+            current_target_c: float | None = None
+            try:
+                state = await ha_client.get_state(climate_entity)
+                hvac_mode = state.state
+                current_temp = state.attributes.get("current_temperature", "N/A")
+                current_target = state.attributes.get("temperature")
+                thermostat_info = (
+                    f"mode={hvac_mode}, current_temp={current_temp}, "
+                    f"target_temp={current_target}"
+                )
+                if current_target is not None:
+                    current_target_c = float(current_target)
+                    if temp_unit == "F":
+                        current_target_c = round((current_target_c - 32) * 5 / 9, 2)
+            except Exception as state_err:
+                logger.debug("Could not read thermostat state for AI mode: %s", state_err)
+
+            # ── Weather data from Redis cache ───────────────────────────
+            weather_info = "unavailable"
+            if app_state.redis_client:
+                try:
+                    cached = await app_state.redis_client.get("weather:current")
+                    if cached:
+                        weather_data = _json.loads(cached)
+                        w = weather_data.get("data", {})
+                        weather_info = (
+                            f"temp={w.get('temperature', 'N/A')}°C, "
+                            f"humidity={w.get('humidity', 'N/A')}%, "
+                            f"condition={w.get('condition', 'N/A')}"
+                        )
+                except Exception:
+                    pass
+
+            # ── Active schedules for today ──────────────────────────────
+            now_utc = datetime.now(UTC)
+            current_dow = now_utc.weekday()
+            schedule_result = await db.execute(
+                sa_select(Schedule).where(Schedule.is_enabled.is_(True))
+            )
+            schedules = schedule_result.scalars().all()
+            schedule_summaries: list[str] = []
+            for sched in schedules:
+                if current_dow in (sched.days_of_week or []):
+                    schedule_summaries.append(
+                        f"- {sched.name}: {sched.start_time}"
+                        f"{'-' + sched.end_time if sched.end_time else ''} "
+                        f"target={sched.target_temp_c}°C"
+                    )
+
+            # ── Build LLM prompt ────────────────────────────────────────
+            zones_text = "\n".join(zone_summaries) if zone_summaries else "No zone data available."
+            schedules_text = "\n".join(schedule_summaries) if schedule_summaries else "No active schedules today."
+
+            system_prompt = (
+                "You are ClimateIQ's AI HVAC controller. Your job is to recommend "
+                "the optimal thermostat target temperature in °C based on the context "
+                "provided. Consider occupancy, comfort preferences, weather, energy "
+                "efficiency, and current schedules. Be conservative with changes.\n\n"
+                "IMPORTANT: You MUST include a line in your response in exactly this "
+                "format: RECOMMENDED_TEMP: <number>\n"
+                "where <number> is the target temperature in °C (e.g. RECOMMENDED_TEMP: 22.0).\n"
+                "Also provide a brief one-sentence reason on a line starting with REASON:."
+            )
+
+            user_prompt = (
+                f"Current time: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+                f"## Zone Status\n{zones_text}\n\n"
+                f"## Thermostat\n{thermostat_info}\n\n"
+                f"## Weather\n{weather_info}\n\n"
+                f"## Today's Schedules\n{schedules_text}\n\n"
+                f"Safety limits: {safety_min}°C – {safety_max}°C\n\n"
+                "What target temperature (°C) should the thermostat be set to right now?"
+            )
+
+            # ── Call LLM ────────────────────────────────────────────────
+            recommended_temp_c: float | None = None
+            reason = ""
+
+            try:
+                from backend.integrations.llm.provider import LLMProvider
+
+                llm: LLMProvider | None = None
+                if settings_instance.anthropic_api_key:
+                    llm = LLMProvider(
+                        provider="anthropic",
+                        api_key=settings_instance.anthropic_api_key,
+                    )
+                elif settings_instance.openai_api_key:
+                    llm = LLMProvider(
+                        provider="openai",
+                        api_key=settings_instance.openai_api_key,
+                    )
+                elif settings_instance.gemini_api_key:
+                    llm = LLMProvider(
+                        provider="gemini",
+                        api_key=settings_instance.gemini_api_key,
+                    )
+
+                if llm is None:
+                    logger.debug("No LLM provider configured, skipping active-mode AI call")
+                    return
+
+                response = await llm.generate(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                )
+                content = response.get("content", "")
+
+                # Parse RECOMMENDED_TEMP from response
+                temp_match = re.search(r"RECOMMENDED_TEMP:\s*([\d.]+)", content)
+                if temp_match:
+                    recommended_temp_c = float(temp_match.group(1))
+
+                # Parse REASON from response
+                reason_match = re.search(r"REASON:\s*(.+)", content)
+                if reason_match:
+                    reason = reason_match.group(1).strip()
+
+            except Exception as llm_err:
+                logger.error("Active-mode LLM call failed: %s", llm_err)
+                # Fall back: do nothing (keep current settings)
+                return
+
+            if recommended_temp_c is None:
+                logger.warning("Active-mode: LLM did not return a valid temperature")
+                return
+
+            # ── Apply safety clamps ─────────────────────────────────────
+            recommended_temp_c = max(safety_min, min(safety_max, recommended_temp_c))
+
+            # ── Check if change is meaningful (> 0.5°C diff) ────────────
+            if current_target_c is not None and abs(current_target_c - recommended_temp_c) <= 0.5:
+                logger.debug(
+                    "Active-mode: recommended %.1f°C is within 0.5°C of current %.1f°C, skipping",
+                    recommended_temp_c,
+                    current_target_c,
+                )
+                return
+
+            # ── Convert and apply ───────────────────────────────────────
+            target_for_ha = recommended_temp_c
+            if temp_unit == "F":
+                target_for_ha = round(recommended_temp_c * 9 / 5 + 32, 1)
+
+            await ha_client.set_temperature(climate_entity, target_for_ha)
+
+            temp_display = f"{target_for_ha:.1f}°{'F' if temp_unit == 'F' else 'C'}"
+            logger.info(
+                "Active-mode AI: Set %s to %s — %s",
+                climate_entity,
+                temp_display,
+                reason or "no reason provided",
+            )
+
+            # ── Send notification ───────────────────────────────────────
+            if _notification_service:
+                try:
+                    await _notification_service.send_ha_notification(
+                        title="AI Mode",
+                        message=f"Setting to {temp_display} — {reason or 'AI recommendation'}",
+                        target=notif_target,
+                    )
+                except Exception as notif_err:
+                    logger.warning("Active-mode notification failed: %s", notif_err)
+
+            # ── Record device action ────────────────────────────────────
+            try:
+                device_result = await db.execute(
+                    sa_select(Device)
+                    .where(Device.ha_entity_id == climate_entity)
+                    .limit(1)
+                )
+                device = device_result.scalar_one_or_none()
+                if device:
+                    action = DeviceAction(
+                        device_id=device.id,
+                        zone_id=None,
+                        triggered_by=TriggerType.llm_decision,
+                        action_type=ActionType.set_temperature,
+                        parameters={
+                            "temperature": target_for_ha,
+                            "unit": temp_unit,
+                            "recommended_temp_c": recommended_temp_c,
+                        },
+                        reasoning=f"AI Mode: {reason or 'LLM recommendation'}",
+                        mode=SystemMode.active,
+                    )
+                    db.add(action)
+                    await db.commit()
+            except Exception as action_err:
+                logger.debug("Could not record active-mode device action: %s", action_err)
+
+    except Exception as e:
+        logger.error("Error in active-mode execution: %s", e)
 
 
 # ============================================================================
@@ -439,6 +1190,33 @@ def init_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # Schedule execution - every 60 seconds
+    scheduler.add_job(
+        execute_schedules,
+        IntervalTrigger(seconds=60),
+        id="execute_schedules",
+        name="Execute Schedules",
+        replace_existing=True,
+    )
+
+    # Follow-Me mode execution - every 90 seconds
+    scheduler.add_job(
+        execute_follow_me_mode,
+        IntervalTrigger(seconds=90),
+        id="execute_follow_me_mode",
+        name="Execute Follow-Me Mode",
+        replace_existing=True,
+    )
+
+    # Active/AI mode execution - every 5 minutes
+    scheduler.add_job(
+        execute_active_mode,
+        IntervalTrigger(minutes=5),
+        id="execute_active_mode",
+        name="Execute Active AI Mode",
+        replace_existing=True,
+    )
+
     # Sensor health check - every 10 minutes
     scheduler.add_job(
         check_sensor_health,
@@ -538,6 +1316,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     logger.info("HA REST client initialized for live thermostat data")
             except Exception as e:
                 logger.warning("Failed to initialize HA REST client: %s", e)
+
+        # Initialize NotificationService singleton (requires HA client)
+        if settings.home_assistant_token:
+            try:
+                import backend.api.dependencies as _notif_deps
+
+                if _notif_deps._ha_client is not None:
+                    global _notification_service
+                    _notification_service = NotificationService(_notif_deps._ha_client)
+                    logger.info("NotificationService initialized")
+                else:
+                    logger.warning("NotificationService not initialized: no HA client available")
+            except Exception as e:
+                logger.warning("Failed to initialize NotificationService: %s", e)
 
         # Seed weather_entity from config if set and not already in DB
         if settings_instance.weather_entity:

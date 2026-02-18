@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.6.0
+
+### Added
+
+- **Schedule management page** — new `/schedules` route with full CRUD
+  UI. Create, edit, delete, enable/disable schedules. Day-of-week pills,
+  time pickers, zone selector, target temp in user's unit, HVAC mode,
+  priority slider. Conflict warnings displayed at top. Added to sidebar
+  navigation with CalendarClock icon.
+
+- **Schedule execution engine** — new background task (every 60s) that
+  evaluates enabled schedules against the current time and fires them
+  by calling `set_temperature` on the global thermostat. Uses a 2-minute
+  match window with dedup to prevent re-firing. Converts C→F when HA
+  is in Imperial. Records actions in `DeviceAction` table.
+
+- **Follow-Me mode** — new background task (every 90s) that activates
+  when system mode is `follow_me`. Reads occupancy from per-zone sensor
+  readings, adjusts the global thermostat to the occupied zone's comfort
+  preference temp. Multiple occupied zones get averaged. No occupancy
+  falls back to eco temp (18°C/64°F). Only fires if target changes by
+  more than 0.5°C.
+
+- **Active/AI mode** — new background task (every 5m) that activates
+  when system mode is `active`. Gathers all zone data, weather, current
+  thermostat state, today's schedules, and comfort preferences. Asks
+  the LLM to recommend an optimal temperature with reasoning. Applies
+  safety clamps and only changes if diff > 0.5°C.
+
+- **HA mobile app notifications** — `NotificationService` singleton
+  initialized at startup, wired into schedule execution (confirms
+  activations), sensor health checks (offline alerts), follow-me mode
+  changes, and AI mode decisions. Uses `notification_target` setting
+  from `system_settings` KV table (e.g., `mobile_app_joshua_s_iphone`).
+
+### Removed
+
+- Debug endpoint `GET /zones/debug/thermostat` (temporary, no longer
+  needed).
+
 ## 0.5.4
 
 ### Added

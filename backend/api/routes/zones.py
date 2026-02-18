@@ -91,51 +91,6 @@ async def list_zones(
 
 
 # ---------------------------------------------------------------------------
-# GET /zones/debug/thermostat — dump raw HA thermostat attributes
-# ---------------------------------------------------------------------------
-@router.get("/debug/thermostat")
-async def debug_thermostat(
-    db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict:
-    """Return raw HA thermostat state for debugging. Temporary endpoint."""
-    from backend.api.dependencies import _ha_client
-
-    if _ha_client is None:
-        return {"error": "HA client not initialized"}
-
-    stmt = select(Zone).options(selectinload(Zone.devices))
-    result = await db.execute(stmt)
-    zones = result.scalars().unique().all()
-
-    debug_info: dict = {"ha_client_connected": _ha_client.connected, "zones": []}
-    try:
-        ha_config = await _ha_client.get_config()
-        debug_info["ha_unit_system"] = ha_config.get("unit_system", {})
-    except Exception as exc:
-        debug_info["ha_config_error"] = str(exc)
-
-    for zone in zones:
-        zone_info: dict = {"name": zone.name, "devices": []}
-        for device in (zone.devices or []):
-            dev_info: dict = {
-                "ha_entity_id": device.ha_entity_id,
-                "device_type": device.type.value,
-                "db_capabilities": device.capabilities,
-            }
-            if device.ha_entity_id:
-                try:
-                    state = await _ha_client.get_state(device.ha_entity_id)
-                    dev_info["ha_state"] = state.state
-                    dev_info["ha_attributes"] = state.attributes
-                except Exception as exc:
-                    dev_info["ha_error"] = str(exc)
-            zone_info["devices"].append(dev_info)
-        debug_info["zones"].append(zone_info)
-
-    return debug_info
-
-
-# ---------------------------------------------------------------------------
 # GET /zones/{zone_id} — single zone detail
 # ---------------------------------------------------------------------------
 @router.get("/{zone_id}", response_model=ZoneResponse)

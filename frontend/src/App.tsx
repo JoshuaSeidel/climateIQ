@@ -1,6 +1,7 @@
 import { RouterProvider, createRouter, Route, RootRoute } from '@tanstack/react-router'
 import { Dashboard } from '@/pages/Dashboard'
 import { Zones } from '@/pages/Zones'
+import { Schedules } from '@/pages/Schedules'
 import { Settings } from '@/pages/Settings'
 import { Chat } from '@/pages/Chat'
 import { Analytics } from '@/pages/Analytics'
@@ -13,11 +14,12 @@ const rootRoute = new RootRoute({
 
 const dashboardRoute = new Route({ getParentRoute: () => rootRoute, path: '/', component: Dashboard })
 const zonesRoute = new Route({ getParentRoute: () => rootRoute, path: '/zones', component: Zones })
+const schedulesRoute = new Route({ getParentRoute: () => rootRoute, path: '/schedules', component: Schedules })
 const settingsRoute = new Route({ getParentRoute: () => rootRoute, path: '/settings', component: Settings })
 const chatRoute = new Route({ getParentRoute: () => rootRoute, path: '/chat', component: Chat })
 const analyticsRoute = new Route({ getParentRoute: () => rootRoute, path: '/analytics', component: Analytics })
 
-const routeTree = rootRoute.addChildren([dashboardRoute, zonesRoute, settingsRoute, chatRoute, analyticsRoute])
+const routeTree = rootRoute.addChildren([dashboardRoute, zonesRoute, schedulesRoute, settingsRoute, chatRoute, analyticsRoute])
 
 const router = createRouter({ routeTree, basepath: BASE_PATH || '/' })
 

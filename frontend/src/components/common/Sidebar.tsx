@@ -10,11 +10,13 @@ import {
   MessageCircle,
   PanelLeft,
   BarChart3,
+  CalendarClock,
 } from 'lucide-react'
 
 const links = [
   { to: '/', label: 'Dashboard', icon: Home },
   { to: '/zones', label: 'Zones', icon: ThermometerSun },
+  { to: '/schedules', label: 'Schedules', icon: CalendarClock },
   { to: '/analytics', label: 'Analytics', icon: BarChart3 },
   { to: '/chat', label: 'Chat', icon: MessageCircle },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
