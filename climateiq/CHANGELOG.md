@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.4
+
+### Improved
+
+- **Renamed "ClimateIQ Copilot" to "ClimateIQ Advisor"** in the chat UI.
+
+- **AI chat now has full live system context** — the LLM system prompt
+  now includes the current system mode, thermostat state (HVAC mode,
+  current/target temp, preset, fan mode), all system settings, every
+  enabled schedule with zone names and timing, and current weather data.
+  The AI can now accurately answer "what mode is the system in?",
+  "what's the thermostat set to?", "what schedules are active?", etc.
+
 ## 0.6.3
 
 ### Improved

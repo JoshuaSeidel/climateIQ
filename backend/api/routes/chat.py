@@ -81,26 +81,35 @@ class CommandResponse(BaseModel):
 # System Prompt
 # ============================================================================
 
-SYSTEM_PROMPT = """You are ClimateIQ, an intelligent HVAC assistant. You help users control their home climate system through natural conversation.
+SYSTEM_PROMPT = """You are ClimateIQ Advisor, an intelligent HVAC management assistant. You help users understand and control their home climate system through natural conversation.
+
+You have FULL visibility into the current system state, including the operating mode, thermostat status, active schedules, and all zone conditions. Use this information to give accurate, specific answers.
 
 You can:
+- Report the current system mode, thermostat state, and all zone conditions
 - Adjust temperatures in specific zones or the whole house
-- Check current temperatures and conditions
-- Set schedules and automations
+- Check current temperatures, humidity, and occupancy
+- Explain active schedules and suggest new ones
 - Provide energy-saving recommendations
-- Explain HVAC system status and how ClimateIQ works
+- Explain how ClimateIQ works in detail
 
 When users request changes, use the available tools to execute them. Always confirm what action you're taking.
 
 {logic_reference}
 
-Current zones available:
+=== CURRENT SYSTEM STATE ===
+
+{system_state}
+
+=== ZONE DETAILS ===
+
 {zones}
 
-Current conditions:
+=== SENSOR CONDITIONS ===
+
 {conditions}
 
-When users ask how something works, reference the logic above. Be concise, helpful, and proactive about energy savings while maintaining comfort."""
+When users ask about the system mode, thermostat state, schedules, or any system configuration, answer directly from the system state above. Be concise, helpful, and proactive about energy savings while maintaining comfort."""
 
 
 def _get_logic_reference_text() -> str:
@@ -147,6 +156,222 @@ def _get_logic_reference_text() -> str:
         for d in details:
             lines.append(f"- {d}")
     return "\n".join(lines)
+
+
+async def _get_live_system_context(db: AsyncSession, temperature_unit: str) -> str:
+    """Gather live system state for the LLM context."""
+    from sqlalchemy import select as _sel
+
+    from backend.models.database import Schedule, SystemConfig, SystemSetting, Zone
+
+    sections: list[str] = []
+    kv: dict[str, Any] = {}
+
+    # 1. Current system mode
+    try:
+        result = await db.execute(_sel(SystemConfig).limit(1))
+        config = result.scalar_one_or_none()
+        if config:
+            sections.append(f"Current system mode: {config.current_mode.value}")
+        else:
+            sections.append("Current system mode: learn (default)")
+    except Exception:
+        sections.append("Current system mode: unknown")
+
+    # 2. Key settings from system_settings KV table
+    try:
+        result = await db.execute(_sel(SystemSetting))
+        settings_rows = result.scalars().all()
+        for row in settings_rows:
+            kv[row.key] = row.value.get("value") if isinstance(row.value, dict) else row.value
+
+        settings_parts: list[str] = []
+        if kv.get("temperature_unit"):
+            settings_parts.append(f"Temperature unit: {kv['temperature_unit']}")
+        if kv.get("climate_entities"):
+            settings_parts.append(f"Climate entities: {kv['climate_entities']}")
+        if kv.get("weather_entity"):
+            settings_parts.append(f"Weather entity: {kv['weather_entity']}")
+        if kv.get("energy_entity"):
+            settings_parts.append(f"Energy entity: {kv['energy_entity']}")
+        if kv.get("default_comfort_temp_min") and kv.get("default_comfort_temp_max"):
+            min_c = float(kv["default_comfort_temp_min"])
+            max_c = float(kv["default_comfort_temp_max"])
+            min_d, unit = _format_temp_for_display(min_c, temperature_unit)
+            max_d, _ = _format_temp_for_display(max_c, temperature_unit)
+            settings_parts.append(f"Default comfort range: {min_d:.1f}-{max_d:.1f}\u00b0{unit}")
+        if kv.get("notification_target"):
+            settings_parts.append(f"Notification target: {kv['notification_target']}")
+
+        if settings_parts:
+            sections.append("System settings:\n" + "\n".join(f"  - {p}" for p in settings_parts))
+    except Exception as e:
+        sections.append(f"System settings: unavailable ({e})")
+
+    # 3. Global thermostat state
+    try:
+        import backend.api.dependencies as _deps
+
+        ha_client = _deps._ha_client
+        if ha_client:
+            # Get climate entity from settings or config
+            climate_entity = kv.get("climate_entities", "")
+            if isinstance(climate_entity, str) and climate_entity.strip():
+                entity_id = climate_entity.strip().split(",")[0].strip()
+            else:
+                from backend.config import get_settings as _gs
+
+                _s = _gs()
+                entity_id = (
+                    _s.climate_entities.strip().split(",")[0].strip()
+                    if _s.climate_entities.strip()
+                    else ""
+                )
+
+            if entity_id:
+                state = await ha_client.get_state(entity_id)
+                if state:
+                    attrs = state.attributes or {}
+                    hvac_mode = state.state  # "heat", "cool", "auto", "off"
+                    current = attrs.get("current_temperature")
+                    target = (
+                        attrs.get("temperature")
+                        or attrs.get("target_temp_low")
+                        or attrs.get("target_temp_high")
+                    )
+                    hvac_action = attrs.get("hvac_action", "unknown")
+
+                    unit_label = (
+                        "F" if temperature_unit.upper() in ("F", "FAHRENHEIT") else "C"
+                    )
+                    thermo_parts = [f"Entity: {entity_id}"]
+                    thermo_parts.append(f"HVAC mode: {hvac_mode}")
+                    thermo_parts.append(f"HVAC action: {hvac_action}")
+                    if current is not None:
+                        thermo_parts.append(
+                            f"Current temperature (from thermostat): {current}\u00b0{unit_label}"
+                        )
+                    if target is not None:
+                        thermo_parts.append(
+                            f"Target temperature: {target}\u00b0{unit_label}"
+                        )
+                    if attrs.get("target_temp_low") is not None:
+                        thermo_parts.append(
+                            f"Target temp low: {attrs['target_temp_low']}"
+                        )
+                    if attrs.get("target_temp_high") is not None:
+                        thermo_parts.append(
+                            f"Target temp high: {attrs['target_temp_high']}"
+                        )
+                    if attrs.get("preset_mode"):
+                        thermo_parts.append(f"Preset mode: {attrs['preset_mode']}")
+                    if attrs.get("fan_mode"):
+                        thermo_parts.append(f"Fan mode: {attrs['fan_mode']}")
+
+                    sections.append(
+                        "Thermostat state:\n"
+                        + "\n".join(f"  - {p}" for p in thermo_parts)
+                    )
+    except Exception as e:
+        sections.append(f"Thermostat state: unavailable ({e})")
+
+    # 4. Active schedules
+    try:
+        result = await db.execute(
+            _sel(Schedule)
+            .where(Schedule.is_enabled.is_(True))
+            .order_by(Schedule.priority.desc())
+        )
+        schedules = result.scalars().all()
+        if schedules:
+            # Collect zone IDs across all schedules
+            all_zone_ids: set[str] = set()
+            for s in schedules:
+                if s.zone_ids and isinstance(s.zone_ids, list):
+                    all_zone_ids.update(str(zid) for zid in s.zone_ids)
+
+            zone_name_map: dict[str, str] = {}
+            if all_zone_ids:
+                import uuid as _uuid
+
+                zone_uuids = []
+                for zid in all_zone_ids:
+                    try:
+                        zone_uuids.append(_uuid.UUID(zid))
+                    except ValueError:
+                        pass
+                if zone_uuids:
+                    zr = await db.execute(
+                        _sel(Zone).where(Zone.id.in_(zone_uuids))
+                    )
+                    zone_name_map = {
+                        str(z.id): z.name for z in zr.scalars().all()
+                    }
+
+            sched_lines: list[str] = []
+            for s in schedules:
+                zone_names_list: list[str] = []
+                if s.zone_ids and isinstance(s.zone_ids, list):
+                    for zid in s.zone_ids:
+                        zname = zone_name_map.get(str(zid))
+                        if zname:
+                            zone_names_list.append(zname)
+                zone_display = (
+                    ", ".join(zone_names_list) if zone_names_list else "All zones"
+                )
+
+                target_display_val, target_unit = _format_temp_for_display(
+                    s.target_temp_c, temperature_unit
+                )
+
+                days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                day_str = ",".join(
+                    days[d] for d in (s.days_of_week or []) if 0 <= d <= 6
+                )
+
+                sched_lines.append(
+                    f'  - "{s.name}": {zone_display} | {day_str} | '
+                    f"{s.start_time}{'-' + s.end_time if s.end_time else ''} | "
+                    f"{target_display_val:.1f}\u00b0{target_unit} | "
+                    f"{s.hvac_mode} | priority {s.priority}"
+                )
+            sections.append(
+                f"Active schedules ({len(schedules)}):\n"
+                + "\n".join(sched_lines)
+            )
+        else:
+            sections.append("Active schedules: none")
+    except Exception as e:
+        sections.append(f"Active schedules: unavailable ({e})")
+
+    # 5. Weather (from Redis cache)
+    try:
+        from backend.api.main import app_state
+
+        redis = app_state.redis_client
+        if redis:
+            weather_json = await redis.get("weather:current")
+            if weather_json:
+                import json
+
+                weather = json.loads(weather_json)
+                w_parts: list[str] = []
+                if weather.get("condition"):
+                    w_parts.append(f"Condition: {weather['condition']}")
+                if weather.get("temperature") is not None:
+                    w_parts.append(f"Outdoor temp: {weather['temperature']}\u00b0")
+                if weather.get("humidity") is not None:
+                    w_parts.append(f"Outdoor humidity: {weather['humidity']}%")
+                if weather.get("wind_speed") is not None:
+                    w_parts.append(f"Wind: {weather['wind_speed']}")
+                if w_parts:
+                    sections.append(
+                        "Weather:\n" + "\n".join(f"  - {p}" for p in w_parts)
+                    )
+    except Exception:
+        pass  # Weather is optional, don't add noise
+
+    return "\n\n".join(sections) if sections else "No system state available."
 
 
 # ============================================================================
@@ -810,6 +1035,7 @@ async def send_chat_message(
 
     system_prompt = SYSTEM_PROMPT.format(
         logic_reference=_get_logic_reference_text(),
+        system_state=await _get_live_system_context(db, settings.temperature_unit),
         zones=zone_context,
         conditions=conditions_context,
     )
@@ -1298,6 +1524,9 @@ async def chat_websocket(
                         messages=[{"role": "user", "content": user_message}],
                         system=SYSTEM_PROMPT.format(
                             logic_reference=_get_logic_reference_text(),
+                            system_state=await _get_live_system_context(
+                                db, settings.temperature_unit
+                            ),
                             zones=zone_context,
                             conditions=conditions_context,
                         ),

@@ -326,7 +326,7 @@ export const Chat = () => {
               <p className="text-xs uppercase tracking-widest text-muted-foreground">Assistant</p>
               <h2 className="flex items-center gap-2 truncate text-lg font-semibold sm:text-2xl">
                 <Sparkles className="h-5 w-5 shrink-0 text-primary sm:h-6 sm:w-6" />
-                <span className="truncate">ClimateIQ Copilot</span>
+                <span className="truncate">ClimateIQ Advisor</span>
               </h2>
             </div>
           </div>
