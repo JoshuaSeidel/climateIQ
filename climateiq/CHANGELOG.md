@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.8
+
+### Fixed
+
+- **Ecobee target temp now correct** — Ecobee thermostats use
+  `target_temp_low` (heat), `target_temp_high` (cool), or both (auto)
+  instead of the generic `temperature` attribute. The backend now reads
+  the HVAC mode and picks the correct setpoint. Previously `target_temp`
+  came back null and the frontend showed the 22°C default (71.6°F).
+- **Build fix** — missing closing braces in Dashboard onClick handlers,
+  and `unitKey` declared after its use in `handleTempOverride`.
+
 ## 0.4.7
 
 ### Fixed
