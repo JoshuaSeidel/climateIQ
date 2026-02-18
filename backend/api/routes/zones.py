@@ -22,6 +22,40 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# ---------------------------------------------------------------------------
+# HA unit detection — cached so we only query HA config once
+# ---------------------------------------------------------------------------
+_ha_temp_unit: str | None = None  # "°F", "°C", or None (unknown)
+
+
+def _f_to_c(f: float) -> float:
+    """Convert Fahrenheit to Celsius."""
+    return (f - 32.0) * 5.0 / 9.0
+
+
+async def _get_ha_temp_unit(ha_client: HAClient) -> str:
+    """Detect HA's configured temperature unit (cached after first call)."""
+    global _ha_temp_unit
+    if _ha_temp_unit is not None:
+        return _ha_temp_unit
+    try:
+        config = await ha_client.get_config()
+        # HA config returns unit_system.temperature = "°F" or "°C"
+        unit_system = config.get("unit_system", {})
+        _ha_temp_unit = unit_system.get("temperature", "°C")
+        logger.info("Detected HA temperature unit: %s", _ha_temp_unit)
+    except Exception as exc:
+        logger.warning("Could not detect HA temp unit, assuming °C: %s", exc)
+        _ha_temp_unit = "°C"
+    return _ha_temp_unit
+
+
+def _ha_temp_to_celsius(value: float, ha_unit: str) -> float:
+    """Convert an HA temperature value to Celsius if needed."""
+    if ha_unit == "°F":
+        return _f_to_c(value)
+    return value
+
 
 # ---------------------------------------------------------------------------
 # GET /zones — list all zones with related sensors and devices
@@ -234,14 +268,24 @@ async def _enrich_zone_response(
         for device in zone.devices:
             if device.type.value == "thermostat" and device.ha_entity_id:
                 try:
+                    ha_unit = await _get_ha_temp_unit(ha_client)
                     state = await ha_client.get_state(device.ha_entity_id)
                     attrs = state.attributes
                     # Current temperature reading from the thermostat (always prefer live)
                     if attrs.get("current_temperature") is not None:
-                        resp.current_temp = float(attrs["current_temperature"])
+                        raw = float(attrs["current_temperature"])
+                        resp.current_temp = _ha_temp_to_celsius(raw, ha_unit)
                     # Target / setpoint temperature (always prefer live)
                     if attrs.get("temperature") is not None:
-                        resp.target_temp = float(attrs["temperature"])
+                        raw = float(attrs["temperature"])
+                        resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
+                    logger.debug(
+                        "Zone %s live HA data: current_temp=%.1f, target_temp=%.1f (HA unit=%s)",
+                        zone.name,
+                        resp.current_temp if resp.current_temp is not None else 0,
+                        resp.target_temp if resp.target_temp is not None else 0,
+                        ha_unit,
+                    )
                     break
                 except (HAClientError, Exception) as exc:
                     logger.debug("Could not fetch HA state for %s: %s", device.ha_entity_id, exc)

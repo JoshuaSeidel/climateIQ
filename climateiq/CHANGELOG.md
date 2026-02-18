@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.7
+
+### Fixed
+
+- **Thermostat temperatures now correct when HA uses Imperial (°F)** —
+  the backend was storing raw HA temperature values without converting
+  to Celsius. Since HA returns temps in the user's configured unit
+  system, an HA instance set to Imperial would send 71°F which the
+  backend stored as 71, and the frontend then converted "71°C" to
+  159.8°F. Now the backend detects HA's unit system via `GET /api/config`
+  (cached after first call) and converts F→C before storing. The
+  frontend's C→display-unit conversion then produces correct values.
+
+- **Dashboard temperature override respects user's unit** — the
+  up/down temp override widget was hardcoded to a 10–35 range (Celsius)
+  and sent raw values to the backend. Now uses the user's display unit
+  (50–95°F or 10–35°C), seeds with the target temp converted to the
+  display unit, and converts back to Celsius before sending.
+
 ## 0.4.6
 
 ### Fixed

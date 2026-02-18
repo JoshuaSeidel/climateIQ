@@ -7,7 +7,7 @@ import { ZoneCard } from '@/components/zones/ZoneCard'
 import { api, BASE_PATH } from '@/lib/api'
 import { ReconnectingWebSocket } from '@/lib/websocket'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { formatTemperature } from '@/lib/utils'
+import { formatTemperature, toDisplayTemp, toStorageCelsius } from '@/lib/utils'
 import type { Zone, ZonesResponse, SystemSettings, UpcomingSchedule } from '@/types'
 import {
   Activity,
@@ -235,8 +235,10 @@ export const Dashboard = () => {
     async (zoneId: string, temp: number) => {
       setOverrideSubmitting(true)
       try {
+        // Convert from display unit back to Celsius for the backend
+        const tempC = Math.round(toStorageCelsius(temp, unitKey))
         await api.post('/chat/command', {
-          command: `Set zone to ${temp} degrees`,
+          command: `Set zone to ${tempC} degrees celsius`,
           zone_id: zoneId,
         })
         setError(null)
@@ -248,7 +250,7 @@ export const Dashboard = () => {
         setOverrideSubmitting(false)
       }
     },
-    [refetchZones],
+    [refetchZones, unitKey],
   )
 
   // Quick action handlers
@@ -411,10 +413,11 @@ export const Dashboard = () => {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8"
-                          onClick={() =>
+                          onClick={() => {
+                            const min = unitKey === 'f' ? 50 : 10
                             setTempOverride({
                               zoneId: zone.id,
-                              temp: String(Math.max(10, Number(tempOverride.temp) - 1)),
+                              temp: String(Math.max(min, Number(tempOverride.temp) - 1)),
                             })
                           }
                         >
@@ -430,10 +433,11 @@ export const Dashboard = () => {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8"
-                          onClick={() =>
+                          onClick={() => {
+                            const max = unitKey === 'f' ? 95 : 35
                             setTempOverride({
                               zoneId: zone.id,
-                              temp: String(Math.min(35, Number(tempOverride.temp) + 1)),
+                              temp: String(Math.min(max, Number(tempOverride.temp) + 1)),
                             })
                           }
                         >
@@ -464,7 +468,7 @@ export const Dashboard = () => {
                         onClick={() =>
                           setTempOverride({
                             zoneId: zone.id,
-                            temp: String(zone.targetTemperature),
+                            temp: String(Math.round(toDisplayTemp(zone.targetTemperature, unitKey))),
                           })
                         }
                         title="Override temperature"
