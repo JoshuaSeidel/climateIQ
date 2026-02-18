@@ -419,7 +419,7 @@ export const Dashboard = () => {
                               zoneId: zone.id,
                               temp: String(Math.max(min, Number(tempOverride.temp) - 1)),
                             })
-                          }
+                          }}
                         >
                           <ChevronDown className="h-4 w-4" />
                         </Button>
@@ -439,7 +439,7 @@ export const Dashboard = () => {
                               zoneId: zone.id,
                               temp: String(Math.min(max, Number(tempOverride.temp) + 1)),
                             })
-                          }
+                          }}
                         >
                           <ChevronUp className="h-4 w-4" />
                         </Button>
