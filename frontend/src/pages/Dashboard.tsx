@@ -230,6 +230,9 @@ export const Dashboard = () => {
     }
   }, [zones])
 
+  const { temperatureUnit } = useSettingsStore()
+  const unitKey: 'c' | 'f' = temperatureUnit === 'celsius' ? 'c' : 'f'
+
   // Temperature override handler — uses the command endpoint for safety clamping
   const handleTempOverride = useCallback(
     async (zoneId: string, temp: number) => {
@@ -270,8 +273,6 @@ export const Dashboard = () => {
   const weather = weatherEnvelope?.data ?? null
   const WeatherIcon = weather ? getWeatherIcon(weather.state) : Sun
   const currentMode = settings?.current_mode ?? 'learn'
-  const { temperatureUnit } = useSettingsStore()
-  const unitKey: 'c' | 'f' = temperatureUnit === 'celsius' ? 'c' : 'f'
 
   return (
     <div className="space-y-6">
