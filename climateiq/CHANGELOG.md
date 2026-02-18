@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.3
+
+### Fixed
+
+- **32°F / 0% no longer shown for zones without sensors** — the backend
+  returned `0` (not `null`) for `current_temp` and `current_humidity`
+  when no sensor data exists. Frontend now treats `0` as no-data and
+  shows "--" instead of 32°F/0%.
+
 ## 0.5.2
 
 ### Fixed
