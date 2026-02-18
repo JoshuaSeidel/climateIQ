@@ -98,10 +98,10 @@ export const Dashboard = () => {
         type: z.type as string | undefined,
         floor: z.floor as number | undefined,
         is_active: z.is_active as boolean,
-        temperature: (z.current_temp as number | null) ?? 0,
-        humidity: (z.current_humidity as number | null) ?? 0,
-        occupancy: (z.is_occupied === true ? 'occupied' : z.is_occupied === false ? 'vacant' : 'vacant') as 'occupied' | 'vacant',
-        targetTemperature: (z.target_temp as number | null) ?? 22,
+        temperature: (z.current_temp as number | null) ?? null,
+        humidity: (z.current_humidity as number | null) ?? null,
+        occupancy: z.is_occupied === true ? 'occupied' : z.is_occupied === false ? 'vacant' : null,
+        targetTemperature: (z.target_temp as number | null) ?? null,
         sensors: z.sensors as Zone['sensors'],
         devices: z.devices as Zone['devices'],
       }))
@@ -217,8 +217,8 @@ export const Dashboard = () => {
       }
     }
 
-    const temps = zones.map((z) => z.temperature).filter((t) => Number.isFinite(t))
-    const humidities = zones.map((z) => z.humidity).filter((h) => Number.isFinite(h))
+    const temps = zones.map((z) => z.temperature).filter((t): t is number => t != null && Number.isFinite(t))
+    const humidities = zones.map((z) => z.humidity).filter((h): h is number => h != null && Number.isFinite(h))
 
     return {
       avgTemp: temps.length ? temps.reduce((a, b) => a + b, 0) / temps.length : 0,
@@ -469,7 +469,7 @@ export const Dashboard = () => {
                         onClick={() =>
                           setTempOverride({
                             zoneId: zone.id,
-                            temp: String(Math.round(toDisplayTemp(zone.targetTemperature, unitKey))),
+                            temp: String(Math.round(toDisplayTemp(zone.targetTemperature ?? 22, unitKey))),
                           })
                         }
                         title="Override temperature"

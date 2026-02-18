@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.2
+
+### Fixed
+
+- **Zones show "--" when no sensor is assigned** — temperature,
+  humidity, status, and occupancy all show "--" instead of fake
+  defaults (0%, Clear, 0°) when a zone has no sensor data. Only the
+  target setpoint (shared from the global thermostat) shows a value.
+  Per-zone values will appear once Zigbee sensors are assigned.
+
 ## 0.5.1
 
 ### Fixed

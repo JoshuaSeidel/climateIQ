@@ -97,10 +97,10 @@ export type Zone = {
   type?: ZoneType
   floor?: number
   is_active?: boolean
-  temperature: number
-  humidity: number
-  occupancy: 'occupied' | 'vacant'
-  targetTemperature: number
+  temperature: number | null
+  humidity: number | null
+  occupancy: 'occupied' | 'vacant' | null
+  targetTemperature: number | null
   sensors?: Sensor[]
   devices?: Device[]
 }

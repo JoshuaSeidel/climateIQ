@@ -130,10 +130,10 @@ export const Zones = () => {
           type: z.type,
           floor: z.floor,
           is_active: z.is_active,
-          temperature: (raw.current_temp as number) ?? 0,
-          humidity: (raw.current_humidity as number) ?? 0,
-          occupancy: (raw.is_occupied ? 'occupied' : 'vacant') as 'occupied' | 'vacant',
-          targetTemperature: (raw.target_temp as number) ?? 22,
+          temperature: (raw.current_temp as number | null) ?? null,
+          humidity: (raw.current_humidity as number | null) ?? null,
+          occupancy: raw.is_occupied === true ? 'occupied' : raw.is_occupied === false ? 'vacant' : null,
+          targetTemperature: (raw.target_temp as number | null) ?? null,
           sensors: z.sensors,
           devices: z.devices,
         }
@@ -861,7 +861,7 @@ export const Zones = () => {
                       <Thermometer className="h-4 w-4" /> Temp
                     </div>
                     <p className="text-2xl font-semibold text-foreground">
-                      {zone.temperature > 0 ? formatTemperature(zone.temperature, unitKey) : '--'}
+                      {zone.temperature != null ? formatTemperature(zone.temperature, unitKey) : '--'}
                     </p>
                   </div>
                   <div className="rounded-2xl border border-border/60 p-4">
@@ -869,14 +869,16 @@ export const Zones = () => {
                       <Droplets className="h-4 w-4" /> Humidity
                     </div>
                     <p className="text-2xl font-semibold text-foreground">
-                      {zone.humidity > 0 ? `${zone.humidity.toFixed(0)}%` : '--'}
+                      {zone.humidity != null ? `${zone.humidity.toFixed(0)}%` : '--'}
                     </p>
                   </div>
                   <div className="rounded-2xl border border-border/60 p-4">
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
                       <Users className="h-4 w-4" /> Occupancy
                     </div>
-                    <p className="text-2xl font-semibold text-foreground">{zone.occupancy}</p>
+                    <p className="text-2xl font-semibold text-foreground">
+                      {zone.occupancy === 'occupied' ? 'Occupied' : zone.occupancy === 'vacant' ? 'Vacant' : '--'}
+                    </p>
                   </div>
                   <div className="rounded-2xl border border-border/60 p-4">
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
