@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.2
+
+### Improved
+
+- **Analytics now use TimescaleDB continuous aggregates** — the history
+  and comfort endpoints no longer fetch all raw sensor readings into
+  Python for aggregation. Instead, queries automatically select the best
+  pre-computed view (5-min, hourly, or daily) based on the lookback
+  window and requested resolution. For a 30-day query, this reduces the
+  row count from ~86,400 per sensor to ~720 (hourly buckets). The comfort
+  endpoint also replaced its N+1 per-zone query pattern with a single
+  bulk SQL query grouped by zone_id.
+
+### Fixed
+
+- **LLM model list now populates** — the Settings > LLM Providers tab
+  was always showing 0 models because the backend endpoints were stubs
+  returning hardcoded empty lists. Now the listing and refresh endpoints
+  call the existing `discover_models()` module which makes real API calls
+  to each provider (Anthropic, OpenAI, Gemini, Grok, Ollama, LlamaCPP).
+  Discovery runs in a background thread with a 5-second timeout to avoid
+  blocking, and results are cached for 5 minutes. The response now
+  includes model display names and context lengths.
+
+### Added
+
+- **Comprehensive diagnostics endpoint** `GET /system/diagnostics` —
+  checks 11 system components in a single request: database connectivity,
+  TimescaleDB extensions/hypertables/continuous aggregates, table row
+  counts, Redis PING + SET/GET, Home Assistant REST + WebSocket,
+  background scheduler job status, notification service, and LLM provider
+  configuration. Returns structured results with per-component status,
+  latency measurements, and an overall health assessment.
+
 ## 0.6.1
 
 ### Added

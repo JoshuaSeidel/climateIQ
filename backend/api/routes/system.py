@@ -518,6 +518,440 @@ async def get_logic_reference() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# GET /system/diagnostics — comprehensive integration diagnostics
+# ---------------------------------------------------------------------------
+
+
+class DiagnosticComponent(BaseModel):
+    name: str
+    status: str  # "ok", "warning", "error", "not_configured"
+    message: str | None = None
+    details: dict[str, Any] = {}
+    latency_ms: float | None = None
+
+
+class DiagnosticsResponse(BaseModel):
+    overall_status: str  # "ok", "degraded", "error"
+    timestamp: datetime
+    uptime_seconds: float | None = None
+    version: str
+    components: list[DiagnosticComponent] = []
+
+
+@router.get("/diagnostics", response_model=DiagnosticsResponse)
+async def get_diagnostics(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> DiagnosticsResponse:
+    """Comprehensive read-only diagnostic check of all system components."""
+    import time
+
+    from sqlalchemy import text
+
+    # Lazy imports to avoid circular dependencies
+    from backend.api.main import _notification_service, app_state
+    from backend.api.middleware import _VERSION
+    from backend.config import SETTINGS
+
+    components: list[DiagnosticComponent] = []
+
+    # ------------------------------------------------------------------
+    # 1. Database connectivity
+    # ------------------------------------------------------------------
+    try:
+        t0 = time.monotonic()
+        await db.execute(text("SELECT 1"))
+        latency = (time.monotonic() - t0) * 1000
+        components.append(
+            DiagnosticComponent(
+                name="database",
+                status="ok",
+                message="Connected",
+                latency_ms=round(latency, 2),
+            )
+        )
+    except Exception as exc:
+        components.append(
+            DiagnosticComponent(
+                name="database",
+                status="error",
+                message=f"Connection failed: {exc}",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 2. TimescaleDB extensions
+    # ------------------------------------------------------------------
+    try:
+        result = await db.execute(
+            text(
+                "SELECT extname, extversion FROM pg_extension "
+                "WHERE extname IN ('timescaledb', 'uuid-ossp', 'vector')"
+            )
+        )
+        rows = result.fetchall()
+        ext_map = {row[0]: row[1] for row in rows}
+        components.append(
+            DiagnosticComponent(
+                name="timescaledb_extensions",
+                status="ok" if "timescaledb" in ext_map else "warning",
+                message=(
+                    f"{len(ext_map)} extension(s) installed"
+                    if ext_map
+                    else "No target extensions found"
+                ),
+                details={"extensions": ext_map},
+            )
+        )
+    except Exception as exc:
+        components.append(
+            DiagnosticComponent(
+                name="timescaledb_extensions",
+                status="warning",
+                message=f"Could not query extensions: {exc}",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 3. TimescaleDB hypertables
+    # ------------------------------------------------------------------
+    try:
+        result = await db.execute(
+            text("SELECT hypertable_name FROM timescaledb_information.hypertables")
+        )
+        hypertables = [row[0] for row in result.fetchall()]
+        components.append(
+            DiagnosticComponent(
+                name="timescaledb_hypertables",
+                status="ok" if hypertables else "warning",
+                message=f"{len(hypertables)} hypertable(s)",
+                details={"hypertables": hypertables},
+            )
+        )
+    except Exception as exc:
+        components.append(
+            DiagnosticComponent(
+                name="timescaledb_hypertables",
+                status="not_configured",
+                message=f"TimescaleDB hypertables not available: {exc}",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 4. TimescaleDB continuous aggregates
+    # ------------------------------------------------------------------
+    try:
+        result = await db.execute(
+            text("SELECT view_name FROM timescaledb_information.continuous_aggregates")
+        )
+        caggs = [row[0] for row in result.fetchall()]
+        components.append(
+            DiagnosticComponent(
+                name="timescaledb_continuous_aggregates",
+                status="ok" if caggs else "warning",
+                message=f"{len(caggs)} continuous aggregate(s)",
+                details={"continuous_aggregates": caggs},
+            )
+        )
+    except Exception as exc:
+        components.append(
+            DiagnosticComponent(
+                name="timescaledb_continuous_aggregates",
+                status="not_configured",
+                message=f"Continuous aggregates not available: {exc}",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 5. Database table counts
+    # ------------------------------------------------------------------
+    try:
+        result = await db.execute(
+            text(
+                "SELECT "
+                "(SELECT count(*) FROM zones) AS zones, "
+                "(SELECT count(*) FROM sensors) AS sensors, "
+                "(SELECT count(*) FROM sensor_readings) AS readings, "
+                "(SELECT count(*) FROM devices) AS devices, "
+                "(SELECT count(*) FROM schedules) AS schedules, "
+                "(SELECT count(*) FROM system_settings) AS settings"
+            )
+        )
+        row = result.fetchone()
+        if row:
+            counts = {
+                "zones": row[0],
+                "sensors": row[1],
+                "sensor_readings": row[2],
+                "devices": row[3],
+                "schedules": row[4],
+                "system_settings": row[5],
+            }
+        else:
+            counts = {}
+        components.append(
+            DiagnosticComponent(
+                name="database_tables",
+                status="ok",
+                message=f"{sum(counts.values())} total rows across key tables",
+                details={"counts": counts},
+            )
+        )
+    except Exception as exc:
+        components.append(
+            DiagnosticComponent(
+                name="database_tables",
+                status="error",
+                message=f"Could not query table counts: {exc}",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 6. Redis connectivity
+    # ------------------------------------------------------------------
+    try:
+        redis_client = app_state.redis_client
+        if redis_client is None:
+            components.append(
+                DiagnosticComponent(
+                    name="redis",
+                    status="not_configured",
+                    message="Redis client not initialised",
+                )
+            )
+        else:
+            t0 = time.monotonic()
+            await redis_client.ping()
+            latency = (time.monotonic() - t0) * 1000
+
+            # SET/GET round-trip test
+            test_key = "climateiq:diagnostics:probe"
+            test_val = f"diag-{datetime.now(UTC).isoformat()}"
+            await redis_client.set(test_key, test_val, ex=10)
+            readback = await redis_client.get(test_key)
+            await redis_client.delete(test_key)
+
+            components.append(
+                DiagnosticComponent(
+                    name="redis",
+                    status="ok",
+                    message="Connected — PING + SET/GET OK",
+                    latency_ms=round(latency, 2),
+                    details={"set_get_match": readback == test_val},
+                )
+            )
+    except Exception as exc:
+        components.append(
+            DiagnosticComponent(
+                name="redis",
+                status="error",
+                message=f"Redis check failed: {exc}",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 7. Home Assistant REST
+    # ------------------------------------------------------------------
+    try:
+        from backend.api.dependencies import _ha_client
+
+        if _ha_client is None:
+            components.append(
+                DiagnosticComponent(
+                    name="home_assistant_rest",
+                    status="not_configured",
+                    message="HA REST client not initialised",
+                )
+            )
+        else:
+            t0 = time.monotonic()
+            state = await _ha_client.get_state("sun.sun")
+            latency = (time.monotonic() - t0) * 1000
+            entity_id = state.entity_id if state else ""
+            components.append(
+                DiagnosticComponent(
+                    name="home_assistant_rest",
+                    status="ok" if entity_id else "warning",
+                    message=f"sun.sun entity_id={entity_id}" if entity_id else "sun.sun not found",
+                    latency_ms=round(latency, 2),
+                )
+            )
+    except Exception as exc:
+        components.append(
+            DiagnosticComponent(
+                name="home_assistant_rest",
+                status="error",
+                message=f"HA REST check failed: {exc}",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 8. Home Assistant WebSocket
+    # ------------------------------------------------------------------
+    try:
+        ha_ws = app_state.ha_ws
+        if ha_ws is None:
+            components.append(
+                DiagnosticComponent(
+                    name="home_assistant_websocket",
+                    status="not_configured",
+                    message="HA WebSocket client not initialised",
+                )
+            )
+        else:
+            ws_connected = getattr(ha_ws, "connected", None)
+            # .connected is a property returning bool on HAWebSocketClient
+            if callable(ws_connected):
+                ws_connected = ws_connected()
+            components.append(
+                DiagnosticComponent(
+                    name="home_assistant_websocket",
+                    status="ok" if ws_connected else "warning",
+                    message="Connected" if ws_connected else "Disconnected",
+                    details={"connected": bool(ws_connected)},
+                )
+            )
+    except Exception as exc:
+        components.append(
+            DiagnosticComponent(
+                name="home_assistant_websocket",
+                status="error",
+                message=f"HA WebSocket check failed: {exc}",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 9. Background scheduler
+    # ------------------------------------------------------------------
+    try:
+        scheduler = app_state.scheduler
+        if scheduler is None:
+            components.append(
+                DiagnosticComponent(
+                    name="scheduler",
+                    status="not_configured",
+                    message="Scheduler not initialised",
+                )
+            )
+        else:
+            running = getattr(scheduler, "running", False)
+            jobs_info: list[dict[str, Any]] = []
+            try:
+                for job in scheduler.get_jobs():
+                    jobs_info.append(
+                        {
+                            "id": job.id,
+                            "next_run_time": (
+                                job.next_run_time.isoformat()
+                                if job.next_run_time
+                                else None
+                            ),
+                        }
+                    )
+            except Exception:
+                pass
+            components.append(
+                DiagnosticComponent(
+                    name="scheduler",
+                    status="ok" if running else "warning",
+                    message=f"{'Running' if running else 'Stopped'} — {len(jobs_info)} job(s)",
+                    details={"running": running, "jobs": jobs_info},
+                )
+            )
+    except Exception as exc:
+        components.append(
+            DiagnosticComponent(
+                name="scheduler",
+                status="error",
+                message=f"Scheduler check failed: {exc}",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 10. Notification service
+    # ------------------------------------------------------------------
+    try:
+        components.append(
+            DiagnosticComponent(
+                name="notification_service",
+                status="ok" if _notification_service is not None else "not_configured",
+                message=(
+                    "Initialised"
+                    if _notification_service is not None
+                    else "Not initialised"
+                ),
+            )
+        )
+    except Exception as exc:
+        components.append(
+            DiagnosticComponent(
+                name="notification_service",
+                status="error",
+                message=f"Notification check failed: {exc}",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # 11. LLM providers
+    # ------------------------------------------------------------------
+    try:
+        configured_providers: list[str] = []
+        if SETTINGS.anthropic_api_key:
+            configured_providers.append("anthropic")
+        if SETTINGS.openai_api_key:
+            configured_providers.append("openai")
+        if SETTINGS.gemini_api_key:
+            configured_providers.append("gemini")
+        if SETTINGS.grok_api_key:
+            configured_providers.append("grok")
+
+        components.append(
+            DiagnosticComponent(
+                name="llm_providers",
+                status="ok" if configured_providers else "not_configured",
+                message=(
+                    f"{len(configured_providers)} provider(s) configured: "
+                    + ", ".join(configured_providers)
+                    if configured_providers
+                    else "No LLM API keys configured"
+                ),
+                details={"configured_providers": configured_providers},
+            )
+        )
+    except Exception as exc:
+        components.append(
+            DiagnosticComponent(
+                name="llm_providers",
+                status="error",
+                message=f"LLM provider check failed: {exc}",
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # Determine overall status
+    # ------------------------------------------------------------------
+    statuses = {c.status for c in components}
+    if "error" in statuses:
+        overall = "error"
+    elif "warning" in statuses:
+        overall = "degraded"
+    else:
+        overall = "ok"
+
+    # Uptime
+    uptime_seconds: float | None = None
+    if app_state.startup_time:
+        uptime_seconds = (datetime.now(UTC) - app_state.startup_time).total_seconds()
+
+    return DiagnosticsResponse(
+        overall_status=overall,
+        timestamp=datetime.now(UTC),
+        uptime_seconds=round(uptime_seconds, 2) if uptime_seconds is not None else None,
+        version=_VERSION,
+        components=components,
+    )
+
+
 async def _get_or_create_system_config(session: AsyncSession) -> SystemConfig:
     result = await session.execute(select(SystemConfig).limit(1))
     config = result.scalar_one_or_none()

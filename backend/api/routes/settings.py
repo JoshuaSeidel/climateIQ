@@ -89,10 +89,16 @@ class HAEntityInfo(BaseModel):
     state: str
 
 
+class LLMModelInfo(BaseModel):
+    id: str
+    display_name: str | None = None
+    context_length: int | None = None
+
+
 class LLMProviderInfo(BaseModel):
     provider: str
     configured: bool = False
-    models: list[str] = []
+    models: list[LLMModelInfo] = []
 
 
 class LLMProvidersResponse(BaseModel):
@@ -169,6 +175,23 @@ async def _build_response(session: AsyncSession) -> SystemSettingsResponse:
         default_schedule=dict(config.default_schedule) if config.default_schedule else None,
         last_synced_at=config.last_synced_at.isoformat() if config.last_synced_at else None,
     )
+
+
+def _resolve_provider_credentials(provider: str) -> tuple[str | None, str | None]:
+    """Return (api_key, base_url) for a provider from app settings."""
+    if provider == "anthropic":
+        return SETTINGS.anthropic_api_key or None, None
+    elif provider == "openai":
+        return SETTINGS.openai_api_key or None, None
+    elif provider == "gemini":
+        return SETTINGS.gemini_api_key or None, None
+    elif provider == "grok":
+        return SETTINGS.grok_api_key or None, None
+    elif provider == "ollama":
+        return None, str(SETTINGS.ollama_url) or None
+    elif provider == "llamacpp":
+        return None, str(SETTINGS.llamacpp_url) or None
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -252,25 +275,41 @@ async def list_ha_entities(
 # ---------------------------------------------------------------------------
 @router.get("/llm/providers", response_model=LLMProvidersResponse)
 async def get_llm_providers() -> LLMProvidersResponse:
-    """Return configured LLM providers and their status."""
-    from backend.integrations.llm.provider import ClimateIQLLMProvider
+    """Return configured LLM providers and their available models."""
+    import asyncio
 
-    env_key_map: dict[str, str] = {
-        "anthropic": "CLIMATEIQ_ANTHROPIC_API_KEY",
-        "openai": "CLIMATEIQ_OPENAI_API_KEY",
-        "gemini": "CLIMATEIQ_GEMINI_API_KEY",
-        "grok": "CLIMATEIQ_GROK_API_KEY",
-        "ollama": "CLIMATEIQ_OLLAMA_URL",
-        "llamacpp": "CLIMATEIQ_LLAMACPP_URL",
-    }
+    from backend.integrations.llm.model_discovery import discover_models
+    from backend.integrations.llm.provider import ClimateIQLLMProvider
 
     providers: list[LLMProviderInfo] = []
     for name in sorted(ClimateIQLLMProvider.SUPPORTED_PROVIDERS):
-        env_var = env_key_map.get(name, "")
-        configured = bool(os.environ.get(env_var, ""))
-        providers.append(
-            LLMProviderInfo(provider=name, configured=configured, models=[])
-        )
+        api_key, base_url = _resolve_provider_credentials(name)
+        configured = bool(api_key or base_url)
+
+        models: list[LLMModelInfo] = []
+        if configured:
+            try:
+                raw_models = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        discover_models,
+                        name,
+                        api_key=api_key,
+                        base_url=base_url,
+                    ),
+                    timeout=5.0,
+                )
+                models = [
+                    LLMModelInfo(
+                        id=m.id,
+                        display_name=m.display_name,
+                        context_length=m.context_length,
+                    )
+                    for m in raw_models
+                ]
+            except Exception:
+                logger.warning("Model discovery failed for %s", name)
+
+        providers.append(LLMProviderInfo(provider=name, configured=configured, models=models))
 
     return LLMProvidersResponse(providers=providers)
 
@@ -281,6 +320,9 @@ async def get_llm_providers() -> LLMProvidersResponse:
 @router.post("/llm/providers/{provider}/refresh", response_model=LLMProviderInfo)
 async def refresh_llm_provider(provider: str) -> LLMProviderInfo:
     """Refresh available models for a given LLM provider."""
+    import asyncio
+
+    from backend.integrations.llm.model_discovery import discover_models
     from backend.integrations.llm.provider import ClimateIQLLMProvider
 
     provider = provider.strip().lower()
@@ -290,19 +332,31 @@ async def refresh_llm_provider(provider: str) -> LLMProviderInfo:
             detail=f"Unsupported provider. Must be one of: {sorted(ClimateIQLLMProvider.SUPPORTED_PROVIDERS)}",
         )
 
-    env_key_map: dict[str, str] = {
-        "anthropic": "CLIMATEIQ_ANTHROPIC_API_KEY",
-        "openai": "CLIMATEIQ_OPENAI_API_KEY",
-        "gemini": "CLIMATEIQ_GEMINI_API_KEY",
-        "grok": "CLIMATEIQ_GROK_API_KEY",
-        "ollama": "CLIMATEIQ_OLLAMA_URL",
-        "llamacpp": "CLIMATEIQ_LLAMACPP_URL",
-    }
+    api_key, base_url = _resolve_provider_credentials(provider)
+    configured = bool(api_key or base_url)
 
-    env_var = env_key_map.get(provider, "")
-    configured = bool(os.environ.get(env_var, ""))
+    models: list[LLMModelInfo] = []
+    if configured:
+        try:
+            raw_models = await asyncio.to_thread(
+                discover_models,
+                provider,
+                api_key=api_key,
+                base_url=base_url,
+                force_refresh=True,
+            )
+            models = [
+                LLMModelInfo(
+                    id=m.id,
+                    display_name=m.display_name,
+                    context_length=m.context_length,
+                )
+                for m in raw_models
+            ]
+        except Exception:
+            logger.warning("Model refresh failed for %s", provider)
 
-    return LLMProviderInfo(provider=provider, configured=configured, models=[])
+    return LLMProviderInfo(provider=provider, configured=configured, models=models)
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.dependencies import get_db, get_ha_client
@@ -145,6 +145,20 @@ DEVICE_ENERGY_RATES: dict[DeviceType, float] = {
 
 
 # ---------------------------------------------------------------------------
+# Continuous aggregate view selector
+# ---------------------------------------------------------------------------
+def _pick_aggregate_view(hours: int, resolution: int) -> str | None:
+    """Choose the best continuous aggregate view, or None for raw readings."""
+    if resolution >= 3600 or hours > 168:
+        return "sensor_readings_daily"
+    if resolution >= 300 or hours > 24:
+        return "sensor_readings_hourly"
+    if resolution > 0 or hours > 6:
+        return "sensor_readings_5min"
+    return None  # use raw
+
+
+# ---------------------------------------------------------------------------
 # GET /analytics/zones/{zone_id}/history
 # ---------------------------------------------------------------------------
 @router.get("/zones/{zone_id}/history", response_model=HistoryResponse)
@@ -165,13 +179,92 @@ async def get_zone_history(
 
     Supports an optional `resolution` parameter to downsample readings into
     fixed-width time buckets (e.g. 300 = 5-minute averages).
+
+    Automatically selects the best TimescaleDB continuous aggregate view
+    based on the lookback window and requested resolution.
     """
     zone = await _require_zone(db, zone_id)
 
     period_end = datetime.now(UTC)
     period_start = period_end - timedelta(hours=hours)
 
-    # Get sensor IDs for this zone
+    view = _pick_aggregate_view(hours, resolution)
+
+    if view is not None:
+        # ----- Aggregate path: query a continuous aggregate view -----
+        data_stmt = text(f"""
+            SELECT
+                bucket,
+                avg_temperature_c,
+                avg_humidity,
+                avg_lux,
+                presence,
+                sensor_id,
+                zone_id
+            FROM {view}
+            WHERE zone_id = :zone_id
+              AND bucket >= :start
+              AND bucket <= :end
+            ORDER BY bucket ASC
+        """)
+        agg_stmt = text(f"""
+            SELECT
+                AVG(avg_temperature_c) as avg_temp,
+                MIN(avg_temperature_c) as min_temp,
+                MAX(avg_temperature_c) as max_temp,
+                AVG(avg_humidity) as avg_hum,
+                MIN(avg_humidity) as min_hum,
+                MAX(avg_humidity) as max_hum,
+                COUNT(*) as cnt
+            FROM {view}
+            WHERE zone_id = :zone_id
+              AND bucket >= :start
+              AND bucket <= :end
+        """)
+
+        params = {"zone_id": str(zone_id), "start": period_start, "end": period_end}
+
+        data_result = await db.execute(data_stmt, params)
+        agg_result = await db.execute(agg_stmt, params)
+        rows = data_result.all()
+        agg_row = agg_result.one()
+
+        points: list[ReadingPoint] = [
+            ReadingPoint(
+                recorded_at=row.bucket,
+                temperature_c=round(row.avg_temperature_c, 2)
+                if row.avg_temperature_c is not None
+                else None,
+                humidity=round(row.avg_humidity, 2) if row.avg_humidity is not None else None,
+                presence=row.presence,
+                lux=round(row.avg_lux, 2) if row.avg_lux is not None else None,
+                sensor_id=row.sensor_id,
+            )
+            for row in rows
+        ]
+
+        return HistoryResponse(
+            zone_id=zone_id,
+            zone_name=zone.name,
+            period_start=period_start,
+            period_end=period_end,
+            total_readings=agg_row.cnt,
+            avg_temperature_c=round(agg_row.avg_temp, 2)
+            if agg_row.avg_temp is not None
+            else None,
+            min_temperature_c=round(agg_row.min_temp, 2)
+            if agg_row.min_temp is not None
+            else None,
+            max_temperature_c=round(agg_row.max_temp, 2)
+            if agg_row.max_temp is not None
+            else None,
+            avg_humidity=round(agg_row.avg_hum, 2) if agg_row.avg_hum is not None else None,
+            min_humidity=round(agg_row.min_hum, 2) if agg_row.min_hum is not None else None,
+            max_humidity=round(agg_row.max_hum, 2) if agg_row.max_hum is not None else None,
+            readings=points,
+        )
+
+    # ----- Raw path: short windows with no explicit resolution -----
     sensor_ids = await _zone_sensor_ids(db, zone_id)
     if not sensor_ids:
         return HistoryResponse(
@@ -199,22 +292,18 @@ async def get_zone_history(
     temps = [r.temperature_c for r in raw_readings if r.temperature_c is not None]
     humids = [r.humidity for r in raw_readings if r.humidity is not None]
 
-    # Build reading points (optionally downsampled)
-    points: list[ReadingPoint] = []
-    if resolution > 0 and raw_readings:
-        points = _downsample(raw_readings, resolution)
-    else:
-        points = [
-            ReadingPoint(
-                recorded_at=r.recorded_at,
-                temperature_c=r.temperature_c,
-                humidity=r.humidity,
-                presence=r.presence,
-                lux=r.lux,
-                sensor_id=r.sensor_id,
-            )
-            for r in raw_readings
-        ]
+    # Build reading points
+    points = [
+        ReadingPoint(
+            recorded_at=r.recorded_at,
+            temperature_c=r.temperature_c,
+            humidity=r.humidity,
+            presence=r.presence,
+            lux=r.lux,
+            sensor_id=r.sensor_id,
+        )
+        for r in raw_readings
+    ]
 
     return HistoryResponse(
         zone_id=zone_id,
@@ -421,6 +510,9 @@ async def get_comfort_scores(
     The score is a weighted combination of:
     - Temperature in-range percentage (60% weight)
     - Humidity in-range percentage (40% weight)
+
+    Uses the ``sensor_readings_hourly`` continuous aggregate for efficient
+    bulk computation across all zones in a single query.
     """
     period_end = datetime.now(UTC)
     period_start = period_end - timedelta(hours=hours)
@@ -430,34 +522,47 @@ async def get_comfort_scores(
     )
     zones = zones_result.scalars().all()
 
+    # Single bulk query against the hourly continuous aggregate
+    stmt = text("""
+        SELECT
+            zone_id,
+            COUNT(*) as total_readings,
+            AVG(avg_temperature_c) as avg_temp,
+            AVG(avg_humidity) as avg_hum,
+            SUM(CASE WHEN avg_temperature_c BETWEEN :temp_min AND :temp_max
+                     THEN 1 ELSE 0 END) as temp_in_range,
+            SUM(CASE WHEN avg_temperature_c IS NOT NULL
+                     THEN 1 ELSE 0 END) as temp_total,
+            SUM(CASE WHEN avg_humidity BETWEEN :hum_min AND :hum_max
+                     THEN 1 ELSE 0 END) as hum_in_range,
+            SUM(CASE WHEN avg_humidity IS NOT NULL
+                     THEN 1 ELSE 0 END) as hum_total
+        FROM sensor_readings_hourly
+        WHERE bucket >= :start AND bucket <= :end
+        GROUP BY zone_id
+    """)
+    bulk_result = await db.execute(
+        stmt,
+        {
+            "temp_min": temp_min,
+            "temp_max": temp_max,
+            "hum_min": humidity_min,
+            "hum_max": humidity_max,
+            "start": period_start,
+            "end": period_end,
+        },
+    )
+    # Index bulk stats by zone_id for O(1) lookup
+    zone_stats: dict[uuid.UUID, Any] = {}
+    for row in bulk_result.all():
+        zone_stats[row.zone_id] = row
+
     zone_scores: list[ComfortZoneScore] = []
 
     for zone in zones:
-        sensor_ids = await _zone_sensor_ids(db, zone.id)
-        if not sensor_ids:
-            zone_scores.append(
-                ComfortZoneScore(
-                    zone_id=zone.id,
-                    zone_name=zone.name,
-                    score=0.0,
-                    temp_in_range_pct=0.0,
-                    humidity_in_range_pct=0.0,
-                    reading_count=0,
-                    factors={"note": "No sensors in zone"},
-                )
-            )
-            continue
+        row = zone_stats.get(zone.id)
 
-        # Fetch readings in period
-        stmt = select(SensorReading).where(
-            SensorReading.sensor_id.in_(sensor_ids),
-            SensorReading.recorded_at >= period_start,
-            SensorReading.recorded_at <= period_end,
-        )
-        result = await db.execute(stmt)
-        readings = result.scalars().all()
-
-        if not readings:
+        if row is None or row.total_readings == 0:
             zone_scores.append(
                 ComfortZoneScore(
                     zone_id=zone.id,
@@ -471,28 +576,27 @@ async def get_comfort_scores(
             )
             continue
 
-        temps = [r.temperature_c for r in readings if r.temperature_c is not None]
-        humids = [r.humidity for r in readings if r.humidity is not None]
+        temp_total = int(row.temp_total)
+        hum_total = int(row.hum_total)
+        temp_in_range = int(row.temp_in_range)
+        hum_in_range = int(row.hum_in_range)
 
-        temp_in_range = sum(1 for t in temps if temp_min <= t <= temp_max)
-        temp_pct = (temp_in_range / len(temps) * 100.0) if temps else 0.0
-
-        humid_in_range = sum(1 for h in humids if humidity_min <= h <= humidity_max)
-        humid_pct = (humid_in_range / len(humids) * 100.0) if humids else 0.0
+        temp_pct = (temp_in_range / temp_total * 100.0) if temp_total else 0.0
+        humid_pct = (hum_in_range / hum_total * 100.0) if hum_total else 0.0
 
         # Weighted score: 60% temperature, 40% humidity
         # If one metric has no data, the other gets full weight
-        if temps and humids:
+        if temp_total and hum_total:
             score = 0.6 * temp_pct + 0.4 * humid_pct
-        elif temps:
+        elif temp_total:
             score = temp_pct
-        elif humids:
+        elif hum_total:
             score = humid_pct
         else:
             score = 0.0
 
-        avg_temp = round(sum(temps) / len(temps), 2) if temps else None
-        avg_humid = round(sum(humids) / len(humids), 2) if humids else None
+        avg_temp = round(row.avg_temp, 2) if row.avg_temp is not None else None
+        avg_humid = round(row.avg_hum, 2) if row.avg_hum is not None else None
 
         zone_scores.append(
             ComfortZoneScore(
@@ -503,10 +607,10 @@ async def get_comfort_scores(
                 avg_humidity=avg_humid,
                 temp_in_range_pct=round(temp_pct, 1),
                 humidity_in_range_pct=round(humid_pct, 1),
-                reading_count=len(readings),
+                reading_count=int(row.total_readings),
                 factors={
-                    "temp_readings": len(temps),
-                    "humidity_readings": len(humids),
+                    "temp_readings": temp_total,
+                    "humidity_readings": hum_total,
                     "comfort_range": {
                         "temp_min": temp_min,
                         "temp_max": temp_max,
