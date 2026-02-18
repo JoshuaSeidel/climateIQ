@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0
+
+### Changed
+
+- **Whole-house thermostat support** — zone enrichment no longer
+  requires a thermostat device to be manually linked to each zone.
+  When no per-zone thermostat device exists, the backend reads the
+  global `climate_entities` setting (from DB or add-on config) and
+  fetches live current temp + target setpoint from HA. Every zone
+  gets the Ecobee's target temp; per-zone sensors (when installed)
+  will override the current temp. The global climate state is cached
+  for 15 seconds to avoid hitting HA once per zone.
+
 ## 0.4.9
 
 ### Added

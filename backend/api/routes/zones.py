@@ -269,12 +269,103 @@ async def _fetch_zone(db: AsyncSession, zone_id: uuid.UUID) -> Zone:
     return zone
 
 
+# ---------------------------------------------------------------------------
+# Cached global climate entity state — shared across all zone enrichments
+# within a single request cycle to avoid hitting HA N times for N zones.
+# ---------------------------------------------------------------------------
+_global_climate_cache: dict | None = None
+_global_climate_cache_ts: float = 0.0
+
+
+async def _get_global_climate_state(
+    ha_client: HAClient, db: AsyncSession
+) -> dict | None:
+    """Return cached {current_temp, target_temp, hvac_mode} from the
+    global (whole-house) climate entity, or None if unavailable."""
+    import time
+
+    global _global_climate_cache, _global_climate_cache_ts
+
+    # Cache for 15 seconds to avoid hammering HA on every zone
+    if _global_climate_cache is not None and (time.time() - _global_climate_cache_ts) < 15:
+        return _global_climate_cache
+
+    # Find the climate entity ID — check DB settings first, then app config
+    from backend.models.database import SystemSetting as _SS
+
+    climate_entity: str | None = None
+    result = await db.execute(select(_SS).where(_SS.key == "climate_entities"))
+    row = result.scalar_one_or_none()
+    if row and row.value:
+        raw_val = row.value.get("value", "")
+        if raw_val:
+            # Comma-separated — take the first one
+            climate_entity = raw_val.split(",")[0].strip()
+
+    if not climate_entity:
+        from backend.config import SETTINGS as _cfg
+        if _cfg.climate_entities:
+            climate_entity = _cfg.climate_entities.split(",")[0].strip()
+
+    if not climate_entity:
+        return None
+
+    try:
+        ha_unit = await _get_ha_temp_unit(ha_client)
+        state = await ha_client.get_state(climate_entity)
+        attrs = state.attributes
+        hvac_mode = (state.state or "").lower()
+
+        current_temp: float | None = None
+        target_temp: float | None = None
+
+        if attrs.get("current_temperature") is not None:
+            current_temp = _ha_temp_to_celsius(float(attrs["current_temperature"]), ha_unit)
+
+        # Resolve target temp based on HVAC mode (Ecobee pattern)
+        if attrs.get("temperature") is not None:
+            target_temp = _ha_temp_to_celsius(float(attrs["temperature"]), ha_unit)
+        elif hvac_mode in ("heat", "auto", "heat_cool"):
+            if attrs.get("target_temp_low") is not None:
+                target_temp = _ha_temp_to_celsius(float(attrs["target_temp_low"]), ha_unit)
+        elif hvac_mode == "cool":
+            if attrs.get("target_temp_high") is not None:
+                target_temp = _ha_temp_to_celsius(float(attrs["target_temp_high"]), ha_unit)
+        # Fallback
+        if target_temp is None:
+            for key in ("target_temp_low", "target_temp_high"):
+                if attrs.get(key) is not None:
+                    target_temp = _ha_temp_to_celsius(float(attrs[key]), ha_unit)
+                    break
+
+        _global_climate_cache = {
+            "current_temp": current_temp,
+            "target_temp": target_temp,
+            "hvac_mode": hvac_mode,
+            "entity_id": climate_entity,
+        }
+        _global_climate_cache_ts = time.time()
+        logger.info(
+            "Global climate %s: current=%.1f°C, target=%s°C, mode=%s (HA unit=%s)",
+            climate_entity,
+            current_temp if current_temp is not None else 0,
+            f"{target_temp:.1f}" if target_temp is not None else "None",
+            hvac_mode,
+            ha_unit,
+        )
+        return _global_climate_cache
+    except Exception as exc:
+        logger.warning("Failed to fetch global climate entity %s: %s", climate_entity, exc)
+        return None
+
+
 async def _enrich_zone_response(
     db: AsyncSession, zone: Zone, ha_client: HAClient | None = None
 ) -> ZoneResponse:
     """Build a ZoneResponse with latest sensor readings attached."""
     resp = ZoneResponse.model_validate(zone)
 
+    # 1) Fill from per-zone sensor readings in DB
     if zone.sensors:
         sensor_ids = [s.id for s in zone.sensors]
         reading_stmt = (
@@ -299,62 +390,55 @@ async def _enrich_zone_response(
             ):
                 break
 
-    # Derive target_temp from the primary thermostat device if available
+    # 2) Try per-zone thermostat device (if one is linked)
+    thermostat_entity: str | None = None
     if zone.devices:
         thermostat = next(
             (d for d in zone.devices if d.type.value == "thermostat" and d.ha_entity_id),
             None,
         )
-        if thermostat and thermostat.capabilities:
-            resp.target_temp = thermostat.capabilities.get("target_temp")
+        if thermostat:
+            thermostat_entity = thermostat.ha_entity_id
+            if thermostat.capabilities:
+                resp.target_temp = thermostat.capabilities.get("target_temp")
 
-    # Fetch live thermostat data from HA — PREFER live data over stale DB readings
-    if ha_client and zone.devices:
-        for device in zone.devices:
-            if device.type.value == "thermostat" and device.ha_entity_id:
-                try:
-                    ha_unit = await _get_ha_temp_unit(ha_client)
-                    state = await ha_client.get_state(device.ha_entity_id)
-                    attrs = state.attributes
-                    # Current temperature reading from the thermostat (always prefer live)
-                    if attrs.get("current_temperature") is not None:
-                        raw = float(attrs["current_temperature"])
-                        resp.current_temp = _ha_temp_to_celsius(raw, ha_unit)
-                    # Target / setpoint temperature (always prefer live)
-                    # Ecobee (and similar) thermostats:
-                    #   heat  → target_temp_low is the active setpoint
-                    #   cool  → target_temp_high is the active setpoint
-                    #   auto  → both are active (we show low for now)
-                    # Some thermostats set "temperature" directly in heat/cool.
-                    hvac_mode = (state.state or "").lower()
-                    if attrs.get("temperature") is not None:
-                        raw = float(attrs["temperature"])
-                        resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
-                    elif hvac_mode in ("heat", "auto", "heat_cool"):
-                        if attrs.get("target_temp_low") is not None:
-                            raw = float(attrs["target_temp_low"])
-                            resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
-                    elif hvac_mode == "cool":
-                        if attrs.get("target_temp_high") is not None:
-                            raw = float(attrs["target_temp_high"])
-                            resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
-                    # Fallback: try either if still unset
-                    if resp.target_temp is None:
-                        for key in ("target_temp_low", "target_temp_high"):
-                            if attrs.get(key) is not None:
-                                raw = float(attrs[key])
-                                resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
-                                break
-                    logger.debug(
-                        "Zone %s live HA data: current_temp=%.1f, target_temp=%.1f (HA unit=%s)",
-                        zone.name,
-                        resp.current_temp if resp.current_temp is not None else 0,
-                        resp.target_temp if resp.target_temp is not None else 0,
-                        ha_unit,
-                    )
-                    break
-                except (HAClientError, Exception) as exc:
-                    logger.debug("Could not fetch HA state for %s: %s", device.ha_entity_id, exc)
+    # 3) Fetch live data from HA
+    if ha_client:
+        if thermostat_entity:
+            # Per-zone thermostat device linked — use it directly
+            try:
+                ha_unit = await _get_ha_temp_unit(ha_client)
+                state = await ha_client.get_state(thermostat_entity)
+                attrs = state.attributes
+                if attrs.get("current_temperature") is not None:
+                    resp.current_temp = _ha_temp_to_celsius(float(attrs["current_temperature"]), ha_unit)
+                hvac_mode = (state.state or "").lower()
+                if attrs.get("temperature") is not None:
+                    resp.target_temp = _ha_temp_to_celsius(float(attrs["temperature"]), ha_unit)
+                elif hvac_mode in ("heat", "auto", "heat_cool"):
+                    if attrs.get("target_temp_low") is not None:
+                        resp.target_temp = _ha_temp_to_celsius(float(attrs["target_temp_low"]), ha_unit)
+                elif hvac_mode == "cool":
+                    if attrs.get("target_temp_high") is not None:
+                        resp.target_temp = _ha_temp_to_celsius(float(attrs["target_temp_high"]), ha_unit)
+                if resp.target_temp is None:
+                    for key in ("target_temp_low", "target_temp_high"):
+                        if attrs.get(key) is not None:
+                            resp.target_temp = _ha_temp_to_celsius(float(attrs[key]), ha_unit)
+                            break
+            except Exception as exc:
+                logger.debug("Could not fetch per-zone thermostat %s: %s", thermostat_entity, exc)
+        else:
+            # No per-zone thermostat — use global (whole-house) climate entity
+            climate = await _get_global_climate_state(ha_client, db)
+            if climate:
+                # Target temp is always global (one thermostat for the house)
+                if climate["target_temp"] is not None:
+                    resp.target_temp = climate["target_temp"]
+                # Current temp from global thermostat as fallback only
+                # (per-zone sensors take priority when they exist)
+                if resp.current_temp is None and climate["current_temp"] is not None:
+                    resp.current_temp = climate["current_temp"]
 
     return resp
 
