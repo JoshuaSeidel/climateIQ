@@ -276,17 +276,30 @@ async def _enrich_zone_response(
                         raw = float(attrs["current_temperature"])
                         resp.current_temp = _ha_temp_to_celsius(raw, ha_unit)
                     # Target / setpoint temperature (always prefer live)
-                    # In heat/cool mode HA uses "temperature"; in heat_cool/auto
-                    # mode it uses "target_temp_high" / "target_temp_low" instead.
+                    # Ecobee (and similar) thermostats:
+                    #   heat  → target_temp_low is the active setpoint
+                    #   cool  → target_temp_high is the active setpoint
+                    #   auto  → both are active (we show low for now)
+                    # Some thermostats set "temperature" directly in heat/cool.
+                    hvac_mode = (state.state or "").lower()
                     if attrs.get("temperature") is not None:
                         raw = float(attrs["temperature"])
                         resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
-                    elif attrs.get("target_temp_high") is not None:
-                        raw = float(attrs["target_temp_high"])
-                        resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
-                    elif attrs.get("target_temp_low") is not None:
-                        raw = float(attrs["target_temp_low"])
-                        resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
+                    elif hvac_mode in ("heat", "auto", "heat_cool"):
+                        if attrs.get("target_temp_low") is not None:
+                            raw = float(attrs["target_temp_low"])
+                            resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
+                    elif hvac_mode == "cool":
+                        if attrs.get("target_temp_high") is not None:
+                            raw = float(attrs["target_temp_high"])
+                            resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
+                    # Fallback: try either if still unset
+                    if resp.target_temp is None:
+                        for key in ("target_temp_low", "target_temp_high"):
+                            if attrs.get(key) is not None:
+                                raw = float(attrs[key])
+                                resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
+                                break
                     logger.debug(
                         "Zone %s live HA data: current_temp=%.1f, target_temp=%.1f (HA unit=%s)",
                         zone.name,
