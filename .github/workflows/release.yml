@@ -2,16 +2,16 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    paths: [VERSION]
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-release:
-    name: Build & Publish Release
+  release:
+    name: Tag, Build & Publish Release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -20,6 +20,33 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        run: echo "value=v$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: check
+        run: |
+          if git rev-parse "${{ steps.version.outputs.value }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create tag
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.value }}" -m "Release ${{ steps.version.outputs.value }}"
+          git push origin "${{ steps.version.outputs.value }}"
+
+      - name: Lowercase image name
+        id: image
+        run: echo "name=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -34,14 +61,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version
-        id: version
-        run: echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-
-      - name: Lowercase image name
-        id: image
-        run: echo "name=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
         with:
@@ -55,17 +74,16 @@ jobs:
       - name: Generate changelog
         id: changelog
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || echo "")
+          PREV_TAG=$(git describe --tags --abbrev=0 "${{ steps.version.outputs.value }}^" 2>/dev/null || echo "")
           if [ -z "$PREV_TAG" ]; then
-            git log --pretty=format:"- %s" > CHANGELOG.md
+            git log --pretty=format:"- %s" > RELEASE_NOTES.md
           else
-            git log "$PREV_TAG".."${GITHUB_REF_NAME}" --pretty=format:"- %s" > CHANGELOG.md
+            git log "$PREV_TAG".."${{ steps.version.outputs.value }}" --pretty=format:"- %s" > RELEASE_NOTES.md
           fi
-          echo "file=CHANGELOG.md" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.value }}
           name: ${{ steps.version.outputs.value }}
-          body_path: ${{ steps.changelog.outputs.file }}
+          body_path: RELEASE_NOTES.md
