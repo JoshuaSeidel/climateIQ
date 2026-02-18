@@ -117,20 +117,20 @@ async def debug_thermostat(
     for zone in zones:
         zone_info: dict = {"name": zone.name, "devices": []}
         for device in (zone.devices or []):
-            if device.type.value == "thermostat" and device.ha_entity_id:
-                dev_info: dict = {
-                    "ha_entity_id": device.ha_entity_id,
-                    "db_capabilities": device.capabilities,
-                }
+            dev_info: dict = {
+                "ha_entity_id": device.ha_entity_id,
+                "device_type": device.type.value,
+                "db_capabilities": device.capabilities,
+            }
+            if device.ha_entity_id:
                 try:
                     state = await _ha_client.get_state(device.ha_entity_id)
                     dev_info["ha_state"] = state.state
                     dev_info["ha_attributes"] = state.attributes
                 except Exception as exc:
                     dev_info["ha_error"] = str(exc)
-                zone_info["devices"].append(dev_info)
-        if zone_info["devices"]:
-            debug_info["zones"].append(zone_info)
+            zone_info["devices"].append(dev_info)
+        debug_info["zones"].append(zone_info)
 
     return debug_info
 
