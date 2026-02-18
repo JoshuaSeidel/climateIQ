@@ -218,6 +218,31 @@ export type ComfortResponse = {
   zones: ComfortZoneScore[]
 }
 
+// Overview (whole-house multi-zone)
+export type OverviewReadingPoint = {
+  recorded_at: string
+  temperature_c?: number
+  humidity?: number
+  presence?: boolean
+}
+
+export type OverviewZone = {
+  zone_id: string
+  zone_name: string
+  readings: OverviewReadingPoint[]
+  avg_temperature_c?: number
+  min_temperature_c?: number
+  max_temperature_c?: number
+  avg_humidity?: number
+  total_readings: number
+}
+
+export type OverviewResponse = {
+  period_start: string
+  period_end: string
+  zones: OverviewZone[]
+}
+
 // ============================================================================
 // Chat Types
 // ============================================================================

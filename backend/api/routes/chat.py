@@ -368,7 +368,7 @@ async def _get_live_system_context(db: AsyncSession, temperature_unit: str) -> s
                     sections.append(
                         "Weather:\n" + "\n".join(f"  - {p}" for p in w_parts)
                     )
-    except Exception:
+    except Exception:  # noqa: S110
         pass  # Weather is optional, don't add noise
 
     return "\n\n".join(sections) if sections else "No system state available."

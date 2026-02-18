@@ -12,9 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.api.dependencies import get_db, get_ha_client
+from backend.api.dependencies import get_db
 from backend.integrations import HAClient
-from backend.integrations.ha_client import HAClientError
 from backend.models.database import Sensor, SensorReading, Zone
 from backend.models.schemas import SensorReadingResponse, ZoneCreate, ZoneResponse, ZoneUpdate
 
@@ -82,7 +81,7 @@ async def list_zones(
     try:
         from backend.api.dependencies import _ha_client
         ha_client = _ha_client
-    except Exception:
+    except Exception:  # noqa: S110
         pass
 
     result = await db.execute(stmt)
@@ -104,7 +103,7 @@ async def get_zone(
     try:
         from backend.api.dependencies import _ha_client
         ha_client = _ha_client
-    except Exception:
+    except Exception:  # noqa: S110
         pass
 
     zone = await _fetch_zone(db, zone_id)

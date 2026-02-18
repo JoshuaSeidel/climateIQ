@@ -292,8 +292,6 @@ async def execute_quick_action(
     try:
         state = await _ha_client.get_state(climate_entity)
         attrs = state.attributes
-        hvac_modes = attrs.get("hvac_modes", [])
-
         if action == "eco":
             # Set to eco preset if available, otherwise lower temp
             preset_modes = attrs.get("preset_modes", [])
@@ -848,7 +846,7 @@ async def get_diagnostics(
                             ),
                         }
                     )
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
             components.append(
                 DiagnosticComponent(

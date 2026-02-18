@@ -332,8 +332,6 @@ async def execute_schedules() -> None:
     """Check enabled schedules and fire any whose start_time matches now."""
     global _last_executed_schedules
 
-    from datetime import timedelta
-
     from sqlalchemy import select as sa_select
 
     from backend.models.database import Schedule, SystemSetting
@@ -878,7 +876,7 @@ async def execute_active_mode() -> None:
                             f"humidity={w.get('humidity', 'N/A')}%, "
                             f"condition={w.get('condition', 'N/A')}"
                         )
-                except Exception:
+                except Exception:  # noqa: S110
                     pass
 
             # ── Active schedules for today ──────────────────────────────
@@ -918,7 +916,7 @@ async def execute_active_mode() -> None:
                 f"## Thermostat\n{thermostat_info}\n\n"
                 f"## Weather\n{weather_info}\n\n"
                 f"## Today's Schedules\n{schedules_text}\n\n"
-                f"Safety limits: {safety_min}°C – {safety_max}°C\n\n"
+                f"Safety limits: {safety_min}°C - {safety_max}°C\n\n"
                 "What target temperature (°C) should the thermostat be set to right now?"
             )
 
@@ -1314,8 +1312,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             try:
                 from backend.api.dependencies import _ha_client as _existing_ha
                 if _existing_ha is None:
-                    from backend.integrations import HAClient as _HAClient
                     import backend.api.dependencies as _deps
+                    from backend.integrations import HAClient as _HAClient
                     _rest_client = _HAClient(
                         url=str(settings.home_assistant_url),
                         token=settings.home_assistant_token,
@@ -1344,6 +1342,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if settings_instance.weather_entity:
             try:
                 from sqlalchemy import select as sa_select
+
                 from backend.models.database import SystemSetting
                 session_maker = get_session_maker()
                 async with session_maker() as db:

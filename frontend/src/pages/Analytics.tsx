@@ -10,6 +10,7 @@ import type {
   HistoryResponse,
   EnergyResponse,
   ComfortResponse,
+  OverviewResponse,
 } from '@/types'
 import {
   BarChart3,
@@ -68,14 +69,26 @@ const COLORS = [
   'hsl(0, 84%, 60%)',
   'hsl(180, 70%, 45%)',
   'hsl(330, 80%, 55%)',
+  'hsl(200, 80%, 50%)',
+  'hsl(60, 70%, 45%)',
+  'hsl(310, 60%, 50%)',
+  'hsl(160, 65%, 40%)',
+  'hsl(20, 80%, 45%)',
+  'hsl(240, 60%, 55%)',
+  'hsl(100, 60%, 40%)',
+  'hsl(350, 70%, 50%)',
 ]
+
+function getZoneColor(index: number): string {
+  return COLORS[index % COLORS.length]
+}
 
 export const Analytics = () => {
   const { temperatureUnit } = useSettingsStore()
   const unitKey: 'c' | 'f' = temperatureUnit === 'celsius' ? 'c' : 'f'
   const [activeTab, setActiveTab] = useState<AnalyticsTab>('temperature')
   const [hours, setHours] = useState(24)
-  const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null)
+  const [selectedZoneId, setSelectedZoneId] = useState<string | null>('all')
 
   // Fetch zones
   const { data: zones } = useQuery<ZoneBackend[]>({
@@ -83,8 +96,8 @@ export const Analytics = () => {
     queryFn: () => api.get<ZoneBackend[]>('/zones'),
   })
 
-  // Auto-select first zone
-  const effectiveZoneId = selectedZoneId ?? zones?.[0]?.id ?? null
+  // For single-zone views, fall back to first zone if nothing specific selected
+  const effectiveZoneId = selectedZoneId === 'all' ? 'all' : (selectedZoneId ?? zones?.[0]?.id ?? null)
 
   return (
     <div className="space-y-6">
@@ -130,9 +143,16 @@ export const Analytics = () => {
         ))}
       </div>
 
-      {/* Zone selector for temperature tab */}
+      {/* Zone selector for temperature and occupancy tabs */}
       {(activeTab === 'temperature' || activeTab === 'occupancy') && zones && zones.length > 0 && (
         <div className="flex flex-wrap gap-2">
+          <Button
+            variant={effectiveZoneId === 'all' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setSelectedZoneId('all')}
+          >
+            All Zones
+          </Button>
           {zones.map((zone) => (
             <Button
               key={zone.id}
@@ -151,7 +171,7 @@ export const Analytics = () => {
         <TemperatureTab zoneId={effectiveZoneId} hours={hours} zones={zones} unitKey={unitKey} />
       )}
       {activeTab === 'occupancy' && (
-        <OccupancyTab zoneId={effectiveZoneId} hours={hours} />
+        <OccupancyTab zoneId={effectiveZoneId} hours={hours} zones={zones} />
       )}
       {activeTab === 'energy' && <EnergyTab hours={hours} />}
       {activeTab === 'comfort' && <ComfortTab hours={hours} unitKey={unitKey} />}
@@ -174,17 +194,31 @@ function TemperatureTab({
   zones?: ZoneBackend[]
   unitKey: 'c' | 'f'
 }) {
-  const { data: history, isLoading } = useQuery<HistoryResponse>({
+  const [metricView, setMetricView] = useState<'temperature' | 'humidity'>('temperature')
+  const isAllZones = zoneId === 'all'
+
+  // Single-zone history query
+  const { data: history, isLoading: historyLoading } = useQuery<HistoryResponse>({
     queryKey: ['zone-history', zoneId, hours],
     queryFn: () =>
       api.get<HistoryResponse>(`/analytics/zones/${zoneId}/history`, {
         hours,
         resolution: hours > 24 ? 900 : 300,
       }),
-    enabled: !!zoneId,
+    enabled: !!zoneId && !isAllZones,
   })
 
-  const chartData = useMemo(() => {
+  // Overview query for all zones
+  const { data: overview, isLoading: overviewLoading } = useQuery<OverviewResponse>({
+    queryKey: ['analytics-overview', hours],
+    queryFn: () => api.get<OverviewResponse>('/analytics/overview', { hours }),
+    enabled: isAllZones,
+  })
+
+  const isLoading = isAllZones ? overviewLoading : historyLoading
+
+  // Single-zone chart data
+  const singleZoneChartData = useMemo(() => {
     if (!history?.readings?.length) return []
     return history.readings.map((r) => ({
       time: new Date(r.recorded_at).toLocaleTimeString([], {
@@ -197,12 +231,126 @@ function TemperatureTab({
     }))
   }, [history, hours, unitKey])
 
+  // Multi-zone chart data: merge all zones' readings into a unified timeline
+  const multiZoneChartData = useMemo(() => {
+    if (!overview?.zones?.length) return []
+
+    // Collect all unique timestamps across all zones
+    const timeMap = new Map<string, Record<string, number | string | null>>()
+
+    for (const zone of overview.zones) {
+      for (const reading of zone.readings) {
+        const timeKey = reading.recorded_at
+        if (!timeMap.has(timeKey)) {
+          timeMap.set(timeKey, {
+            time: new Date(reading.recorded_at).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+              ...(hours > 24 ? { month: 'short', day: 'numeric' } : {}),
+            }),
+            _ts: reading.recorded_at,
+          })
+        }
+        const point = timeMap.get(timeKey)!
+        if (metricView === 'temperature') {
+          point[`zone_${zone.zone_id}`] =
+            reading.temperature_c != null ? toDisplayTemp(reading.temperature_c, unitKey) : null
+        } else {
+          point[`zone_${zone.zone_id}`] = reading.humidity ?? null
+        }
+      }
+    }
+
+    // Sort by timestamp
+    const sorted = Array.from(timeMap.values()).sort((a, b) =>
+      String(a._ts).localeCompare(String(b._ts))
+    )
+
+    // Remove the _ts helper key
+    return sorted.map(({ _ts, ...rest }) => rest)
+  }, [overview, hours, unitKey, metricView])
+
+  // Aggregate stats for all zones
+  const overviewStats = useMemo(() => {
+    if (!overview?.zones?.length) return null
+
+    const temps: number[] = []
+    const mins: number[] = []
+    const maxes: number[] = []
+    const humidities: number[] = []
+    let totalReadings = 0
+
+    for (const zone of overview.zones) {
+      if (zone.avg_temperature_c != null) temps.push(zone.avg_temperature_c)
+      if (zone.min_temperature_c != null) mins.push(zone.min_temperature_c)
+      if (zone.max_temperature_c != null) maxes.push(zone.max_temperature_c)
+      if (zone.avg_humidity != null) humidities.push(zone.avg_humidity)
+      totalReadings += zone.total_readings
+    }
+
+    return {
+      avgTemp: temps.length > 0 ? temps.reduce((a, b) => a + b, 0) / temps.length : null,
+      minTemp: mins.length > 0 ? Math.min(...mins) : null,
+      maxTemp: maxes.length > 0 ? Math.max(...maxes) : null,
+      avgHumidity:
+        humidities.length > 0
+          ? humidities.reduce((a, b) => a + b, 0) / humidities.length
+          : null,
+      totalReadings,
+    }
+  }, [overview])
+
   const zoneName = zones?.find((z) => z.id === zoneId)?.name ?? 'Zone'
+
+  // Build zone list for multi-line chart
+  const overviewZones = overview?.zones ?? []
 
   return (
     <div className="space-y-6">
-      {/* Summary Stats */}
-      {history && (
+      {/* Summary Stats - All Zones */}
+      {isAllZones && overviewStats && (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Card className="border-border/60">
+            <CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">Avg Temperature</p>
+              <p className="text-2xl font-semibold">
+                {overviewStats.avgTemp != null
+                  ? formatTemperature(overviewStats.avgTemp, unitKey)
+                  : '--'}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className="border-border/60">
+            <CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">Min / Max</p>
+              <p className="text-2xl font-semibold">
+                {overviewStats.minTemp != null && overviewStats.maxTemp != null
+                  ? `${toDisplayTemp(overviewStats.minTemp, unitKey).toFixed(1)} / ${toDisplayTemp(overviewStats.maxTemp, unitKey).toFixed(1)}${tempUnitLabel(unitKey)}`
+                  : '--'}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className="border-border/60">
+            <CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">Avg Humidity</p>
+              <p className="text-2xl font-semibold">
+                {overviewStats.avgHumidity != null
+                  ? `${overviewStats.avgHumidity.toFixed(0)}%`
+                  : '--'}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className="border-border/60">
+            <CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">Total Readings</p>
+              <p className="text-2xl font-semibold">{overviewStats.totalReadings}</p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Summary Stats - Single Zone */}
+      {!isAllZones && history && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Card className="border-border/60">
             <CardContent className="p-4">
@@ -244,23 +392,130 @@ function TemperatureTab({
       {/* Chart */}
       <Card className="border-border/60">
         <CardHeader>
-          <CardTitle>
-            {zoneName} - Temperature & Humidity ({hours}h)
-          </CardTitle>
-          <CardDescription>Temperature shown in {tempUnitLabel(unitKey)}</CardDescription>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle>
+                {isAllZones
+                  ? `All Zones - ${metricView === 'temperature' ? 'Temperature' : 'Humidity'} (${hours}h)`
+                  : `${zoneName} - Temperature & Humidity (${hours}h)`}
+              </CardTitle>
+              <CardDescription>
+                {isAllZones
+                  ? metricView === 'temperature'
+                    ? `Temperature shown in ${tempUnitLabel(unitKey)}`
+                    : 'Humidity shown in %'
+                  : `Temperature shown in ${tempUnitLabel(unitKey)}`}
+              </CardDescription>
+            </div>
+            {isAllZones && (
+              <div className="flex rounded-xl border border-border/60 p-0.5">
+                <Button
+                  variant={metricView === 'temperature' ? 'default' : 'ghost'}
+                  size="sm"
+                  className="px-3 text-xs"
+                  onClick={() => setMetricView('temperature')}
+                >
+                  Temperature
+                </Button>
+                <Button
+                  variant={metricView === 'humidity' ? 'default' : 'ghost'}
+                  size="sm"
+                  className="px-3 text-xs"
+                  onClick={() => setMetricView('humidity')}
+                >
+                  Humidity
+                </Button>
+              </div>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {isLoading ? (
             <div className="flex h-80 items-center justify-center">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </div>
-          ) : chartData.length > 0 ? (
+          ) : isAllZones ? (
+            multiZoneChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={350}>
+                <LineChart data={multiZoneChartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis
+                    dataKey="time"
+                    tick={{ fontSize: 10 }}
+                    stroke="hsl(var(--muted-foreground))"
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    tick={{ fontSize: 11 }}
+                    stroke="hsl(var(--muted-foreground))"
+                    domain={metricView === 'humidity' ? [0, 100] : ['auto', 'auto']}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: 'hsl(var(--card))',
+                      border: '1px solid hsl(var(--border))',
+                      borderRadius: '8px',
+                    }}
+                    formatter={(value: number | undefined, name: string | undefined) => {
+                      const zoneIdFromKey = (name ?? '').replace('zone_', '')
+                      const zone = overviewZones.find((z) => z.zone_id === zoneIdFromKey)
+                      const label = zone?.zone_name ?? (name ?? '')
+                      const suffix = metricView === 'temperature' ? tempUnitLabel(unitKey) : '%'
+                      return [
+                        `${typeof value === 'number' ? value.toFixed(1) : '--'}${suffix}`,
+                        label,
+                      ]
+                    }}
+                  />
+                  <Legend
+                    formatter={(value: string) => {
+                      const zoneIdFromKey = value.replace('zone_', '')
+                      const zone = overviewZones.find((z) => z.zone_id === zoneIdFromKey)
+                      return zone?.zone_name ?? value
+                    }}
+                  />
+                  {overviewZones.map((zone, idx) => (
+                    <Line
+                      key={zone.zone_id}
+                      type="monotone"
+                      dataKey={`zone_${zone.zone_id}`}
+                      stroke={getZoneColor(idx)}
+                      strokeWidth={2}
+                      dot={false}
+                      connectNulls
+                      name={`zone_${zone.zone_id}`}
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-80 items-center justify-center text-muted-foreground">
+                No data available for this time period
+              </div>
+            )
+          ) : singleZoneChartData.length > 0 ? (
             <ResponsiveContainer width="100%" height={350}>
-              <LineChart data={chartData}>
+              <LineChart data={singleZoneChartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="time" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" interval="preserveStartEnd" />
-                <YAxis yAxisId="temp" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" domain={['auto', 'auto']} />
-                <YAxis yAxisId="humidity" orientation="right" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" domain={[0, 100]} />
+                <XAxis
+                  dataKey="time"
+                  tick={{ fontSize: 10 }}
+                  stroke="hsl(var(--muted-foreground))"
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  yAxisId="temp"
+                  tick={{ fontSize: 11 }}
+                  stroke="hsl(var(--muted-foreground))"
+                  domain={['auto', 'auto']}
+                />
+                <YAxis
+                  yAxisId="humidity"
+                  orientation="right"
+                  tick={{ fontSize: 11 }}
+                  stroke="hsl(var(--muted-foreground))"
+                  domain={[0, 100]}
+                />
                 <Tooltip
                   contentStyle={{
                     backgroundColor: 'hsl(var(--card))',
@@ -303,18 +558,37 @@ function TemperatureTab({
 // ============================================================================
 // Occupancy Heatmap Tab
 // ============================================================================
-function OccupancyTab({ zoneId, hours }: { zoneId: string | null; hours: number }) {
-  const { data: history, isLoading } = useQuery<HistoryResponse>({
+function OccupancyTab({
+  zoneId,
+  hours,
+}: {
+  zoneId: string | null
+  hours: number
+  zones?: ZoneBackend[]
+}) {
+  const isAllZones = zoneId === 'all'
+
+  // Single-zone history query
+  const { data: history, isLoading: historyLoading } = useQuery<HistoryResponse>({
     queryKey: ['zone-history-occupancy', zoneId, hours],
     queryFn: () =>
       api.get<HistoryResponse>(`/analytics/zones/${zoneId}/history`, {
         hours: Math.min(hours, 168),
         resolution: 3600,
       }),
-    enabled: !!zoneId,
+    enabled: !!zoneId && !isAllZones,
   })
 
-  // Build heatmap data: 7 days x 24 hours
+  // Overview query for all zones
+  const { data: overview, isLoading: overviewLoading } = useQuery<OverviewResponse>({
+    queryKey: ['analytics-overview', hours],
+    queryFn: () => api.get<OverviewResponse>('/analytics/overview', { hours }),
+    enabled: isAllZones,
+  })
+
+  const isLoading = isAllZones ? overviewLoading : historyLoading
+
+  // Build heatmap data: 7 days x 24 hours (single zone)
   const heatmapData = useMemo(() => {
     if (!history?.readings?.length) return []
 
@@ -341,7 +615,7 @@ function OccupancyTab({ zoneId, hours }: { zoneId: string | null; hours: number 
     return grid
   }, [history])
 
-  // Aggregate by hour for bar chart
+  // Aggregate by hour for bar chart (single zone)
   const hourlyData = useMemo(() => {
     if (!history?.readings?.length) return []
     const hourBuckets: { hour: string; occupied: number; total: number }[] = []
@@ -359,59 +633,172 @@ function OccupancyTab({ zoneId, hours }: { zoneId: string | null; hours: number 
     }))
   }, [history])
 
+  // Grouped bar chart data for all zones
+  const overviewZones = overview?.zones ?? []
+
+  const groupedBarData = useMemo(() => {
+    if (!overview?.zones?.length) return []
+
+    // Build hour buckets with per-zone occupancy rates
+    const hourBuckets: Record<string, number | string>[] = []
+    for (let h = 0; h < 24; h++) {
+      hourBuckets.push({
+        hour: `${h.toString().padStart(2, '0')}:00`,
+      })
+    }
+
+    for (const zone of overview.zones) {
+      // Count occupied and total per hour for this zone
+      const occupied = new Array(24).fill(0)
+      const total = new Array(24).fill(0)
+
+      for (const reading of zone.readings) {
+        const hour = new Date(reading.recorded_at).getHours()
+        total[hour]++
+        if (reading.presence) occupied[hour]++
+      }
+
+      for (let h = 0; h < 24; h++) {
+        hourBuckets[h][`zone_${zone.zone_id}`] =
+          total[h] > 0 ? Math.round((occupied[h] / total[h]) * 100) : 0
+      }
+    }
+
+    return hourBuckets
+  }, [overview])
+
   return (
     <div className="space-y-6">
-      {/* Occupancy Heatmap (simplified as a bar chart by hour) */}
-      <Card className="border-border/60">
-        <CardHeader>
-          <CardTitle>Occupancy by Hour</CardTitle>
-          <CardDescription>Percentage of time the zone was occupied during each hour</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <div className="flex h-64 items-center justify-center">
-              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            </div>
-          ) : hourlyData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={hourlyData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="hour" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" />
-                <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" domain={[0, 100]} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'hsl(var(--card))',
-                    border: '1px solid hsl(var(--border))',
-                    borderRadius: '8px',
-                  }}
-                  formatter={(value) => [`${value}%`, 'Occupancy Rate']}
-                />
-                <Bar dataKey="rate" name="Occupancy %" radius={[4, 4, 0, 0]}>
-                  {hourlyData.map((_, index) => (
-                    <Cell
-                      key={`cell-${index}`}
-                      fill={
-                        hourlyData[index].rate > 70
-                          ? COLORS[2]
-                          : hourlyData[index].rate > 30
-                            ? COLORS[4]
-                            : 'hsl(var(--muted))'
-                      }
+      {/* All Zones - Grouped Bar Chart */}
+      {isAllZones && (
+        <Card className="border-border/60">
+          <CardHeader>
+            <CardTitle>Occupancy by Hour - All Zones</CardTitle>
+            <CardDescription>
+              Occupancy rate per zone for each hour of the day ({hours}h)
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <div className="flex h-64 items-center justify-center">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : groupedBarData.length > 0 && overviewZones.length > 0 ? (
+              <ResponsiveContainer width="100%" height={350}>
+                <BarChart data={groupedBarData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis
+                    dataKey="hour"
+                    tick={{ fontSize: 10 }}
+                    stroke="hsl(var(--muted-foreground))"
+                  />
+                  <YAxis
+                    tick={{ fontSize: 11 }}
+                    stroke="hsl(var(--muted-foreground))"
+                    domain={[0, 100]}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: 'hsl(var(--card))',
+                      border: '1px solid hsl(var(--border))',
+                      borderRadius: '8px',
+                    }}
+                    formatter={(value: number | undefined, name: string | undefined) => {
+                      const zoneIdFromKey = (name ?? '').replace('zone_', '')
+                      const zone = overviewZones.find((z) => z.zone_id === zoneIdFromKey)
+                      return [`${value ?? 0}%`, zone?.zone_name ?? (name ?? '')]
+                    }}
+                  />
+                  <Legend
+                    formatter={(value: string) => {
+                      const zoneIdFromKey = value.replace('zone_', '')
+                      const zone = overviewZones.find((z) => z.zone_id === zoneIdFromKey)
+                      return zone?.zone_name ?? value
+                    }}
+                  />
+                  {overviewZones.map((zone, idx) => (
+                    <Bar
+                      key={zone.zone_id}
+                      dataKey={`zone_${zone.zone_id}`}
+                      name={`zone_${zone.zone_id}`}
+                      fill={getZoneColor(idx)}
+                      radius={[2, 2, 0, 0]}
                     />
                   ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="flex h-64 items-center justify-center text-muted-foreground">
-              {zoneId ? 'No occupancy data available' : 'Select a zone to view data'}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-64 items-center justify-center text-muted-foreground">
+                No occupancy data available for this period
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
-      {/* Heatmap Grid */}
-      {heatmapData.length > 0 && (
+      {/* Single Zone - Occupancy by Hour Bar Chart */}
+      {!isAllZones && (
+        <Card className="border-border/60">
+          <CardHeader>
+            <CardTitle>Occupancy by Hour</CardTitle>
+            <CardDescription>
+              Percentage of time the zone was occupied during each hour
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <div className="flex h-64 items-center justify-center">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : hourlyData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={hourlyData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis
+                    dataKey="hour"
+                    tick={{ fontSize: 10 }}
+                    stroke="hsl(var(--muted-foreground))"
+                  />
+                  <YAxis
+                    tick={{ fontSize: 11 }}
+                    stroke="hsl(var(--muted-foreground))"
+                    domain={[0, 100]}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: 'hsl(var(--card))',
+                      border: '1px solid hsl(var(--border))',
+                      borderRadius: '8px',
+                    }}
+                    formatter={(value) => [`${value}%`, 'Occupancy Rate']}
+                  />
+                  <Bar dataKey="rate" name="Occupancy %" radius={[4, 4, 0, 0]}>
+                    {hourlyData.map((_, index) => (
+                      <Cell
+                        key={`cell-${index}`}
+                        fill={
+                          hourlyData[index].rate > 70
+                            ? COLORS[2]
+                            : hourlyData[index].rate > 30
+                              ? COLORS[4]
+                              : 'hsl(var(--muted))'
+                        }
+                      />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-64 items-center justify-center text-muted-foreground">
+                {zoneId ? 'No occupancy data available' : 'Select a zone to view data'}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Single Zone - Heatmap Grid */}
+      {!isAllZones && heatmapData.length > 0 && (
         <Card className="border-border/60">
           <CardHeader>
             <CardTitle>Weekly Occupancy Heatmap</CardTitle>

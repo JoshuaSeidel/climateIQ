@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status

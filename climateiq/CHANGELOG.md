@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.6.5
+
+### Added
+
+- **Whole-house analytics overview** — the Temperature and Occupancy tabs
+  now default to an "All Zones" view showing every zone on a single chart.
+  Temperature tab renders a multi-line chart (one colored line per zone)
+  with a Temperature/Humidity metric toggle. Occupancy tab shows a grouped
+  bar chart with per-zone occupancy rates by hour.
+
+- **`GET /analytics/overview` backend endpoint** — new endpoint that queries
+  TimescaleDB continuous aggregates for all active zones in a single query,
+  returning per-zone time series with temperature, humidity, and occupancy.
+  Automatically selects the optimal aggregate view (5min/hourly/daily) based
+  on the lookback window.
+
+### Improved
+
+- **Extended color palette** — 16 distinct HSL colors for zone
+  differentiation (up from 8) to support all 11 zones.
+
+- **Zone selector** on Temperature and Occupancy tabs now includes an
+  "All Zones" button (selected by default) alongside individual zone
+  buttons for drill-down.
+
 ## 0.6.4
 
 ### Improved

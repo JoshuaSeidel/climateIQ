@@ -158,6 +158,163 @@ def _pick_aggregate_view(hours: int, resolution: int) -> str | None:
     return None  # use raw
 
 
+def _pick_overview_view(hours: int) -> str:
+    """Choose the best continuous aggregate view for the overview endpoint."""
+    if hours > 168:
+        return "sensor_readings_daily"
+    if hours > 24:
+        return "sensor_readings_hourly"
+    if hours > 6:
+        return "sensor_readings_5min"
+    return "sensor_readings_5min"  # always use aggregates for overview
+
+
+# ---------------------------------------------------------------------------
+# Overview response schemas
+# ---------------------------------------------------------------------------
+class OverviewReadingPoint(BaseModel):
+    """A single data point in the overview time series."""
+
+    recorded_at: datetime
+    temperature_c: float | None = None
+    humidity: float | None = None
+    presence: bool | None = None
+
+
+class OverviewZone(BaseModel):
+    """One zone's data in the overview response."""
+
+    zone_id: uuid.UUID
+    zone_name: str
+    readings: list[OverviewReadingPoint] = Field(default_factory=list)
+    avg_temperature_c: float | None = None
+    min_temperature_c: float | None = None
+    max_temperature_c: float | None = None
+    avg_humidity: float | None = None
+    total_readings: int = 0
+
+
+class OverviewResponse(BaseModel):
+    """Whole-house overview across all zones."""
+
+    period_start: datetime
+    period_end: datetime
+    zones: list[OverviewZone] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# GET /analytics/overview
+# ---------------------------------------------------------------------------
+@router.get("/overview", response_model=OverviewResponse)
+async def get_overview(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    hours: Annotated[int, Query(ge=1, le=720, description="Lookback window in hours")] = 24,
+) -> OverviewResponse:
+    """Return temperature, humidity, and occupancy history for ALL zones.
+
+    Uses the best-fit TimescaleDB continuous aggregate view and returns one
+    time series per zone so the frontend can render a multi-line chart.
+    """
+    period_end = datetime.now(UTC)
+    period_start = period_end - timedelta(hours=hours)
+
+    # Get all active zones
+    zones_result = await db.execute(
+        select(Zone).where(Zone.is_active.is_(True)).order_by(Zone.name)
+    )
+    zones = zones_result.scalars().all()
+    if not zones:
+        return OverviewResponse(
+            period_start=period_start,
+            period_end=period_end,
+            zones=[],
+        )
+
+    zone_ids = [str(z.id) for z in zones]
+
+    view = _pick_overview_view(hours)
+
+    # Single query across all zones
+    # view is from _pick_overview_view() which only returns hardcoded view names
+    data_stmt = text(
+        f"""
+        SELECT bucket, zone_id, avg_temperature_c, avg_humidity, presence
+        FROM {view}
+        WHERE zone_id = ANY(:zone_ids)
+          AND bucket >= :start AND bucket <= :end
+        ORDER BY zone_id, bucket ASC
+    """  # noqa: S608
+    )
+
+    agg_stmt = text(
+        f"""
+        SELECT zone_id,
+               AVG(avg_temperature_c) as avg_temp,
+               MIN(avg_temperature_c) as min_temp,
+               MAX(avg_temperature_c) as max_temp,
+               AVG(avg_humidity) as avg_hum,
+               COUNT(*) as cnt
+        FROM {view}
+        WHERE zone_id = ANY(:zone_ids)
+          AND bucket >= :start AND bucket <= :end
+        GROUP BY zone_id
+    """  # noqa: S608
+    )
+
+    params = {"zone_ids": zone_ids, "start": period_start, "end": period_end}
+
+    data_result = await db.execute(data_stmt, params)
+    agg_result = await db.execute(agg_stmt, params)
+
+    # Group readings by zone_id
+    readings_by_zone: dict[uuid.UUID, list[OverviewReadingPoint]] = {
+        z.id: [] for z in zones
+    }
+    for row in data_result.all():
+        zid = row.zone_id
+        if zid in readings_by_zone:
+            readings_by_zone[zid].append(
+                OverviewReadingPoint(
+                    recorded_at=row.bucket,
+                    temperature_c=round(row.avg_temperature_c, 2)
+                    if row.avg_temperature_c is not None
+                    else None,
+                    humidity=round(row.avg_humidity, 2)
+                    if row.avg_humidity is not None
+                    else None,
+                    presence=row.presence,
+                )
+            )
+
+    # Index aggregates by zone_id
+    agg_by_zone: dict[uuid.UUID, Any] = {}
+    for row in agg_result.all():
+        agg_by_zone[row.zone_id] = row
+
+    # Build response
+    overview_zones: list[OverviewZone] = []
+    for zone in zones:
+        agg = agg_by_zone.get(zone.id)
+        overview_zones.append(
+            OverviewZone(
+                zone_id=zone.id,
+                zone_name=zone.name,
+                readings=readings_by_zone.get(zone.id, []),
+                avg_temperature_c=round(agg.avg_temp, 2) if agg and agg.avg_temp is not None else None,
+                min_temperature_c=round(agg.min_temp, 2) if agg and agg.min_temp is not None else None,
+                max_temperature_c=round(agg.max_temp, 2) if agg and agg.max_temp is not None else None,
+                avg_humidity=round(agg.avg_hum, 2) if agg and agg.avg_hum is not None else None,
+                total_readings=int(agg.cnt) if agg else 0,
+            )
+        )
+
+    return OverviewResponse(
+        period_start=period_start,
+        period_end=period_end,
+        zones=overview_zones,
+    )
+
+
 # ---------------------------------------------------------------------------
 # GET /analytics/zones/{zone_id}/history
 # ---------------------------------------------------------------------------
@@ -192,6 +349,7 @@ async def get_zone_history(
 
     if view is not None:
         # ----- Aggregate path: query a continuous aggregate view -----
+        # view is from _pick_aggregate_view() which only returns hardcoded view names
         data_stmt = text(f"""
             SELECT
                 bucket,
@@ -206,7 +364,7 @@ async def get_zone_history(
               AND bucket >= :start
               AND bucket <= :end
             ORDER BY bucket ASC
-        """)
+        """)  # noqa: S608
         agg_stmt = text(f"""
             SELECT
                 AVG(avg_temperature_c) as avg_temp,
@@ -220,7 +378,7 @@ async def get_zone_history(
             WHERE zone_id = :zone_id
               AND bucket >= :start
               AND bucket <= :end
-        """)
+        """)  # noqa: S608
 
         params = {"zone_id": str(zone_id), "start": period_start, "end": period_end}
 
