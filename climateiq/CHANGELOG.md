@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.9
+
+### Added
+
+- **Debug endpoint** `GET /api/v1/zones/debug/thermostat` — dumps raw
+  HA thermostat entity state, attributes, DB capabilities, and HA unit
+  system. Hit this to see exactly what HA is returning so we can fix
+  the target temp mapping.
+
 ## 0.4.8
 
 ### Fixed
