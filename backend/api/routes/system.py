@@ -231,6 +231,168 @@ async def test_ha_connection(
     }
 
 
+# ---------------------------------------------------------------------------
+# POST /system/quick-action — execute a quick action on the global thermostat
+# ---------------------------------------------------------------------------
+
+class QuickActionRequest(BaseModel):
+    action: str  # "eco", "away", "boost_heat", "boost_cool", "resume"
+
+
+class QuickActionResponse(BaseModel):
+    success: bool
+    message: str
+    action: str
+    detail: dict[str, Any] | None = None
+
+
+@router.post("/quick-action", response_model=QuickActionResponse)
+async def execute_quick_action(
+    payload: QuickActionRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> QuickActionResponse:
+    """Execute a quick action on the global (whole-house) thermostat."""
+    import logging as _logging
+
+    from backend.api.dependencies import _ha_client
+    from backend.config import SETTINGS
+    from backend.integrations.ha_client import HAClientError
+    from backend.models.database import SystemSetting
+
+    _logger = _logging.getLogger(__name__)
+
+    if _ha_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Home Assistant client not connected",
+        )
+
+    # Find the global climate entity
+    climate_entity: str | None = None
+    result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "climate_entities")
+    )
+    row = result.scalar_one_or_none()
+    if row and row.value:
+        raw_val = row.value.get("value", "")
+        if raw_val:
+            climate_entity = raw_val.split(",")[0].strip()
+
+    if not climate_entity and SETTINGS.climate_entities:
+        climate_entity = SETTINGS.climate_entities.split(",")[0].strip()
+
+    if not climate_entity:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No climate entity configured. Set climate_entities in add-on settings.",
+        )
+
+    action = payload.action.lower().strip()
+
+    try:
+        state = await _ha_client.get_state(climate_entity)
+        attrs = state.attributes
+        hvac_modes = attrs.get("hvac_modes", [])
+
+        if action == "eco":
+            # Set to eco preset if available, otherwise lower temp
+            preset_modes = attrs.get("preset_modes", [])
+            if "Away and Eco" in preset_modes:
+                await _ha_client.call_service(
+                    "climate", "set_preset_mode",
+                    data={"preset_mode": "Away and Eco"},
+                    target={"entity_id": climate_entity},
+                )
+                return QuickActionResponse(
+                    success=True, message="Set to Eco mode", action=action,
+                    detail={"preset_mode": "Away and Eco"},
+                )
+            # Fallback: just lower target by 3°F (≈1.7°C)
+            current_target = attrs.get("temperature") or attrs.get("target_temp_low")
+            if current_target is not None:
+                new_target = float(current_target) - 3
+                await _ha_client.set_temperature(climate_entity, new_target)
+                return QuickActionResponse(
+                    success=True, message=f"Lowered target to {new_target:.0f}°",
+                    action=action, detail={"new_target": new_target},
+                )
+            return QuickActionResponse(
+                success=False, message="Could not determine current target temp",
+                action=action,
+            )
+
+        elif action == "away":
+            preset_modes = attrs.get("preset_modes", [])
+            if "away" in [p.lower() for p in preset_modes]:
+                # Find the exact case-sensitive name
+                away_preset = next(p for p in preset_modes if p.lower() == "away")
+                await _ha_client.call_service(
+                    "climate", "set_preset_mode",
+                    data={"preset_mode": away_preset},
+                    target={"entity_id": climate_entity},
+                )
+                return QuickActionResponse(
+                    success=True, message="Set to Away mode", action=action,
+                    detail={"preset_mode": away_preset},
+                )
+            return QuickActionResponse(
+                success=False, message="Away preset not available on this thermostat",
+                action=action, detail={"available_presets": preset_modes},
+            )
+
+        elif action == "boost_heat":
+            current_target = attrs.get("temperature") or attrs.get("target_temp_low")
+            if current_target is not None:
+                new_target = float(current_target) + 2
+                await _ha_client.set_temperature(climate_entity, new_target)
+                return QuickActionResponse(
+                    success=True, message=f"Boosted heat to {new_target:.0f}°",
+                    action=action, detail={"new_target": new_target},
+                )
+            return QuickActionResponse(
+                success=False, message="Could not determine current target temp",
+                action=action,
+            )
+
+        elif action == "boost_cool":
+            current_target = attrs.get("temperature") or attrs.get("target_temp_high")
+            if current_target is not None:
+                new_target = float(current_target) - 2
+                await _ha_client.set_temperature(climate_entity, new_target)
+                return QuickActionResponse(
+                    success=True, message=f"Boosted cooling to {new_target:.0f}°",
+                    action=action, detail={"new_target": new_target},
+                )
+            return QuickActionResponse(
+                success=False, message="Could not determine current target temp",
+                action=action,
+            )
+
+        elif action == "resume":
+            await _ha_client.call_service(
+                "climate", "set_preset_mode",
+                data={"preset_mode": "none"},
+                target={"entity_id": climate_entity},
+            )
+            return QuickActionResponse(
+                success=True, message="Resumed normal schedule", action=action,
+            )
+
+        else:
+            return QuickActionResponse(
+                success=False,
+                message=f"Unknown action: {action}. Use eco, away, boost_heat, boost_cool, or resume.",
+                action=action,
+            )
+
+    except HAClientError as exc:
+        _logger.error("Quick action failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to execute action: {exc}",
+        ) from exc
+
+
 async def _get_or_create_system_config(session: AsyncSession) -> SystemConfig:
     result = await session.execute(select(SystemConfig).limit(1))
     config = result.scalar_one_or_none()

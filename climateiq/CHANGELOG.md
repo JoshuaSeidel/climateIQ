@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.4
+
+### Added
+
+- **Quick actions now work** — new `POST /system/quick-action` endpoint
+  that controls the global thermostat directly via HA climate services.
+  Actions: `eco` (set preset or lower by 3°), `away` (set Away preset),
+  `boost_heat` (+2°), `boost_cool` (-2°), `resume` (clear preset).
+  Previously quick actions went through the chat command parser which
+  couldn't match the text patterns and had no access to the global
+  thermostat (only per-zone devices which don't exist).
+
 ## 0.5.3
 
 ### Fixed

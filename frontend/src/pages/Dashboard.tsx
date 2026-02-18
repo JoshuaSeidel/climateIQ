@@ -256,12 +256,16 @@ export const Dashboard = () => {
     [refetchZones, unitKey],
   )
 
-  // Quick action handlers
+  // Quick action handlers — call the dedicated quick-action endpoint
   const handleQuickAction = useCallback(
     async (action: string) => {
       try {
-        await api.post('/chat/command', { command: action })
-        setError(null)
+        const result = await api.post<{ success: boolean; message: string }>('/system/quick-action', { action })
+        if (result.success) {
+          setError(null)
+        } else {
+          setError(result.message || 'Action failed.')
+        }
         refetchZones()
       } catch {
         setError('Failed to execute action. Please try again.')
@@ -633,7 +637,7 @@ export const Dashboard = () => {
                 variant="outline"
                 size="sm"
                 className="justify-start"
-                onClick={() => handleQuickAction('Set all zones to eco mode')}
+                onClick={() => handleQuickAction('eco')}
               >
                 <Thermometer className="mr-2 h-4 w-4" />
                 Eco Mode
@@ -642,7 +646,7 @@ export const Dashboard = () => {
                 variant="outline"
                 size="sm"
                 className="justify-start"
-                onClick={() => handleQuickAction('Set all zones to away mode')}
+                onClick={() => handleQuickAction('away')}
               >
                 <Activity className="mr-2 h-4 w-4" />
                 Away Mode
@@ -651,7 +655,7 @@ export const Dashboard = () => {
                 variant="outline"
                 size="sm"
                 className="justify-start"
-                onClick={() => handleQuickAction('Boost heating in all zones by 2 degrees')}
+                onClick={() => handleQuickAction('boost_heat')}
               >
                 <Gauge className="mr-2 h-4 w-4" />
                 Boost Heat
@@ -660,7 +664,7 @@ export const Dashboard = () => {
                 variant="outline"
                 size="sm"
                 className="justify-start"
-                onClick={() => handleQuickAction('Boost cooling in all zones by 2 degrees')}
+                onClick={() => handleQuickAction('boost_cool')}
               >
                 <Wind className="mr-2 h-4 w-4" />
                 Boost Cool
