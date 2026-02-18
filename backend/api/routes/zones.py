@@ -276,8 +276,16 @@ async def _enrich_zone_response(
                         raw = float(attrs["current_temperature"])
                         resp.current_temp = _ha_temp_to_celsius(raw, ha_unit)
                     # Target / setpoint temperature (always prefer live)
+                    # In heat/cool mode HA uses "temperature"; in heat_cool/auto
+                    # mode it uses "target_temp_high" / "target_temp_low" instead.
                     if attrs.get("temperature") is not None:
                         raw = float(attrs["temperature"])
+                        resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
+                    elif attrs.get("target_temp_high") is not None:
+                        raw = float(attrs["target_temp_high"])
+                        resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
+                    elif attrs.get("target_temp_low") is not None:
+                        raw = float(attrs["target_temp_low"])
                         resp.target_temp = _ha_temp_to_celsius(raw, ha_unit)
                     logger.debug(
                         "Zone %s live HA data: current_temp=%.1f, target_temp=%.1f (HA unit=%s)",
