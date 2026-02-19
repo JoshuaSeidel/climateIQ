@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -227,13 +227,13 @@ async def _fetch_zone(db: AsyncSession, zone_id: uuid.UUID) -> Zone:
 # Cached global climate entity state — shared across all zone enrichments
 # within a single request cycle to avoid hitting HA N times for N zones.
 # ---------------------------------------------------------------------------
-_global_climate_cache: dict | None = None
+_global_climate_cache: dict[str, Any] | None = None
 _global_climate_cache_ts: float = 0.0
 
 
 async def _get_global_climate_state(
     ha_client: HAClient, db: AsyncSession
-) -> dict | None:
+) -> dict[str, Any] | None:
     """Return cached {current_temp, target_temp, hvac_mode} from the
     global (whole-house) climate entity, or None if unavailable."""
     import time

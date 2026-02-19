@@ -392,7 +392,7 @@ async def execute_quick_action(
 
 
 @router.get("/logic-reference")
-async def get_logic_reference() -> dict:
+async def get_logic_reference() -> dict[str, Any]:
     """Return the ClimateIQ logic reference for UI display and LLM context."""
     return {
         "sections": [
@@ -719,7 +719,7 @@ async def get_diagnostics(
             )
         else:
             t0 = time.monotonic()
-            await redis_client.ping()
+            await redis_client.ping()  # type: ignore[misc]
             latency = (time.monotonic() - t0) * 1000
 
             # SET/GET round-trip test

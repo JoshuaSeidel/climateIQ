@@ -718,9 +718,9 @@ async def get_comfort_scores(
     zone_scores: list[ComfortZoneScore] = []
 
     for zone in zones:
-        row = zone_stats.get(zone.id)
+        zrow: Any = zone_stats.get(zone.id)
 
-        if row is None or row.total_readings == 0:
+        if zrow is None or zrow.total_readings == 0:
             zone_scores.append(
                 ComfortZoneScore(
                     zone_id=zone.id,
@@ -734,10 +734,10 @@ async def get_comfort_scores(
             )
             continue
 
-        temp_total = int(row.temp_total)
-        hum_total = int(row.hum_total)
-        temp_in_range = int(row.temp_in_range)
-        hum_in_range = int(row.hum_in_range)
+        temp_total = int(zrow.temp_total)
+        hum_total = int(zrow.hum_total)
+        temp_in_range = int(zrow.temp_in_range)
+        hum_in_range = int(zrow.hum_in_range)
 
         temp_pct = (temp_in_range / temp_total * 100.0) if temp_total else 0.0
         humid_pct = (hum_in_range / hum_total * 100.0) if hum_total else 0.0
@@ -753,8 +753,8 @@ async def get_comfort_scores(
         else:
             score = 0.0
 
-        avg_temp = round(row.avg_temp, 2) if row.avg_temp is not None else None
-        avg_humid = round(row.avg_hum, 2) if row.avg_hum is not None else None
+        avg_temp = round(zrow.avg_temp, 2) if zrow.avg_temp is not None else None
+        avg_humid = round(zrow.avg_hum, 2) if zrow.avg_hum is not None else None
 
         zone_scores.append(
             ComfortZoneScore(
@@ -765,7 +765,7 @@ async def get_comfort_scores(
                 avg_humidity=avg_humid,
                 temp_in_range_pct=round(temp_pct, 1),
                 humidity_in_range_pct=round(humid_pct, 1),
-                reading_count=int(row.total_readings),
+                reading_count=int(zrow.total_readings),
                 factors={
                     "temp_readings": temp_total,
                     "humidity_readings": hum_total,

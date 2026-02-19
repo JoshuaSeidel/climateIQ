@@ -180,8 +180,8 @@ async def _get_live_system_context(db: AsyncSession, temperature_unit: str) -> s
 
     # 2. Key settings from system_settings KV table
     try:
-        result = await db.execute(_sel(SystemSetting))
-        settings_rows = result.scalars().all()
+        settings_result = await db.execute(_sel(SystemSetting))
+        settings_rows = settings_result.scalars().all()
         for row in settings_rows:
             kv[row.key] = row.value.get("value") if isinstance(row.value, dict) else row.value
 
@@ -277,12 +277,12 @@ async def _get_live_system_context(db: AsyncSession, temperature_unit: str) -> s
 
     # 4. Active schedules
     try:
-        result = await db.execute(
+        sched_result = await db.execute(
             _sel(Schedule)
             .where(Schedule.is_enabled.is_(True))
             .order_by(Schedule.priority.desc())
         )
-        schedules = result.scalars().all()
+        schedules = sched_result.scalars().all()
         if schedules:
             # Collect zone IDs across all schedules
             all_zone_ids: set[str] = set()

@@ -267,6 +267,7 @@ function TemperatureTab({
     )
 
     // Remove the _ts helper key
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     return sorted.map(({ _ts, ...rest }) => rest)
   }, [overview, hours, unitKey, metricView])
 
