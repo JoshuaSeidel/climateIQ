@@ -19,7 +19,6 @@ import {
   ChevronRight,
   ArrowLeft,
   Loader2,
-  Eye,
   Lightbulb,
   Cpu,
 } from 'lucide-react'
@@ -158,8 +157,9 @@ export const Zones = () => {
           type: z.type,
           floor: z.floor,
           is_active: z.is_active,
-          temperature: (raw.current_temp as number | null) || null,
-          humidity: (raw.current_humidity as number | null) || null,
+          temperature: (raw.current_temp as number | null) ?? null,
+          humidity: (raw.current_humidity as number | null) ?? null,
+          lux: (raw.current_lux as number | null) ?? null,
           occupancy: raw.is_occupied === true ? 'occupied' : raw.is_occupied === false ? 'vacant' : null,
           targetTemperature: (raw.target_temp as number | null) ?? null,
           sensors: z.sensors,
@@ -199,7 +199,7 @@ export const Zones = () => {
     enabled: viewMode === 'detail' && showSensorForm,
   })
 
-  const { data: haDevices, isFetching: devicesFetching } = useQuery<HADevice[]>({
+  const { data: haDevices, isFetching: devicesFetching, isLoading: devicesLoading } = useQuery<HADevice[]>({
     queryKey: ['ha-devices', debouncedDeviceSearch],
     queryFn: () => api.get<HADevice[]>('/settings/ha/devices', { search: debouncedDeviceSearch }),
     enabled: viewMode === 'detail' && showDevicePicker && debouncedDeviceSearch.length >= 2,
@@ -521,7 +521,7 @@ export const Zones = () => {
         </div>
 
         {/* Zone Stats */}
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <Card className="border-border/60">
             <CardContent className="p-4">
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -561,9 +561,21 @@ export const Zones = () => {
           <Card className="border-border/60">
             <CardContent className="p-4">
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Eye className="h-4 w-4" /> Readings
+                <Users className="h-4 w-4" /> Occupancy
               </div>
-              <p className="text-2xl font-semibold">{zoneHistory?.total_readings ?? 0}</p>
+              <p className="text-2xl font-semibold">
+                {selectedZone.occupancy === 'occupied' ? 'Occupied' : selectedZone.occupancy === 'vacant' ? 'Vacant' : '--'}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className="border-border/60">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Lightbulb className="h-4 w-4" /> Lux
+              </div>
+              <p className="text-2xl font-semibold">
+                {selectedZone.lux != null ? `${Math.round(selectedZone.lux)} lx` : '--'}
+              </p>
             </CardContent>
           </Card>
         </div>
@@ -676,7 +688,7 @@ export const Zones = () => {
                       <p className="py-4 text-center text-sm text-muted-foreground">
                         Type a device name, manufacturer, or model to search
                       </p>
-                    ) : devicesFetching ? (
+                    ) : devicesFetching || devicesLoading ? (
                       <div className="flex items-center justify-center py-8">
                         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                       </div>

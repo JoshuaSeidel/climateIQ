@@ -86,6 +86,7 @@ export type ZoneBackend = {
   devices: Device[]
   current_temp?: number | null
   current_humidity?: number | null
+  current_lux?: number | null
   is_occupied?: boolean | null
   target_temp?: number | null
 }
@@ -100,6 +101,7 @@ export type Zone = {
   is_active?: boolean
   temperature: number | null
   humidity: number | null
+  lux: number | null
   occupancy: 'occupied' | 'vacant' | null
   targetTemperature: number | null
   sensors?: Sensor[]

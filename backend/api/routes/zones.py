@@ -326,7 +326,7 @@ async def _enrich_zone_response(
             select(SensorReading)
             .where(SensorReading.sensor_id.in_(sensor_ids))
             .order_by(SensorReading.recorded_at.desc())
-            .limit(25)
+            .limit(50)
         )
         reading_result = await db.execute(reading_stmt)
         readings = reading_result.scalars().all()
@@ -337,10 +337,13 @@ async def _enrich_zone_response(
                 resp.current_humidity = reading.humidity
             if resp.is_occupied is None and reading.presence is not None:
                 resp.is_occupied = reading.presence
+            if resp.current_lux is None and reading.lux is not None:
+                resp.current_lux = reading.lux
             if (
                 resp.current_temp is not None
                 and resp.current_humidity is not None
                 and resp.is_occupied is not None
+                and resp.current_lux is not None
             ):
                 break
 

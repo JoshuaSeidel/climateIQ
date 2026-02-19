@@ -136,6 +136,7 @@ class ZoneResponse(ZoneBase):
     # Live sensor data (enriched by the API layer)
     current_temp: float | None = None
     current_humidity: float | None = None
+    current_lux: float | None = None
     is_occupied: bool | None = None
     target_temp: float | None = None
 
