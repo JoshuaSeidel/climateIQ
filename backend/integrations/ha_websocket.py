@@ -106,6 +106,7 @@ class HAWebSocketClient:
         self._msg_id = 0
         self._callbacks: list[StateChangeCallback] = []
         self._entities_seen: set[str] = set()
+        self._pending_commands: dict[int, asyncio.Future[Any]] = {}
 
     # ------------------------------------------------------------------
     # Public API — lifecycle
@@ -159,6 +160,49 @@ class HAWebSocketClient:
         """Dynamically add an entity to the filter (for newly created sensors)."""
         if self._entity_filter is not None:
             self._entity_filter.add(entity_id)
+
+    async def send_command(
+        self,
+        msg_type: str,
+        cmd_timeout: float = 10.0,
+        **kwargs: Any,
+    ) -> Any:
+        """Send a WS command and wait for the response.
+
+        Works for HA WebSocket commands like ``config/device_registry/list``
+        and ``config/entity_registry/list``.
+
+        Returns the ``result`` field from the response message.
+
+        Raises:
+            HAWebSocketError: If not connected, send fails, or response
+                indicates failure.
+            TimeoutError: If no response arrives within *cmd_timeout* seconds.
+        """
+        if self._ws is None or not self._connected.is_set():
+            raise HAWebSocketError("WebSocket is not connected")
+
+        self._msg_id += 1
+        cmd_id = self._msg_id
+        payload: dict[str, Any] = {"id": cmd_id, "type": msg_type, **kwargs}
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Any] = loop.create_future()
+        self._pending_commands[cmd_id] = future
+
+        try:
+            await self._ws.send(json.dumps(payload))
+            result = await asyncio.wait_for(future, timeout=cmd_timeout)
+        except TimeoutError:
+            self._pending_commands.pop(cmd_id, None)
+            raise HAWebSocketError(
+                f"Timeout waiting for response to {msg_type} (id={cmd_id})"
+            ) from None
+        except Exception:
+            self._pending_commands.pop(cmd_id, None)
+            raise
+
+        return result
 
     # ------------------------------------------------------------------
     # Internal — connection & auth
@@ -248,6 +292,23 @@ class HAWebSocketClient:
                 try:
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
+                    continue
+
+                # Route command responses to pending futures
+                msg_id = msg.get("id")
+                if msg_id is not None and msg_id in self._pending_commands:
+                    fut = self._pending_commands.pop(msg_id)
+                    if not fut.done():
+                        if msg.get("success", False):
+                            fut.set_result(msg.get("result"))
+                        else:
+                            error = msg.get("error", {})
+                            fut.set_exception(
+                                HAWebSocketError(
+                                    f"Command {msg_id} failed: "
+                                    f"{error.get('message', 'unknown error')}"
+                                )
+                            )
                     continue
 
                 if msg.get("type") != "event":

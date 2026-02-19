@@ -353,36 +353,6 @@ class HAClient:
         )
         return config
 
-    async def get_device_registry(self) -> list[dict[str, Any]]:
-        """Fetch the HA device registry.
-
-        Returns a list of device dicts with keys like ``id``, ``name``,
-        ``manufacturer``, ``model``, ``area_id``, ``identifiers``, etc.
-        Requires HA 2023.3+.
-        """
-        logger.debug("Fetching HA device registry")
-        response = await self._request(
-            "GET", "/api/config/device_registry", context="get_device_registry"
-        )
-        devices: list[dict[str, Any]] = response.json()
-        logger.info("Retrieved %d devices from HA registry", len(devices))
-        return devices
-
-    async def get_entity_registry(self) -> list[dict[str, Any]]:
-        """Fetch the HA entity registry.
-
-        Returns a list of entity dicts with keys like ``entity_id``,
-        ``device_id``, ``platform``, ``original_name``, ``unique_id``, etc.
-        Requires HA 2023.3+.
-        """
-        logger.debug("Fetching HA entity registry")
-        response = await self._request(
-            "GET", "/api/config/entity_registry", context="get_entity_registry"
-        )
-        entities: list[dict[str, Any]] = response.json()
-        logger.info("Retrieved %d entities from HA registry", len(entities))
-        return entities
-
     # -- climate helpers ------------------------------------------------------
 
     async def set_temperature(self, entity_id: str, temperature: float) -> Any:

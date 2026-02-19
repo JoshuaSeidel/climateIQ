@@ -14,6 +14,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.dependencies import get_db, get_ha_client
@@ -263,8 +264,23 @@ async def get_overview(
 
     params = {"zone_ids": zone_ids, "start": period_start, "end": period_end}
 
-    data_result = await db.execute(data_stmt, params)
-    agg_result = await db.execute(agg_stmt, params)
+    try:
+        data_result = await db.execute(data_stmt, params)
+        agg_result = await db.execute(agg_stmt, params)
+    except ProgrammingError:
+        # Continuous aggregate view does not exist (TimescaleDB not installed
+        # or init_db hasn't created them yet). Return empty data gracefully.
+        await db.rollback()
+        logger.warning(
+            "Aggregate view %s missing — returning empty overview", view
+        )
+        return OverviewResponse(
+            period_start=period_start,
+            period_end=period_end,
+            zones=[
+                OverviewZone(zone_id=z.id, zone_name=z.name) for z in zones
+            ],
+        )
 
     # Group readings by zone_id
     readings_by_zone: dict[uuid.UUID, list[OverviewReadingPoint]] = {
@@ -350,77 +366,84 @@ async def get_zone_history(
     if view is not None:
         # ----- Aggregate path: query a continuous aggregate view -----
         # view is from _pick_aggregate_view() which only returns hardcoded view names
-        data_stmt = text(f"""
-            SELECT
-                bucket,
-                avg_temperature_c,
-                avg_humidity,
-                avg_lux,
-                presence,
-                sensor_id,
-                zone_id
-            FROM {view}
-            WHERE zone_id = :zone_id
-              AND bucket >= :start
-              AND bucket <= :end
-            ORDER BY bucket ASC
-        """)  # noqa: S608
-        agg_stmt = text(f"""
-            SELECT
-                AVG(avg_temperature_c) as avg_temp,
-                MIN(avg_temperature_c) as min_temp,
-                MAX(avg_temperature_c) as max_temp,
-                AVG(avg_humidity) as avg_hum,
-                MIN(avg_humidity) as min_hum,
-                MAX(avg_humidity) as max_hum,
-                COUNT(*) as cnt
-            FROM {view}
-            WHERE zone_id = :zone_id
-              AND bucket >= :start
-              AND bucket <= :end
-        """)  # noqa: S608
+        try:
+            data_stmt = text(f"""
+                SELECT
+                    bucket,
+                    avg_temperature_c,
+                    avg_humidity,
+                    avg_lux,
+                    presence,
+                    sensor_id,
+                    zone_id
+                FROM {view}
+                WHERE zone_id = :zone_id
+                  AND bucket >= :start
+                  AND bucket <= :end
+                ORDER BY bucket ASC
+            """)  # noqa: S608
+            agg_stmt = text(f"""
+                SELECT
+                    AVG(avg_temperature_c) as avg_temp,
+                    MIN(avg_temperature_c) as min_temp,
+                    MAX(avg_temperature_c) as max_temp,
+                    AVG(avg_humidity) as avg_hum,
+                    MIN(avg_humidity) as min_hum,
+                    MAX(avg_humidity) as max_hum,
+                    COUNT(*) as cnt
+                FROM {view}
+                WHERE zone_id = :zone_id
+                  AND bucket >= :start
+                  AND bucket <= :end
+            """)  # noqa: S608
 
-        params = {"zone_id": str(zone_id), "start": period_start, "end": period_end}
+            params = {"zone_id": str(zone_id), "start": period_start, "end": period_end}
 
-        data_result = await db.execute(data_stmt, params)
-        agg_result = await db.execute(agg_stmt, params)
-        rows = data_result.all()
-        agg_row = agg_result.one()
+            data_result = await db.execute(data_stmt, params)
+            agg_result = await db.execute(agg_stmt, params)
+            rows = data_result.all()
+            agg_row = agg_result.one()
 
-        points: list[ReadingPoint] = [
-            ReadingPoint(
-                recorded_at=row.bucket,
-                temperature_c=round(row.avg_temperature_c, 2)
-                if row.avg_temperature_c is not None
+            points: list[ReadingPoint] = [
+                ReadingPoint(
+                    recorded_at=row.bucket,
+                    temperature_c=round(row.avg_temperature_c, 2)
+                    if row.avg_temperature_c is not None
+                    else None,
+                    humidity=round(row.avg_humidity, 2) if row.avg_humidity is not None else None,
+                    presence=row.presence,
+                    lux=round(row.avg_lux, 2) if row.avg_lux is not None else None,
+                    sensor_id=row.sensor_id,
+                )
+                for row in rows
+            ]
+
+            return HistoryResponse(
+                zone_id=zone_id,
+                zone_name=zone.name,
+                period_start=period_start,
+                period_end=period_end,
+                total_readings=agg_row.cnt,
+                avg_temperature_c=round(agg_row.avg_temp, 2)
+                if agg_row.avg_temp is not None
                 else None,
-                humidity=round(row.avg_humidity, 2) if row.avg_humidity is not None else None,
-                presence=row.presence,
-                lux=round(row.avg_lux, 2) if row.avg_lux is not None else None,
-                sensor_id=row.sensor_id,
+                min_temperature_c=round(agg_row.min_temp, 2)
+                if agg_row.min_temp is not None
+                else None,
+                max_temperature_c=round(agg_row.max_temp, 2)
+                if agg_row.max_temp is not None
+                else None,
+                avg_humidity=round(agg_row.avg_hum, 2) if agg_row.avg_hum is not None else None,
+                min_humidity=round(agg_row.min_hum, 2) if agg_row.min_hum is not None else None,
+                max_humidity=round(agg_row.max_hum, 2) if agg_row.max_hum is not None else None,
+                readings=points,
             )
-            for row in rows
-        ]
-
-        return HistoryResponse(
-            zone_id=zone_id,
-            zone_name=zone.name,
-            period_start=period_start,
-            period_end=period_end,
-            total_readings=agg_row.cnt,
-            avg_temperature_c=round(agg_row.avg_temp, 2)
-            if agg_row.avg_temp is not None
-            else None,
-            min_temperature_c=round(agg_row.min_temp, 2)
-            if agg_row.min_temp is not None
-            else None,
-            max_temperature_c=round(agg_row.max_temp, 2)
-            if agg_row.max_temp is not None
-            else None,
-            avg_humidity=round(agg_row.avg_hum, 2) if agg_row.avg_hum is not None else None,
-            min_humidity=round(agg_row.min_hum, 2) if agg_row.min_hum is not None else None,
-            max_humidity=round(agg_row.max_hum, 2) if agg_row.max_hum is not None else None,
-            readings=points,
-        )
+        except ProgrammingError:
+            # View doesn't exist — fall through to raw readings path
+            await db.rollback()
+            logger.warning(
+                "Aggregate view %s missing — falling back to raw readings", view
+            )
 
     # ----- Raw path: short windows with no explicit resolution -----
     sensor_ids = await _zone_sensor_ids(db, zone_id)
@@ -681,39 +704,45 @@ async def get_comfort_scores(
     zones = zones_result.scalars().all()
 
     # Single bulk query against the hourly continuous aggregate
-    stmt = text("""
-        SELECT
-            zone_id,
-            COUNT(*) as total_readings,
-            AVG(avg_temperature_c) as avg_temp,
-            AVG(avg_humidity) as avg_hum,
-            SUM(CASE WHEN avg_temperature_c BETWEEN :temp_min AND :temp_max
-                     THEN 1 ELSE 0 END) as temp_in_range,
-            SUM(CASE WHEN avg_temperature_c IS NOT NULL
-                     THEN 1 ELSE 0 END) as temp_total,
-            SUM(CASE WHEN avg_humidity BETWEEN :hum_min AND :hum_max
-                     THEN 1 ELSE 0 END) as hum_in_range,
-            SUM(CASE WHEN avg_humidity IS NOT NULL
-                     THEN 1 ELSE 0 END) as hum_total
-        FROM sensor_readings_hourly
-        WHERE bucket >= :start AND bucket <= :end
-        GROUP BY zone_id
-    """)
-    bulk_result = await db.execute(
-        stmt,
-        {
-            "temp_min": temp_min,
-            "temp_max": temp_max,
-            "hum_min": humidity_min,
-            "hum_max": humidity_max,
-            "start": period_start,
-            "end": period_end,
-        },
-    )
-    # Index bulk stats by zone_id for O(1) lookup
     zone_stats: dict[uuid.UUID, Any] = {}
-    for row in bulk_result.all():
-        zone_stats[row.zone_id] = row
+    try:
+        stmt = text("""
+            SELECT
+                zone_id,
+                COUNT(*) as total_readings,
+                AVG(avg_temperature_c) as avg_temp,
+                AVG(avg_humidity) as avg_hum,
+                SUM(CASE WHEN avg_temperature_c BETWEEN :temp_min AND :temp_max
+                         THEN 1 ELSE 0 END) as temp_in_range,
+                SUM(CASE WHEN avg_temperature_c IS NOT NULL
+                         THEN 1 ELSE 0 END) as temp_total,
+                SUM(CASE WHEN avg_humidity BETWEEN :hum_min AND :hum_max
+                         THEN 1 ELSE 0 END) as hum_in_range,
+                SUM(CASE WHEN avg_humidity IS NOT NULL
+                         THEN 1 ELSE 0 END) as hum_total
+            FROM sensor_readings_hourly
+            WHERE bucket >= :start AND bucket <= :end
+            GROUP BY zone_id
+        """)
+        bulk_result = await db.execute(
+            stmt,
+            {
+                "temp_min": temp_min,
+                "temp_max": temp_max,
+                "hum_min": humidity_min,
+                "hum_max": humidity_max,
+                "start": period_start,
+                "end": period_end,
+            },
+        )
+        # Index bulk stats by zone_id for O(1) lookup
+        for row in bulk_result.all():
+            zone_stats[row.zone_id] = row
+    except ProgrammingError:
+        await db.rollback()
+        logger.warning(
+            "sensor_readings_hourly view missing — comfort scores unavailable"
+        )
 
     zone_scores: list[ComfortZoneScore] = []
 

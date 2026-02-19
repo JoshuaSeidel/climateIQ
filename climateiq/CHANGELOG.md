@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.8
+
+### Fixed
+
+- **HA device registry uses WebSocket API** — replaced broken REST API calls
+  (`/api/config/device_registry` and `/api/config/entity_registry` return 404)
+  with HA WebSocket commands (`config/device_registry/list` and
+  `config/entity_registry/list`). Added `send_command()` method to
+  `HAWebSocketClient` for request/response WS commands.
+
+- **TimescaleDB continuous aggregates created at startup** — `init_db()` now
+  creates hypertables and the `sensor_readings_5min`, `sensor_readings_hourly`,
+  and `sensor_readings_daily` continuous aggregate views if they don't exist,
+  along with refresh and compression policies.
+
+- **Analytics endpoints gracefully handle missing views** — `get_zone_history`,
+  `get_overview`, and `get_comfort_scores` now catch `ProgrammingError` when
+  aggregate views are missing and fall back to raw data or empty results
+  instead of crashing with a 500 error.
+
 ## 0.6.7
 
 ### Added

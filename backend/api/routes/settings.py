@@ -294,33 +294,46 @@ async def list_ha_entities(
 
 
 # ---------------------------------------------------------------------------
-# GET /settings/ha/devices — HA device registry
+# GET /settings/ha/devices — HA device registry (via WebSocket API)
 # ---------------------------------------------------------------------------
 @router.get("/ha/devices", response_model=list[HADeviceInfo])
 async def list_ha_devices() -> list[HADeviceInfo]:
-    """Return HA devices with their sensor/binary_sensor entities grouped."""
+    """Return HA devices with their sensor/binary_sensor entities grouped.
+
+    Uses the HA WebSocket API (``config/device_registry/list`` and
+    ``config/entity_registry/list``) because the REST API does not expose
+    these endpoints.
+    """
     import asyncio
 
     from backend.api.dependencies import _ha_client
+    from backend.api.main import app_state
     from backend.integrations.ha_client import HAClientError
+    from backend.integrations.ha_websocket import HAWebSocketError
 
+    ha_ws = app_state.ha_ws
+    if ha_ws is None or not ha_ws.connected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Home Assistant WebSocket not connected",
+        )
     if _ha_client is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Home Assistant client not connected",
+            detail="Home Assistant REST client not connected",
         )
 
     try:
         devices_raw, entities_raw, states = await asyncio.gather(
-            _ha_client.get_device_registry(),
-            _ha_client.get_entity_registry(),
+            ha_ws.send_command("config/device_registry/list"),
+            ha_ws.send_command("config/entity_registry/list"),
             _ha_client.get_states(),
         )
-    except HAClientError as exc:
+    except (HAWebSocketError, HAClientError) as exc:
         logger.error("Failed to fetch HA device/entity registry: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Unable to reach Home Assistant",
+            detail=f"Unable to fetch device registry: {exc}",
         ) from exc
 
     # Build state lookup: entity_id -> EntityState
