@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.6.6
+
+### Fixed
+
+- **Sensor data not showing in zones** — the HA WebSocket entity filter
+  now includes all registered sensors' `ha_entity_id` values from the DB,
+  not just entities listed in the config/settings. Previously, assigning a
+  sensor to a zone would show the entity but state_changed events were
+  silently dropped because the entity wasn't in the WebSocket filter.
+
+- **Value extraction from HA entities** — `_parse_state_change()` now uses
+  `device_class` and `unit_of_measurement` attributes (the standard HA way)
+  to extract temperature, humidity, illuminance, and occupancy. Previously
+  it only matched keywords in entity IDs (e.g., "temperature" had to appear
+  in the entity ID string). Also converts Fahrenheit to Celsius automatically
+  when `unit_of_measurement` is `°F`.
+
+- **Entity filter reads from DB settings** — the WebSocket entity filter
+  now reads `climate_entities` and `sensor_entities` from the
+  `system_settings` KV table (set via the Settings UI), not just config.
+
+### Added
+
+- **Dynamic entity filter updates** — when a new sensor with an
+  `ha_entity_id` is created, it is immediately added to the running
+  WebSocket entity filter (no restart needed).
+
+- **Searchable entity picker** — the sensor assignment form now has a
+  search/filter input instead of a bare dropdown. Search by entity name,
+  entity ID, or device class. Can also paste a custom entity ID directly.
+  Shows entity state, device class, and unit of measurement in results.
+
+- **Enhanced entity info** — the `GET /settings/ha/entities` endpoint now
+  returns `domain`, `device_class`, and `unit_of_measurement` fields.
+
 ## 0.6.5
 
 ### Added

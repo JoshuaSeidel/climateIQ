@@ -1283,17 +1283,57 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if settings.home_assistant_token:
             logger.info("Connecting to Home Assistant WebSocket...")
             try:
-                # Build entity filter from config (comma-separated lists).
+                # Build entity filter from config, DB settings, AND registered sensors.
                 entity_filter: set[str] | None = None
+
+                # 1. Config-file entities
                 _climate = settings.climate_entities.strip()
                 _sensors = settings.sensor_entities.strip()
-                if _climate or _sensors:
-                    entity_filter = set()
-                    if _climate:
-                        entity_filter.update(e.strip() for e in _climate.split(",") if e.strip())
-                    if _sensors:
-                        entity_filter.update(e.strip() for e in _sensors.split(",") if e.strip())
-                    logger.info("Entity filter active: %d entities", len(entity_filter))
+                _config_entities: set[str] = set()
+                if _climate:
+                    _config_entities.update(e.strip() for e in _climate.split(",") if e.strip())
+                if _sensors:
+                    _config_entities.update(e.strip() for e in _sensors.split(",") if e.strip())
+
+                # 2. DB system_settings KV overrides (user may change via Settings UI)
+                _db_entities: set[str] = set()
+                try:
+                    from backend.models.database import Sensor as SensorModel
+                    from backend.models.database import SystemSetting
+                    _SessionMaker = get_session_maker()
+                    async with _SessionMaker() as _sess:
+                        from sqlalchemy import select as _sel
+                        for _key in ("climate_entities", "sensor_entities"):
+                            _row = (await _sess.execute(
+                                _sel(SystemSetting).where(SystemSetting.key == _key)
+                            )).scalar_one_or_none()
+                            if _row and _row.value:
+                                _raw = _row.value.get("value", "")
+                                if isinstance(_raw, str) and _raw.strip():
+                                    _db_entities.update(
+                                        e.strip() for e in _raw.split(",") if e.strip()
+                                    )
+
+                        # 3. All registered sensors with ha_entity_id
+                        _sensor_rows = (await _sess.execute(
+                            _sel(SensorModel.ha_entity_id).where(
+                                SensorModel.ha_entity_id.isnot(None),
+                                SensorModel.ha_entity_id != "",
+                            )
+                        )).scalars().all()
+                        _db_entities.update(eid for eid in _sensor_rows if eid)
+                except Exception as _db_err:
+                    logger.warning("Could not read DB entities for WS filter: %s", _db_err)
+
+                _all_entities = _config_entities | _db_entities
+                if _all_entities:
+                    entity_filter = _all_entities
+                    logger.info(
+                        "Entity filter active: %d entities (%d config, %d DB)",
+                        len(entity_filter),
+                        len(_config_entities),
+                        len(_db_entities),
+                    )
 
                 ha_ws = HAWebSocketClient(
                     url=str(settings.home_assistant_url),

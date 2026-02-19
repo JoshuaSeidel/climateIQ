@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from 'react'
+import { useMemo, useState, useCallback, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -104,6 +104,21 @@ export const Zones = () => {
     ha_entity_id: '',
   })
   const [showSensorForm, setShowSensorForm] = useState(false)
+  const [entitySearch, setEntitySearch] = useState('')
+  const [entityPickerOpen, setEntityPickerOpen] = useState(false)
+  const entityPickerRef = useRef<HTMLDivElement>(null)
+
+  // Close entity picker on outside click
+  useEffect(() => {
+    if (!entityPickerOpen) return
+    const handler = (e: MouseEvent) => {
+      if (entityPickerRef.current && !entityPickerRef.current.contains(e.target as Node)) {
+        setEntityPickerOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [entityPickerOpen])
   const [comfortPrefs, setComfortPrefs] = useState<ComfortPrefs>({
     temp_min: '20',
     temp_max: '24',
@@ -613,27 +628,100 @@ export const Zones = () => {
                   </div>
                   <div className="sm:col-span-2">
                     <label className="text-sm font-medium">HA Entity (optional)</label>
-                    <select
-                      value={sensorForm.ha_entity_id}
-                      onChange={(e) => {
-                        const entityId = e.target.value
-                        setSensorForm((f) => ({
-                          ...f,
-                          ha_entity_id: entityId,
-                          name: f.name || (haSensorEntities?.find(ent => ent.entity_id === entityId)?.name ?? ''),
-                        }))
-                      }}
-                      className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm"
-                    >
-                      <option value="">None — manual sensor</option>
-                      {(haSensorEntities ?? []).map((entity) => (
-                        <option key={entity.entity_id} value={entity.entity_id}>
-                          {entity.name} ({entity.entity_id}) — {entity.state}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="relative" ref={entityPickerRef}>
+                      <Input
+                        value={entityPickerOpen ? entitySearch : (sensorForm.ha_entity_id || '')}
+                        onChange={(e) => {
+                          setEntitySearch(e.target.value)
+                          if (!entityPickerOpen) setEntityPickerOpen(true)
+                          // Allow typing a custom entity ID directly
+                          setSensorForm((f) => ({ ...f, ha_entity_id: e.target.value }))
+                        }}
+                        onFocus={() => setEntityPickerOpen(true)}
+                        placeholder="Search entities or paste an entity_id..."
+                        className="w-full"
+                      />
+                      {sensorForm.ha_entity_id && !entityPickerOpen && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSensorForm((f) => ({ ...f, ha_entity_id: '' }))
+                            setEntitySearch('')
+                          }}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      )}
+                      {entityPickerOpen && (
+                        <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-border bg-background shadow-lg">
+                          <button
+                            type="button"
+                            className="w-full px-3 py-2 text-left text-sm hover:bg-muted"
+                            onClick={() => {
+                              setSensorForm((f) => ({ ...f, ha_entity_id: '' }))
+                              setEntitySearch('')
+                              setEntityPickerOpen(false)
+                            }}
+                          >
+                            <span className="text-muted-foreground">None — manual sensor</span>
+                          </button>
+                          {(haSensorEntities ?? [])
+                            .filter((entity) => {
+                              if (!entitySearch.trim()) return true
+                              const q = entitySearch.toLowerCase()
+                              return (
+                                entity.entity_id.toLowerCase().includes(q) ||
+                                entity.name.toLowerCase().includes(q) ||
+                                (entity.device_class ?? '').toLowerCase().includes(q)
+                              )
+                            })
+                            .map((entity) => (
+                              <button
+                                key={entity.entity_id}
+                                type="button"
+                                className={`w-full px-3 py-2 text-left text-sm hover:bg-muted ${
+                                  sensorForm.ha_entity_id === entity.entity_id ? 'bg-muted' : ''
+                                }`}
+                                onClick={() => {
+                                  setSensorForm((f) => ({
+                                    ...f,
+                                    ha_entity_id: entity.entity_id,
+                                    name: f.name || entity.name,
+                                  }))
+                                  setEntitySearch('')
+                                  setEntityPickerOpen(false)
+                                }}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="truncate font-medium">{entity.name}</div>
+                                    <div className="truncate text-xs text-muted-foreground">
+                                      {entity.entity_id}
+                                      {entity.device_class ? ` · ${entity.device_class}` : ''}
+                                      {entity.unit_of_measurement ? ` · ${entity.unit_of_measurement}` : ''}
+                                    </div>
+                                  </div>
+                                  <span className="ml-2 shrink-0 text-xs text-muted-foreground">
+                                    {entity.state}
+                                  </span>
+                                </div>
+                              </button>
+                            ))}
+                          {entitySearch.trim() &&
+                            (haSensorEntities ?? []).filter((e) => {
+                              const q = entitySearch.toLowerCase()
+                              return e.entity_id.toLowerCase().includes(q) || e.name.toLowerCase().includes(q)
+                            }).length === 0 && (
+                              <div className="px-3 py-2 text-sm text-muted-foreground">
+                                No matches. The typed value will be used as a custom entity ID.
+                              </div>
+                            )}
+                        </div>
+                      )}
+                    </div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Link to a Home Assistant entity for automatic data ingestion
+                      Search by name, entity ID, or device class. You can also paste a custom entity ID.
                     </p>
                    </div>
                 </div>

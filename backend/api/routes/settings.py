@@ -86,6 +86,9 @@ class HAEntityInfo(BaseModel):
     entity_id: str
     name: str
     state: str
+    domain: str = ""
+    device_class: str = ""
+    unit_of_measurement: str = ""
 
 
 class LLMModelInfo(BaseModel):
@@ -264,6 +267,9 @@ async def list_ha_entities(
                 entity_id=entity.entity_id,
                 name=entity.attributes.get("friendly_name", entity.entity_id),
                 state=entity.state,
+                domain=entity.domain,
+                device_class=entity.attributes.get("device_class", "") or "",
+                unit_of_measurement=entity.attributes.get("unit_of_measurement", "") or "",
             )
         )
     return entities

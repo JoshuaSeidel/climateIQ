@@ -155,6 +155,11 @@ class HAWebSocketClient:
         with suppress(ValueError):
             self._callbacks.remove(callback)
 
+    def add_entity_to_filter(self, entity_id: str) -> None:
+        """Dynamically add an entity to the filter (for newly created sensors)."""
+        if self._entity_filter is not None:
+            self._entity_filter.add(entity_id)
+
     # ------------------------------------------------------------------
     # Internal — connection & auth
     # ------------------------------------------------------------------
@@ -300,40 +305,78 @@ class HAWebSocketClient:
             last_updated=state_data.get("last_updated", ""),
         )
 
-        # Extract numeric sensor values
-        for field_name, attr_keys in _NUMERIC_ATTRS.items():
-            # First check if the entity state itself is numeric (for sensor.* domain)
-            if domain == "sensor" and field_name in entity_id.lower():
+        device_class = attrs.get("device_class", "")
+        device_class = device_class.lower() if isinstance(device_class, str) else ""
+        unit = attrs.get("unit_of_measurement", "") or ""
+
+        # ----- Device-class / unit-based extraction (most reliable) -----
+        _dc_matched = False
+
+        if domain == "sensor":
+            if device_class == "temperature":
                 with suppress(ValueError, TypeError):
-                    setattr(change, field_name, float(state_val))
-                    continue
+                    temp_val = float(state_val)
+                    if unit == "°F":
+                        temp_val = (temp_val - 32) * 5 / 9
+                    change.temperature = temp_val
+                    _dc_matched = True
+            elif device_class == "humidity":
+                with suppress(ValueError, TypeError):
+                    change.humidity = float(state_val)
+                    _dc_matched = True
+            elif device_class == "illuminance":
+                with suppress(ValueError, TypeError):
+                    change.lux = float(state_val)
+                    _dc_matched = True
+            elif device_class == "pressure":
+                with suppress(ValueError, TypeError):
+                    change.pressure = float(state_val)
+                    _dc_matched = True
 
-            # Then check attributes
-            for key in attr_keys:
-                val = attrs.get(key)
-                if val is not None:
+        if domain == "binary_sensor" and device_class in ("occupancy", "motion", "presence"):
+            change.presence = state_val.lower() in ("on", "true", "1")
+            _dc_matched = True
+
+        # ----- Fallback: keyword-in-entity-id extraction -----
+        if not _dc_matched:
+            # Extract numeric sensor values
+            for field_name, attr_keys in _NUMERIC_ATTRS.items():
+                # First check if the entity state itself is numeric (for sensor.* domain)
+                if domain == "sensor" and field_name in entity_id.lower():
                     with suppress(ValueError, TypeError):
-                        setattr(change, field_name, float(val))
-                        break
+                        val_f = float(state_val)
+                        # Convert F→C for temperature when unit indicates Fahrenheit
+                        if field_name == "temperature" and unit == "°F":
+                            val_f = (val_f - 32) * 5 / 9
+                        setattr(change, field_name, val_f)
+                        continue
 
-        # Extract boolean sensor values
-        for field_name, attr_keys in _BOOL_ATTRS.items():
-            # Binary sensors: state is on/off
-            if domain == "binary_sensor":
-                for keyword in attr_keys:
-                    if keyword in entity_id.lower():
-                        change.presence = state_val.lower() in ("on", "true", "1")
-                        break
+                # Then check attributes
+                for key in attr_keys:
+                    val = attrs.get(key)
+                    if val is not None:
+                        with suppress(ValueError, TypeError):
+                            setattr(change, field_name, float(val))
+                            break
 
-            # Also check attributes
-            for key in attr_keys:
-                val = attrs.get(key)
-                if val is not None:
-                    if isinstance(val, bool):
-                        setattr(change, field_name, val)
-                    elif isinstance(val, str):
-                        setattr(change, field_name, val.lower() in ("on", "true", "1"))
-                    break
+            # Extract boolean sensor values
+            for field_name, attr_keys in _BOOL_ATTRS.items():
+                # Binary sensors: state is on/off
+                if domain == "binary_sensor":
+                    for keyword in attr_keys:
+                        if keyword in entity_id.lower():
+                            change.presence = state_val.lower() in ("on", "true", "1")
+                            break
+
+                # Also check attributes
+                for key in attr_keys:
+                    val = attrs.get(key)
+                    if val is not None:
+                        if isinstance(val, bool):
+                            setattr(change, field_name, val)
+                        elif isinstance(val, str):
+                            setattr(change, field_name, val.lower() in ("on", "true", "1"))
+                        break
 
         return change
 

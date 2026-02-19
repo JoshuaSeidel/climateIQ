@@ -286,6 +286,8 @@ export type HAEntity = {
   name: string
   state: string
   domain: string
+  device_class?: string
+  unit_of_measurement?: string
 }
 
 export type SystemSettings = {
