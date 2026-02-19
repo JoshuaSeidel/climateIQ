@@ -13,6 +13,7 @@ import {
   Activity,
   Droplets,
   Gauge,
+  Users,
   Wind,
   Sun,
   Cloud,
@@ -59,6 +60,7 @@ interface SystemStats {
   avgHumidity: number
   activeZones: number
   totalZones: number
+  avgTargetTemp: number
 }
 
 const getWeatherIcon = (state: string | undefined) => {
@@ -215,11 +217,13 @@ export const Dashboard = () => {
         avgHumidity: 0,
         activeZones: 0,
         totalZones: 0,
+        avgTargetTemp: 0,
       }
     }
 
     const temps = zones.map((z) => z.temperature).filter((t): t is number => t != null && Number.isFinite(t))
     const humidities = zones.map((z) => z.humidity).filter((h): h is number => h != null && Number.isFinite(h))
+    const targets = zones.map((z) => z.targetTemperature).filter((t): t is number => t != null && Number.isFinite(t))
 
     return {
       avgTemp: temps.length ? temps.reduce((a, b) => a + b, 0) / temps.length : 0,
@@ -228,6 +232,7 @@ export const Dashboard = () => {
         : 0,
       activeZones: zones.filter((z) => z.occupancy === 'occupied').length,
       totalZones: zones.length,
+      avgTargetTemp: targets.length ? targets.reduce((a, b) => a + b, 0) / targets.length : 0,
     }
   }, [zones])
 
@@ -304,7 +309,7 @@ export const Dashboard = () => {
 
       {/* Stats Grid */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {/* Average Temperature */}
+        {/* Average Temperature + Set Temp */}
         <Card className="border-border/60 bg-card">
           <CardContent className="flex items-center justify-between p-4">
             <div>
@@ -312,6 +317,11 @@ export const Dashboard = () => {
               <p className="text-2xl font-semibold text-foreground">
                 {stats.avgTemp > 0 ? formatTemperature(stats.avgTemp, unitKey) : '--'}
               </p>
+              {stats.avgTargetTemp > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Set: {formatTemperature(stats.avgTargetTemp, unitKey)}
+                </p>
+              )}
             </div>
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-orange-500/10">
               <Thermometer className="h-6 w-6 text-orange-500" />
@@ -334,17 +344,17 @@ export const Dashboard = () => {
           </CardContent>
         </Card>
 
-        {/* Active Zones */}
+        {/* Occupied Zones */}
         <Card className="border-border/60 bg-card">
           <CardContent className="flex items-center justify-between p-4">
             <div>
-              <p className="text-xs uppercase tracking-widest text-muted-foreground">Active</p>
+              <p className="text-xs uppercase tracking-widest text-muted-foreground">Occupied</p>
               <p className="text-2xl font-semibold text-foreground">
                 {stats.activeZones} / {stats.totalZones}
               </p>
             </div>
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-500/10">
-              <Activity className="h-6 w-6 text-green-500" />
+              <Users className="h-6 w-6 text-green-500" />
             </div>
           </CardContent>
         </Card>
@@ -512,7 +522,7 @@ export const Dashboard = () => {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-sm">Zones Active</span>
+                  <span className="text-sm">Zones Occupied</span>
                   <span className="text-sm font-medium">
                     {stats.activeZones}/{stats.totalZones}
                   </span>

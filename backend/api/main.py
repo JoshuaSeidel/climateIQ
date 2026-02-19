@@ -627,16 +627,22 @@ async def execute_follow_me_mode() -> None:
 
                 if presence_reading is not None:
                     # Extract comfort preference target temp
+                    # Frontend saves temp_min/temp_max; use midpoint as target
                     prefs = zone.comfort_preferences or {}
-                    target = (
-                        prefs.get("target_temp")
-                        or prefs.get("ideal_temp")
-                        or 21.0
-                    )
-                    try:
-                        target = float(target)
-                    except (TypeError, ValueError):
-                        target = 21.0
+                    temp_min = prefs.get("temp_min")
+                    temp_max = prefs.get("temp_max")
+                    if temp_min is not None and temp_max is not None:
+                        try:
+                            target = (float(temp_min) + float(temp_max)) / 2.0
+                        except (TypeError, ValueError):
+                            target = 21.0
+                    else:
+                        # Legacy fallback
+                        target = prefs.get("target_temp") or prefs.get("ideal_temp") or 21.0
+                        try:
+                            target = float(target)
+                        except (TypeError, ValueError):
+                            target = 21.0
                     occupied_zones.append((zone, target))
 
             # ── Calculate target temperature ────────────────────────────
@@ -820,7 +826,13 @@ async def execute_active_mode() -> None:
 
             for zone in zones:
                 sensor_ids = [s.id for s in zone.sensors] if zone.sensors else []
-                latest_reading = None
+
+                # Fetch recent readings (multiple to cover different sensor types)
+                temp_val: float | None = None
+                hum_val: float | None = None
+                lux_val: float | None = None
+                occ_val: bool | None = None
+
                 if sensor_ids:
                     r_result = await db.execute(
                         sa_select(SensorReading)
@@ -829,19 +841,45 @@ async def execute_active_mode() -> None:
                             SensorReading.recorded_at >= reading_cutoff,
                         )
                         .order_by(SensorReading.recorded_at.desc())
-                        .limit(1)
+                        .limit(20)
                     )
-                    latest_reading = r_result.scalar_one_or_none()
+                    for rdg in r_result.scalars().all():
+                        if temp_val is None and rdg.temperature_c is not None:
+                            temp_val = rdg.temperature_c
+                        if hum_val is None and rdg.humidity is not None:
+                            hum_val = rdg.humidity
+                        if lux_val is None and rdg.lux is not None:
+                            lux_val = rdg.lux
+                        if occ_val is None and rdg.presence is not None:
+                            occ_val = rdg.presence
+                        if all(v is not None for v in (temp_val, hum_val, lux_val, occ_val)):
+                            break
 
+                # Read comfort preferences (frontend saves temp_min/temp_max)
                 prefs = zone.comfort_preferences or {}
-                target_pref = prefs.get("target_temp") or prefs.get("ideal_temp") or "not set"
-                temp_str = f"{latest_reading.temperature_c:.1f}°C" if latest_reading and latest_reading.temperature_c is not None else "N/A"
-                hum_str = f"{latest_reading.humidity:.0f}%" if latest_reading and latest_reading.humidity is not None else "N/A"
-                occ_str = "occupied" if latest_reading and latest_reading.presence else "unoccupied"
+                temp_min = prefs.get("temp_min")
+                temp_max = prefs.get("temp_max")
+                if temp_min is not None and temp_max is not None:
+                    comfort_str = f"{temp_min}-{temp_max}°C"
+                else:
+                    # Legacy fallback
+                    legacy = prefs.get("target_temp") or prefs.get("ideal_temp")
+                    comfort_str = f"{legacy}°C" if legacy else "not set"
+
+                # Use multi-signal occupancy inference
+                inferred_occ = await infer_zone_occupancy(str(zone.id), db)
+                if inferred_occ is None:
+                    # Fall back to raw presence sensor
+                    inferred_occ = occ_val if occ_val is not None else False
+
+                temp_str = f"{temp_val:.1f}°C" if temp_val is not None else "N/A"
+                hum_str = f"{hum_val:.0f}%" if hum_val is not None else "N/A"
+                lux_str = f"{lux_val:.0f} lx" if lux_val is not None else "N/A"
+                occ_str = "occupied" if inferred_occ else "unoccupied"
 
                 zone_summaries.append(
                     f"- {zone.name}: temp={temp_str}, humidity={hum_str}, "
-                    f"occupancy={occ_str}, comfort_target={target_pref}°C"
+                    f"lux={lux_str}, occupancy={occ_str}, comfort_range={comfort_str}"
                 )
 
             # ── Current thermostat state ────────────────────────────────
@@ -903,7 +941,12 @@ async def execute_active_mode() -> None:
                 "You are ClimateIQ's AI HVAC controller. Your job is to recommend "
                 "the optimal thermostat target temperature in °C based on the context "
                 "provided. Consider occupancy, comfort preferences, weather, energy "
-                "efficiency, and current schedules. Be conservative with changes.\n\n"
+                "efficiency, current schedules, and ambient light levels.\n\n"
+                "Lux context: High lux (>500 lx) near windows indicates direct sunlight "
+                "and solar heat gain — consider lowering the target slightly in cooling "
+                "mode. Low lux (<50 lx) in occupied zones may indicate evening/night — "
+                "prioritize comfort. Unoccupied zones with low lux likely have no one "
+                "home — favor energy savings.\n\n"
                 "IMPORTANT: You MUST include a line in your response in exactly this "
                 "format: RECOMMENDED_TEMP: <number>\n"
                 "where <number> is the target temperature in °C (e.g. RECOMMENDED_TEMP: 22.0).\n"
@@ -1040,6 +1083,264 @@ async def execute_active_mode() -> None:
 
     except Exception as e:
         logger.error("Error in active-mode execution: %s", e)
+
+
+# ============================================================================
+# Lux-Based Cover (Blind/Shade) Automation
+# ============================================================================
+
+# Default lux thresholds — overridden per-zone via comfort_preferences.lux_max
+_DEFAULT_LUX_CLOSE = 500.0  # Close covers when lux exceeds this
+_DEFAULT_LUX_OPEN = 200.0   # Re-open covers when lux drops below this
+# Track last cover action per device to avoid flapping
+_cover_last_action: dict[str, str] = {}  # device_id -> "open" | "closed"
+
+
+async def execute_cover_automation() -> None:
+    """Check lux levels in each zone and open/close blinds/shades accordingly.
+
+    For each zone that has both a lux sensor reading and a blind/shade device:
+    - If current lux > lux_max threshold -> close the cover (reduce solar gain)
+    - If current lux < lux_open threshold -> open the cover (allow natural light)
+
+    Uses hysteresis (separate open/close thresholds) to prevent flapping.
+    """
+    from datetime import timedelta as _td
+
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.orm import selectinload
+
+    from backend.models.database import DeviceAction, SensorReading, Zone
+    from backend.models.enums import ActionType, DeviceType, TriggerType
+
+    try:
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            zone_result = await db.execute(
+                sa_select(Zone)
+                .options(selectinload(Zone.sensors), selectinload(Zone.devices))
+                .where(Zone.is_active.is_(True))
+            )
+            zones = zone_result.scalars().unique().all()
+
+            ha_client = app_state.ha_client
+            if ha_client is None:
+                return
+
+            reading_cutoff = datetime.now(UTC) - _td(minutes=15)
+
+            for zone in zones:
+                covers = [
+                    d for d in (zone.devices or [])
+                    if d.type in (DeviceType.blind.value, DeviceType.shade.value)
+                    and d.ha_entity_id
+                ]
+                if not covers:
+                    continue
+
+                sensor_ids = [s.id for s in zone.sensors] if zone.sensors else []
+                if not sensor_ids:
+                    continue
+
+                lux_result = await db.execute(
+                    sa_select(SensorReading)
+                    .where(
+                        SensorReading.sensor_id.in_(sensor_ids),
+                        SensorReading.recorded_at >= reading_cutoff,
+                        SensorReading.lux.isnot(None),
+                    )
+                    .order_by(SensorReading.recorded_at.desc())
+                    .limit(1)
+                )
+                lux_reading = lux_result.scalar_one_or_none()
+                if lux_reading is None or lux_reading.lux is None:
+                    continue
+
+                current_lux = lux_reading.lux
+
+                prefs = zone.comfort_preferences or {}
+                lux_close = float(prefs.get("lux_max", _DEFAULT_LUX_CLOSE))
+                lux_open_thresh = float(prefs.get("lux_open", _DEFAULT_LUX_OPEN))
+
+                for cover in covers:
+                    device_key = str(cover.id)
+                    last_action = _cover_last_action.get(device_key)
+
+                    if current_lux > lux_close and last_action != "closed":
+                        try:
+                            await ha_client.call_service(
+                                "cover", "close_cover",
+                                target={"entity_id": cover.ha_entity_id},
+                            )
+                            _cover_last_action[device_key] = "closed"
+                            logger.info(
+                                "Cover automation: closing %s (lux=%.0f > %.0f) in %s",
+                                cover.ha_entity_id, current_lux, lux_close, zone.name,
+                            )
+                            db.add(DeviceAction(
+                                device_id=cover.id,
+                                zone_id=zone.id,
+                                triggered_by=TriggerType.rule_engine,
+                                action_type=ActionType.close_cover,
+                                parameters={"lux": current_lux, "threshold": lux_close},
+                                reasoning=f"Lux {current_lux:.0f} exceeded threshold {lux_close:.0f}",
+                            ))
+                        except Exception as exc:
+                            logger.warning("Failed to close cover %s: %s", cover.ha_entity_id, exc)
+
+                    elif current_lux < lux_open_thresh and last_action == "closed":
+                        try:
+                            await ha_client.call_service(
+                                "cover", "open_cover",
+                                target={"entity_id": cover.ha_entity_id},
+                            )
+                            _cover_last_action[device_key] = "open"
+                            logger.info(
+                                "Cover automation: opening %s (lux=%.0f < %.0f) in %s",
+                                cover.ha_entity_id, current_lux, lux_open_thresh, zone.name,
+                            )
+                            db.add(DeviceAction(
+                                device_id=cover.id,
+                                zone_id=zone.id,
+                                triggered_by=TriggerType.rule_engine,
+                                action_type=ActionType.open_cover,
+                                parameters={"lux": current_lux, "threshold": lux_open_thresh},
+                                reasoning=f"Lux {current_lux:.0f} dropped below threshold {lux_open_thresh:.0f}",
+                            ))
+                        except Exception as exc:
+                            logger.warning("Failed to open cover %s: %s", cover.ha_entity_id, exc)
+
+                await db.commit()
+
+    except Exception as e:
+        logger.error("Error in cover automation: %s", e)
+
+
+# ============================================================================
+# Occupancy Inference (presence + lux + time-of-day + learned patterns)
+# ============================================================================
+
+
+async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | None:
+    """Infer whether a zone is occupied using multi-signal fusion.
+
+    Combines:
+    1. Binary presence sensor (highest weight -- direct detection)
+    2. Lux level (indirect -- lights on in evening suggests occupancy)
+    3. Time-of-day patterns from PatternEngine (learned probability)
+
+    Returns True (occupied), False (vacant), or None (insufficient data).
+    """
+    from datetime import timedelta as _td
+
+    from sqlalchemy import select as sa_select
+
+    from backend.models.database import OccupancyPattern, SensorReading
+    from backend.models.database import Sensor as _Sensor
+    from backend.models.enums import PatternType as _PT
+
+    zone_uuid = uuid.UUID(str(zone_id)) if not isinstance(zone_id, uuid.UUID) else zone_id
+
+    # Gather sensor IDs for this zone
+    sensor_result = await db.execute(  # type: ignore[union-attr]
+        sa_select(_Sensor.id).where(_Sensor.zone_id == zone_uuid)
+    )
+    sensor_ids = [row[0] for row in sensor_result.all()]
+    if not sensor_ids:
+        return None
+
+    reading_cutoff = datetime.now(UTC) - _td(minutes=15)
+
+    r_result = await db.execute(  # type: ignore[union-attr]
+        sa_select(SensorReading)
+        .where(
+            SensorReading.sensor_id.in_(sensor_ids),
+            SensorReading.recorded_at >= reading_cutoff,
+        )
+        .order_by(SensorReading.recorded_at.desc())
+        .limit(20)
+    )
+    readings = r_result.scalars().all()
+
+    # Extract latest values
+    presence: bool | None = None
+    lux: float | None = None
+    for rdg in readings:
+        if presence is None and rdg.presence is not None:
+            presence = rdg.presence
+        if lux is None and rdg.lux is not None:
+            lux = rdg.lux
+        if presence is not None and lux is not None:
+            break
+
+    # -- Signal 1: Direct presence sensor (weight: 0.6) --
+    presence_score: float | None = None
+    if presence is not None:
+        presence_score = 1.0 if presence else 0.0
+
+    # -- Signal 2: Lux-based inference (weight: 0.2) --
+    lux_score: float | None = None
+    if lux is not None:
+        now = datetime.now(UTC)
+        hour = now.hour
+        is_evening_night = hour >= 18 or hour < 6
+        if is_evening_night:
+            # In evening/night, high lux (lights on) suggests occupancy
+            if lux > 100:
+                lux_score = 0.8
+            elif lux > 30:
+                lux_score = 0.4
+            else:
+                lux_score = 0.1  # Dark room at night -- likely empty
+        else:
+            # During daytime, lux is less informative (could be sunlight)
+            lux_score = 0.5  # Neutral
+
+    # -- Signal 3: Learned pattern probability (weight: 0.2) --
+    pattern_score: float | None = None
+    try:
+        now = datetime.now(UTC)
+        day_str = now.strftime("%a").lower()
+        slot = now.hour * 12 + now.minute // 5
+        key = f"{day_str}:{slot}"
+
+        pattern_result = await db.execute(  # type: ignore[union-attr]
+            sa_select(OccupancyPattern)
+            .where(
+                OccupancyPattern.zone_id == zone_uuid,
+                OccupancyPattern.pattern_type == _PT.weekday,
+            )
+            .order_by(OccupancyPattern.created_at.desc())
+            .limit(1)
+        )
+        pattern = pattern_result.scalar_one_or_none()
+        if pattern and pattern.schedule:
+            for entry in pattern.schedule:
+                if entry.get("bucket") == key:
+                    pattern_score = entry.get("probability", 0.0)
+                    break
+    except Exception:
+        logger.debug("Could not load occupancy pattern for zone %s", zone_id, exc_info=True)
+
+    # -- Weighted fusion --
+    total_weight = 0.0
+    weighted_sum = 0.0
+
+    if presence_score is not None:
+        weighted_sum += 0.6 * presence_score
+        total_weight += 0.6
+    if lux_score is not None:
+        weighted_sum += 0.2 * lux_score
+        total_weight += 0.2
+    if pattern_score is not None:
+        weighted_sum += 0.2 * pattern_score
+        total_weight += 0.2
+
+    if total_weight == 0:
+        return None
+
+    probability = weighted_sum / total_weight
+    return probability >= 0.5
 
 
 # ============================================================================
@@ -1232,6 +1533,15 @@ def init_scheduler() -> AsyncIOScheduler:
         IntervalTrigger(minutes=5),
         id="execute_active_mode",
         name="Execute Active AI Mode",
+        replace_existing=True,
+    )
+
+    # Lux-based cover (blind/shade) automation - every 3 minutes
+    scheduler.add_job(
+        execute_cover_automation,
+        IntervalTrigger(minutes=3),
+        id="execute_cover_automation",
+        name="Lux Cover Automation",
         replace_existing=True,
     )
 

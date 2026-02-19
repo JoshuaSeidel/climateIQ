@@ -80,6 +80,7 @@ interface ComfortPrefs {
   temp_max: string
   humidity_min: string
   humidity_max: string
+  lux_max: string
 }
 
 const defaultZoneForm: ZoneFormData = {
@@ -136,6 +137,7 @@ export const Zones = () => {
     temp_max: '24',
     humidity_min: '30',
     humidity_max: '60',
+    lux_max: '500',
   })
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
@@ -313,6 +315,7 @@ export const Zones = () => {
           temp_max: Number(toStorageCelsius(Number(prefs.temp_max), unitKey).toFixed(2)),
           humidity_min: Number(prefs.humidity_min),
           humidity_max: Number(prefs.humidity_max),
+          lux_max: Number(prefs.lux_max),
         },
       }),
     onSuccess: () => {
@@ -356,6 +359,7 @@ export const Zones = () => {
         temp_max: String(Number(toDisplayTemp(maxC, unitKey).toFixed(1))),
         humidity_min: String(cp.humidity_min ?? 30),
         humidity_max: String(cp.humidity_max ?? 60),
+        lux_max: String(cp.lux_max ?? 500),
       })
     } else {
       setComfortPrefs({
@@ -363,6 +367,7 @@ export const Zones = () => {
         temp_max: String(Number(toDisplayTemp(24, unitKey).toFixed(1))),
         humidity_min: '30',
         humidity_max: '60',
+        lux_max: '500',
       })
     }
     setSelectedZoneId(zoneId)
@@ -1067,6 +1072,19 @@ export const Zones = () => {
                   onChange={(e) => setComfortPrefs((p) => ({ ...p, humidity_max: e.target.value }))}
                 />
               </div>
+              <div>
+                <label className="text-sm font-medium">Max Lux (lx)</label>
+                <Input
+                  type="number"
+                  step="50"
+                  value={comfortPrefs.lux_max}
+                  onChange={(e) => setComfortPrefs((p) => ({ ...p, lux_max: e.target.value }))}
+                  placeholder="500"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Blinds/shades close when lux exceeds this
+                </p>
+              </div>
             </div>
             <div className="mt-4 flex items-center gap-3">
               <Button
@@ -1094,7 +1112,7 @@ export const Zones = () => {
             </div>
             <p className="mt-3 text-xs text-muted-foreground">
               Comfort range: {comfortPrefs.temp_min}-{comfortPrefs.temp_max}{tempUnitLabel(unitKey)},{' '}
-              {comfortPrefs.humidity_min}-{comfortPrefs.humidity_max}% humidity
+              {comfortPrefs.humidity_min}-{comfortPrefs.humidity_max}% humidity, max {comfortPrefs.lux_max} lx
             </p>
           </CardContent>
         </Card>
