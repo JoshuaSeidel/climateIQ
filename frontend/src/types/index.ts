@@ -290,6 +290,24 @@ export type HAEntity = {
   unit_of_measurement?: string
 }
 
+export type HADeviceEntity = {
+  entity_id: string
+  name: string
+  state: string
+  domain: string
+  device_class?: string
+  unit_of_measurement?: string
+}
+
+export type HADevice = {
+  device_id: string
+  name: string
+  manufacturer: string
+  model: string
+  area_id: string
+  entities: HADeviceEntity[]
+}
+
 export type SystemSettings = {
   system_name: string
   current_mode: SystemMode

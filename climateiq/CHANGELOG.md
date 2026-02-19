@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.6.7
+
+### Added
+
+- **HA device picker in Zones** — new "Add Device" button lets you select
+  a Home Assistant device (e.g., a multi-sensor) and import all its
+  sensor/binary_sensor entities at once with checkboxes. Uses the HA device
+  and entity registry APIs to group entities by physical device.
+
+- **`GET /settings/ha/devices` endpoint** — returns HA devices with their
+  grouped sensor/binary_sensor entities (name, manufacturer, model, area).
+
+- **`POST /sensors/bulk` endpoint** — creates multiple sensors at once from
+  a device selection, with automatic deduplication and WS filter registration.
+
+- **HA device/entity registry support** — `HAClient` now has
+  `get_device_registry()` and `get_entity_registry()` methods for querying
+  the HA REST API device/entity registries.
+
+### Fixed
+
+- **Schedule overlap check with legacy `zone_id`** — `check_schedule_overlap()`
+  now falls back to the legacy `zone_id` field when `zone_ids` is empty,
+  correctly detecting that different zones don't overlap.
+
+- **`ScheduleCreate` now forbids extra fields** — changed from `extra="ignore"`
+  to `extra="forbid"` so unknown fields are rejected with a 422 validation error.
+
 ## 0.6.6
 
 ### Fixed

@@ -7,6 +7,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +19,14 @@ from backend.models.schemas import SensorCreate, SensorResponse, SensorUpdate
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class BulkSensorItem(BaseModel):
+    name: str
+    type: SensorType
+    ha_entity_id: str
+    manufacturer: str = ""
+    model: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +100,78 @@ async def create_sensor(
             logger.debug("Could not add entity to WS filter (non-fatal)", exc_info=True)
 
     return SensorResponse.model_validate(sensor)
+
+
+# ---------------------------------------------------------------------------
+# POST /sensors/bulk — create multiple sensors at once
+# ---------------------------------------------------------------------------
+@router.post("/bulk", response_model=list[SensorResponse], status_code=status.HTTP_201_CREATED)
+async def create_sensors_bulk(
+    zone_id: uuid.UUID,
+    items: list[BulkSensorItem],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[SensorResponse]:
+    """Create multiple sensors at once (e.g. from an HA device selection)."""
+    if not items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No sensors provided",
+        )
+
+    # Verify the target zone exists
+    zone_result = await db.execute(select(Zone).where(Zone.id == zone_id))
+    if zone_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Zone {zone_id} not found",
+        )
+
+    # Check for duplicate ha_entity_ids already in this zone
+    existing_result = await db.execute(
+        select(Sensor.ha_entity_id).where(
+            Sensor.zone_id == zone_id,
+            Sensor.ha_entity_id.in_([it.ha_entity_id for it in items]),
+        )
+    )
+    existing_entities = {row[0] for row in existing_result.all()}
+
+    created: list[Sensor] = []
+    for item in items:
+        if item.ha_entity_id in existing_entities:
+            continue  # Skip duplicates silently
+
+        sensor = Sensor(
+            zone_id=zone_id,
+            name=item.name,
+            type=item.type,
+            ha_entity_id=item.ha_entity_id,
+            manufacturer=item.manufacturer or None,
+            model=item.model or None,
+        )
+        db.add(sensor)
+        created.append(sensor)
+
+    if not created:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="All provided entities already exist as sensors in this zone",
+        )
+
+    await db.commit()
+    for sensor in created:
+        await db.refresh(sensor)
+
+    # Add all new entities to WS filter
+    try:
+        from backend.api.main import app_state
+        if app_state.ha_ws and hasattr(app_state.ha_ws, "add_entity_to_filter"):
+            for sensor in created:
+                if sensor.ha_entity_id:
+                    app_state.ha_ws.add_entity_to_filter(sensor.ha_entity_id)
+    except Exception:
+        logger.debug("Could not add entities to WS filter (non-fatal)", exc_info=True)
+
+    return [SensorResponse.model_validate(s) for s in created]
 
 
 # ---------------------------------------------------------------------------

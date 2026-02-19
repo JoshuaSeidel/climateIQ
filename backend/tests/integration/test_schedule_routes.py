@@ -298,11 +298,13 @@ class TestCreateSchedule:
 
     async def test_zone_not_found(self, api_client: AsyncClient, mock_db: AsyncMock) -> None:
         zone_id = uuid4()
-        payload = {**self.VALID_PAYLOAD, "zone_id": str(zone_id)}
+        payload = {**self.VALID_PAYLOAD, "zone_ids": [str(zone_id)]}
 
-        # Zone lookup returns None
+        # Zone lookup returns empty result (zone not found)
         result_mock = MagicMock()
-        result_mock.scalar_one_or_none.return_value = None
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = []
+        result_mock.scalars.return_value = scalars_mock
         mock_db.execute.return_value = result_mock
 
         resp = await api_client.post(BASE, json=payload)

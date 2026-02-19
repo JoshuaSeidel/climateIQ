@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { api } from '@/lib/api'
-import type { Zone, ZoneBackend, Sensor, ZoneType, SensorType, HistoryResponse, HAEntity } from '@/types'
+import type { Zone, ZoneBackend, Sensor, ZoneType, SensorType, HistoryResponse, HAEntity, HADevice, HADeviceEntity } from '@/types'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { formatTemperature, toDisplayTemp, toStorageCelsius, tempUnitLabel } from '@/lib/utils'
 import {
@@ -21,6 +21,7 @@ import {
   Loader2,
   Eye,
   Lightbulb,
+  Cpu,
 } from 'lucide-react'
 import {
   LineChart,
@@ -107,6 +108,10 @@ export const Zones = () => {
   const [entitySearch, setEntitySearch] = useState('')
   const [entityPickerOpen, setEntityPickerOpen] = useState(false)
   const entityPickerRef = useRef<HTMLDivElement>(null)
+  const [showDevicePicker, setShowDevicePicker] = useState(false)
+  const [deviceSearch, setDeviceSearch] = useState('')
+  const [selectedDevice, setSelectedDevice] = useState<HADevice | null>(null)
+  const [selectedEntityIds, setSelectedEntityIds] = useState<Set<string>>(new Set())
 
   // Close entity picker on outside click
   useEffect(() => {
@@ -186,6 +191,12 @@ export const Zones = () => {
     enabled: viewMode === 'detail' && showSensorForm,
   })
 
+  const { data: haDevices, isLoading: devicesLoading } = useQuery<HADevice[]>({
+    queryKey: ['ha-devices'],
+    queryFn: () => api.get<HADevice[]>('/settings/ha/devices'),
+    enabled: viewMode === 'detail' && showDevicePicker,
+  })
+
   // Fetch sensors for a zone
   const { data: zoneSensors } = useQuery<Sensor[]>({
     queryKey: ['zone-sensors', selectedZoneId],
@@ -261,6 +272,19 @@ export const Zones = () => {
     },
   })
 
+  const createSensorsBulk = useMutation({
+    mutationFn: (data: { zone_id: string; items: Array<{ name: string; type: SensorType; ha_entity_id: string; manufacturer: string; model: string }> }) =>
+      api.post<Sensor[]>(`/sensors/bulk?zone_id=${data.zone_id}`, data.items),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['zone-sensors', selectedZoneId] })
+      queryClient.invalidateQueries({ queryKey: ['zones-raw'] })
+      setShowDevicePicker(false)
+      setSelectedDevice(null)
+      setSelectedEntityIds(new Set())
+      setDeviceSearch('')
+    },
+  })
+
   // Delete sensor mutation
   const deleteSensor = useMutation({
     mutationFn: (id: string) => api.delete(`/sensors/${id}`),
@@ -293,6 +317,22 @@ export const Zones = () => {
       setTimeout(() => setComfortSaveStatus('idle'), 3000)
     },
   })
+
+  const inferSensorType = useCallback((entities: HADeviceEntity[]): SensorType => {
+    const classes = new Set(entities.map(e => e.device_class ?? '').filter(Boolean))
+    const hasTemp = classes.has('temperature')
+    const hasHumidity = classes.has('humidity')
+    const hasPresence = classes.has('occupancy') || classes.has('motion') || classes.has('presence')
+    const hasLux = classes.has('illuminance')
+
+    if ((hasTemp || hasHumidity) && (hasPresence || hasLux)) return 'multisensor'
+    if (hasTemp && hasHumidity) return 'temp_humidity'
+    if (hasPresence && hasLux) return 'presence_lux'
+    if (hasTemp) return 'temp_only'
+    if (hasHumidity) return 'humidity_only'
+    if (hasPresence) return 'presence_only'
+    return 'other'
+  }, [])
 
   const handleOpenDetail = useCallback((zoneId: string) => {
     const zoneRaw = (zonesRaw ?? []).find((z) => z.id === zoneId)
@@ -579,12 +619,208 @@ export const Zones = () => {
               <CardTitle>Sensors</CardTitle>
               <CardDescription>Sensors assigned to this zone</CardDescription>
             </div>
-            <Button size="sm" onClick={() => setShowSensorForm(!showSensorForm)}>
-              {showSensorForm ? <X className="mr-2 h-4 w-4" /> : <Plus className="mr-2 h-4 w-4" />}
-              {showSensorForm ? 'Cancel' : 'Add Sensor'}
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setShowDevicePicker(!showDevicePicker)
+                  if (!showDevicePicker) setShowSensorForm(false)
+                }}
+              >
+                {showDevicePicker ? <X className="mr-2 h-4 w-4" /> : <Cpu className="mr-2 h-4 w-4" />}
+                {showDevicePicker ? 'Cancel' : 'Add Device'}
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setShowSensorForm(!showSensorForm)
+                  if (!showSensorForm) setShowDevicePicker(false)
+                }}
+              >
+                {showSensorForm ? <X className="mr-2 h-4 w-4" /> : <Plus className="mr-2 h-4 w-4" />}
+                {showSensorForm ? 'Cancel' : 'Add Sensor'}
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
+            {showDevicePicker && (
+              <div className="mb-4 space-y-3 rounded-lg border border-border/60 p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium">Select a Device</p>
+                    <p className="text-xs text-muted-foreground">
+                      Choose an HA device to import its sensor entities
+                    </p>
+                  </div>
+                </div>
+
+                {!selectedDevice ? (
+                  <>
+                    <Input
+                      value={deviceSearch}
+                      onChange={(e) => setDeviceSearch(e.target.value)}
+                      placeholder="Search devices by name, manufacturer, or model..."
+                    />
+                    {devicesLoading ? (
+                      <div className="flex items-center justify-center py-8">
+                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                      </div>
+                    ) : (
+                      <div className="max-h-64 space-y-1 overflow-auto">
+                        {(haDevices ?? [])
+                          .filter((d) => {
+                            if (!deviceSearch.trim()) return true
+                            const q = deviceSearch.toLowerCase()
+                            return (
+                              d.name.toLowerCase().includes(q) ||
+                              d.manufacturer.toLowerCase().includes(q) ||
+                              d.model.toLowerCase().includes(q)
+                            )
+                          })
+                          .map((device) => (
+                            <button
+                              key={device.device_id}
+                              type="button"
+                              className="w-full rounded-lg border border-border/40 p-3 text-left hover:bg-muted"
+                              onClick={() => {
+                                setSelectedDevice(device)
+                                setSelectedEntityIds(new Set(device.entities.map((e) => e.entity_id)))
+                              }}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-sm font-medium">{device.name}</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {[device.manufacturer, device.model].filter(Boolean).join(' \u00B7 ') || 'Unknown device'}
+                                    {' \u00B7 '}{device.entities.length} sensor{device.entities.length !== 1 ? 's' : ''}
+                                  </p>
+                                </div>
+                                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                              </div>
+                            </button>
+                          ))}
+                        {!devicesLoading && (haDevices ?? []).filter((d) => {
+                          if (!deviceSearch.trim()) return true
+                          const q = deviceSearch.toLowerCase()
+                          return d.name.toLowerCase().includes(q) || d.manufacturer.toLowerCase().includes(q) || d.model.toLowerCase().includes(q)
+                        }).length === 0 && (
+                          <p className="py-4 text-center text-sm text-muted-foreground">
+                            No devices found{deviceSearch ? ' matching your search' : ''}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-3 rounded-lg bg-muted/50 p-3">
+                      <Cpu className="h-5 w-5 text-primary" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">{selectedDevice.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {[selectedDevice.manufacturer, selectedDevice.model].filter(Boolean).join(' \u00B7 ')}
+                        </p>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setSelectedDevice(null)
+                          setSelectedEntityIds(new Set())
+                        }}
+                      >
+                        Change
+                      </Button>
+                    </div>
+
+                    <div>
+                      <div className="mb-2 flex items-center justify-between">
+                        <p className="text-sm font-medium">Select Entities to Import</p>
+                        <button
+                          type="button"
+                          className="text-xs text-primary hover:underline"
+                          onClick={() => {
+                            if (selectedEntityIds.size === selectedDevice.entities.length) {
+                              setSelectedEntityIds(new Set())
+                            } else {
+                              setSelectedEntityIds(new Set(selectedDevice.entities.map((e) => e.entity_id)))
+                            }
+                          }}
+                        >
+                          {selectedEntityIds.size === selectedDevice.entities.length ? 'Deselect All' : 'Select All'}
+                        </button>
+                      </div>
+                      <div className="space-y-1">
+                        {selectedDevice.entities.map((entity) => (
+                          <label
+                            key={entity.entity_id}
+                            className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/40 p-2.5 hover:bg-muted/50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedEntityIds.has(entity.entity_id)}
+                              onChange={(e) => {
+                                const next = new Set(selectedEntityIds)
+                                if (e.target.checked) {
+                                  next.add(entity.entity_id)
+                                } else {
+                                  next.delete(entity.entity_id)
+                                }
+                                setSelectedEntityIds(next)
+                              }}
+                              className="h-4 w-4 rounded border-border"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm">{entity.name}</p>
+                              <p className="truncate text-xs text-muted-foreground">
+                                {entity.entity_id}
+                                {entity.device_class ? ` \u00B7 ${entity.device_class}` : ''}
+                                {entity.unit_of_measurement ? ` \u00B7 ${entity.unit_of_measurement}` : ''}
+                              </p>
+                            </div>
+                            <span className="shrink-0 text-xs text-muted-foreground">{entity.state}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <Button
+                      size="sm"
+                      disabled={selectedEntityIds.size === 0 || createSensorsBulk.isPending}
+                      onClick={() => {
+                        if (!selectedDevice || !selectedZoneId) return
+                        const selectedEntities = selectedDevice.entities.filter((e) =>
+                          selectedEntityIds.has(e.entity_id)
+                        )
+                        const sensorType = inferSensorType(selectedEntities)
+                        const items = selectedEntities.map((e) => ({
+                          name: e.name,
+                          type: sensorType,
+                          ha_entity_id: e.entity_id,
+                          manufacturer: selectedDevice.manufacturer,
+                          model: selectedDevice.model,
+                        }))
+                        createSensorsBulk.mutate({ zone_id: selectedZoneId, items })
+                      }}
+                    >
+                      {createSensorsBulk.isPending ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Check className="mr-2 h-4 w-4" />
+                      )}
+                      Import {selectedEntityIds.size} Sensor{selectedEntityIds.size !== 1 ? 's' : ''}
+                    </Button>
+                    {createSensorsBulk.isError && (
+                      <p className="text-sm text-red-500">
+                        {createSensorsBulk.error?.message ?? 'Failed to import sensors'}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
             {showSensorForm && (
               <div className="mb-4 space-y-3 rounded-lg border border-border/60 p-4">
                 <div className="grid gap-3 sm:grid-cols-2">

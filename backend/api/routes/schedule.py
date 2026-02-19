@@ -25,7 +25,7 @@ router = APIRouter()
 class ScheduleCreate(BaseModel):
     """Schedule creation request."""
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
     name: str = Field(..., min_length=1, max_length=100)
     zone_ids: list[uuid.UUID] = Field(default_factory=list)  # empty = all zones
@@ -240,9 +240,16 @@ def check_schedule_overlap(
     if not days1 & days2:
         return False
 
-    # Check if they share zones (empty = all zones, always overlaps)
+    # Check if they share zones (empty/None = all zones, always overlaps)
+    # Support both new `zone_ids` (list) and legacy `zone_id` (single value)
     zone_ids1: list[str] = schedule1.get("zone_ids", [])
     zone_ids2: list[str] = schedule2.get("zone_ids", [])
+
+    # Fallback to legacy zone_id if zone_ids is empty
+    if not zone_ids1 and schedule1.get("zone_id") is not None:
+        zone_ids1 = [str(schedule1["zone_id"])]
+    if not zone_ids2 and schedule2.get("zone_id") is not None:
+        zone_ids2 = [str(schedule2["zone_id"])]
 
     # If either targets all zones (empty list), they overlap on zones
     if zone_ids1 and zone_ids2:

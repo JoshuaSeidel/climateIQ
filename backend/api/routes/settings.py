@@ -91,6 +91,24 @@ class HAEntityInfo(BaseModel):
     unit_of_measurement: str = ""
 
 
+class HADeviceEntityInfo(BaseModel):
+    entity_id: str
+    name: str
+    state: str
+    domain: str = ""
+    device_class: str = ""
+    unit_of_measurement: str = ""
+
+
+class HADeviceInfo(BaseModel):
+    device_id: str
+    name: str
+    manufacturer: str = ""
+    model: str = ""
+    area_id: str = ""
+    entities: list[HADeviceEntityInfo] = []
+
+
 class LLMModelInfo(BaseModel):
     id: str
     display_name: str | None = None
@@ -273,6 +291,110 @@ async def list_ha_entities(
             )
         )
     return entities
+
+
+# ---------------------------------------------------------------------------
+# GET /settings/ha/devices — HA device registry
+# ---------------------------------------------------------------------------
+@router.get("/ha/devices", response_model=list[HADeviceInfo])
+async def list_ha_devices() -> list[HADeviceInfo]:
+    """Return HA devices with their sensor/binary_sensor entities grouped."""
+    import asyncio
+
+    from backend.api.dependencies import _ha_client
+    from backend.integrations.ha_client import HAClientError
+
+    if _ha_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Home Assistant client not connected",
+        )
+
+    try:
+        devices_raw, entities_raw, states = await asyncio.gather(
+            _ha_client.get_device_registry(),
+            _ha_client.get_entity_registry(),
+            _ha_client.get_states(),
+        )
+    except HAClientError as exc:
+        logger.error("Failed to fetch HA device/entity registry: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to reach Home Assistant",
+        ) from exc
+
+    # Build state lookup: entity_id -> EntityState
+    state_map: dict[str, Any] = {s.entity_id: s for s in states}
+
+    # Build entity-to-device mapping from entity registry
+    entity_to_device: dict[str, str] = {}
+    for ent in entities_raw:
+        eid = ent.get("entity_id", "")
+        did = ent.get("device_id", "")
+        if eid and did:
+            entity_to_device[eid] = did
+
+    # Build device lookup
+    device_map: dict[str, dict[str, Any]] = {}
+    for dev in devices_raw:
+        did = dev.get("id", "")
+        if did:
+            device_map[did] = dev
+
+    # Group sensor/binary_sensor entities by device
+    device_entities: dict[str, list[HADeviceEntityInfo]] = {}
+    sensor_domains = {"sensor", "binary_sensor"}
+
+    for entity_id, device_id in entity_to_device.items():
+        domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+        if domain not in sensor_domains:
+            continue
+        if device_id not in device_map:
+            continue
+
+        st = state_map.get(entity_id)
+        entity_info = HADeviceEntityInfo(
+            entity_id=entity_id,
+            name=(
+                st.attributes.get("friendly_name", entity_id) if st else entity_id
+            ),
+            state=st.state if st else "unknown",
+            domain=domain,
+            device_class=(
+                (st.attributes.get("device_class", "") or "") if st else ""
+            ),
+            unit_of_measurement=(
+                (st.attributes.get("unit_of_measurement", "") or "") if st else ""
+            ),
+        )
+
+        if device_id not in device_entities:
+            device_entities[device_id] = []
+        device_entities[device_id].append(entity_info)
+
+    # Build final response — only devices with sensor entities
+    result: list[HADeviceInfo] = []
+    for device_id, ent_list in device_entities.items():
+        dev = device_map.get(device_id, {})
+        # HA device name can be in "name" or "name_by_user"
+        dev_name = (
+            dev.get("name_by_user")
+            or dev.get("name")
+            or f"Device {device_id[:8]}"
+        )
+        result.append(
+            HADeviceInfo(
+                device_id=device_id,
+                name=dev_name,
+                manufacturer=dev.get("manufacturer", "") or "",
+                model=dev.get("model", "") or "",
+                area_id=dev.get("area_id", "") or "",
+                entities=sorted(ent_list, key=lambda e: e.entity_id),
+            )
+        )
+
+    result.sort(key=lambda d: d.name.lower())
+    return result
 
 
 # ---------------------------------------------------------------------------
