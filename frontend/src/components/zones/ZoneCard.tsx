@@ -6,13 +6,14 @@ import { useSettingsStore } from '@/stores/settingsStore'
 
 type ZoneCardProps = {
   zone: Zone
+  onClick?: () => void
 }
 
-export const ZoneCard = ({ zone }: ZoneCardProps) => {
+export const ZoneCard = ({ zone, onClick }: ZoneCardProps) => {
   const { temperatureUnit } = useSettingsStore()
   const unitKey = temperatureUnit === 'celsius' ? 'c' as const : 'f' as const
   return (
-    <Card className="relative overflow-hidden border-border/70 bg-gradient-to-br from-card to-card-muted">
+    <Card className={cn("relative overflow-hidden border-border/70 bg-gradient-to-br from-card to-card-muted", onClick && "cursor-pointer transition-shadow hover:shadow-md")} onClick={onClick}>
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
           <p className="text-xs uppercase tracking-widest text-muted-foreground">Zone</p>

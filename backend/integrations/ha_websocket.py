@@ -331,6 +331,7 @@ class HAWebSocketClient:
 
                 # Entity filter (if configured)
                 if self._entity_filter and entity_id not in self._entity_filter:
+                    logger.debug("WS filter dropped entity %s (not in %d-entry filter)", entity_id, len(self._entity_filter))
                     continue
 
                 # Track entities we've seen

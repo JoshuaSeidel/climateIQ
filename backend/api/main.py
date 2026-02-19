@@ -243,6 +243,11 @@ async def cleanup_old_readings() -> None:
         logger.error(f"Error in data retention cleanup: {e}")
 
 
+# Track which sensors we've already notified about to avoid spamming
+# every 10 minutes. Cleared when the sensor comes back online (last_seen updates).
+_offline_notified: set[str] = set()
+
+
 async def check_sensor_health() -> None:
     """Check for offline or malfunctioning sensors."""
     from datetime import timedelta
@@ -264,29 +269,39 @@ async def check_sensor_health() -> None:
                 )
             )
             stale_sensors = result.scalars().all()
+            stale_ids = {str(s.id) for s in stale_sensors}
+
+            # Clear notification state for sensors that came back online
+            _offline_notified.difference_update(_offline_notified - stale_ids)
 
             for sensor in stale_sensors:
-                logger.warning(
-                    "Sensor offline: %s (last seen: %s)",
-                    sensor.name,
-                    sensor.last_seen,
-                )
-                # Broadcast alert to frontend
+                sensor_key = str(sensor.id)
+
+                # Always broadcast to frontend (lightweight)
                 await app_state.ws_manager.broadcast(
                     {
                         "type": "sensor_alert",
                         "alert": "offline",
-                        "sensor_id": str(sensor.id),
+                        "sensor_id": sensor_key,
                         "sensor_name": sensor.name,
                         "last_seen": sensor.last_seen.isoformat() if sensor.last_seen else None,
                         "timestamp": datetime.now(UTC).isoformat(),
                     }
                 )
 
-                # Send HA notification for offline sensor
+                # Only send HA push notification ONCE per offline episode
+                if sensor_key in _offline_notified:
+                    continue
+                _offline_notified.add(sensor_key)
+
+                logger.warning(
+                    "Sensor offline: %s (last seen: %s)",
+                    sensor.name,
+                    sensor.last_seen,
+                )
+
                 if _notification_service:
                     try:
-                        # Load zone name for the notification message
                         zone_name = "unknown zone"
                         if sensor.zone_id:
                             from backend.models.database import Zone as _Zone
@@ -298,7 +313,6 @@ async def check_sensor_health() -> None:
                             if zone_obj:
                                 zone_name = zone_obj.name
 
-                        # Read notification_target from system_settings
                         from backend.models.database import SystemSetting as _SS
 
                         notif_result = await db.execute(
@@ -320,7 +334,7 @@ async def check_sensor_health() -> None:
             if stale_sensors:
                 logger.info("Sensor health check: %d sensors offline", len(stale_sensors))
     except Exception as e:
-        logger.error(f"Error checking sensor health: {e}")
+        logger.error("Error checking sensor health: %s", e)
 
 
 # ============================================================================
@@ -1357,15 +1371,6 @@ async def _handle_ha_state_change(change: object) -> None:
     if not isinstance(change, HAStateChange):
         return
 
-    # Only persist if we have at least one useful sensor value
-    if (
-        change.temperature is None
-        and change.humidity is None
-        and change.lux is None
-        and change.presence is None
-    ):
-        return
-
     # Validate sensor values are within physically plausible ranges.
     # Null out bad fields instead of discarding the entire reading so that
     # other valid values (e.g. humidity, presence) are still persisted.
@@ -1384,14 +1389,12 @@ async def _handle_ha_state_change(change: object) -> None:
         )
         change.humidity = None
 
-    # After sanitisation, skip if nothing useful remains
-    if (
-        change.temperature is None
-        and change.humidity is None
-        and change.lux is None
-        and change.presence is None
-    ):
-        return
+    has_useful_value = (
+        change.temperature is not None
+        or change.humidity is not None
+        or change.lux is not None
+        or change.presence is not None
+    )
 
     try:
         session_maker = get_session_maker()
@@ -1405,11 +1408,18 @@ async def _handle_ha_state_change(change: object) -> None:
 
             if sensor is None:
                 # Entity not mapped to a sensor — skip (user hasn't registered it)
-                logger.debug("Ignoring state change for unmapped entity %s", change.entity_id)
                 return
 
-            # Update last_seen
+            # Always update last_seen so the sensor doesn't appear offline.
+            # Many Zigbee2MQTT entities report battery/linkquality/voltage
+            # that don't parse into temp/humidity/lux/presence — but the
+            # sensor IS alive and reporting.
             sensor.last_seen = change.timestamp
+
+            if not has_useful_value:
+                # No climate data to persist, but we still updated last_seen
+                await db.commit()
+                return
 
             # Create sensor reading
             reading = SRModel(

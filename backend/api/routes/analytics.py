@@ -418,33 +418,49 @@ async def get_zone_history(
                 )
                 for row in rows
             ]
-
-            return HistoryResponse(
-                zone_id=zone_id,
-                zone_name=zone_name,
-                period_start=period_start,
-                period_end=period_end,
-                total_readings=agg_row.cnt,
-                avg_temperature_c=round(agg_row.avg_temp, 2)
-                if agg_row.avg_temp is not None
-                else None,
-                min_temperature_c=round(agg_row.min_temp, 2)
-                if agg_row.min_temp is not None
-                else None,
-                max_temperature_c=round(agg_row.max_temp, 2)
-                if agg_row.max_temp is not None
-                else None,
-                avg_humidity=round(agg_row.avg_hum, 2) if agg_row.avg_hum is not None else None,
-                min_humidity=round(agg_row.min_hum, 2) if agg_row.min_hum is not None else None,
-                max_humidity=round(agg_row.max_hum, 2) if agg_row.max_hum is not None else None,
-                readings=points,
-            )
         except ProgrammingError:
             # View doesn't exist — fall through to raw readings path
             await db.rollback()
             logger.warning(
                 "Aggregate view %s missing — falling back to raw readings", view
             )
+        else:
+            # Aggregate query succeeded but returned 0 readings — fall through
+            # to raw path so the frontend still gets data.
+            if not points:
+                logger.info(
+                    "Aggregate view %s returned 0 readings for zone %s "
+                    "— falling back to raw readings",
+                    view,
+                    zone_id,
+                )
+            else:
+                return HistoryResponse(
+                    zone_id=zone_id,
+                    zone_name=zone_name,
+                    period_start=period_start,
+                    period_end=period_end,
+                    total_readings=agg_row.cnt,
+                    avg_temperature_c=round(agg_row.avg_temp, 2)
+                    if agg_row.avg_temp is not None
+                    else None,
+                    min_temperature_c=round(agg_row.min_temp, 2)
+                    if agg_row.min_temp is not None
+                    else None,
+                    max_temperature_c=round(agg_row.max_temp, 2)
+                    if agg_row.max_temp is not None
+                    else None,
+                    avg_humidity=round(agg_row.avg_hum, 2)
+                    if agg_row.avg_hum is not None
+                    else None,
+                    min_humidity=round(agg_row.min_hum, 2)
+                    if agg_row.min_hum is not None
+                    else None,
+                    max_humidity=round(agg_row.max_hum, 2)
+                    if agg_row.max_hum is not None
+                    else None,
+                    readings=points,
+                )
 
     # ----- Raw path: short windows with no explicit resolution -----
     sensor_ids = await _zone_sensor_ids(db, zone_id)

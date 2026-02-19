@@ -331,6 +331,17 @@ async def update_sensor(
 
     await db.commit()
     await db.refresh(sensor)
+
+    # If ha_entity_id was changed, add the new entity to the running WS
+    # filter so state_changed events are not silently dropped.
+    if "ha_entity_id" in update_data and sensor.ha_entity_id:
+        try:
+            from backend.api.main import app_state
+            if app_state.ha_ws and hasattr(app_state.ha_ws, "add_entity_to_filter"):
+                app_state.ha_ws.add_entity_to_filter(sensor.ha_entity_id)
+        except Exception:
+            logger.debug("Could not add entity to WS filter (non-fatal)", exc_info=True)
+
     return SensorResponse.model_validate(sensor)
 
 

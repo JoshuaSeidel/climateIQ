@@ -90,52 +90,73 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Create continuous aggregates for hourly/daily stats
+-- Create continuous aggregates for 5min/hourly/daily stats
+-- These definitions MUST match backend/models/database.py _ensure_timescaledb_objects()
 CREATE OR REPLACE FUNCTION create_continuous_aggregates()
 RETURNS void AS $$
 BEGIN
-    -- Hourly sensor averages
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'sensor_readings') THEN
+        -- 5-minute sensor averages
+        CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_readings_5min
+        WITH (timescaledb.continuous) AS
+        SELECT
+            sensor_id,
+            zone_id,
+            time_bucket('5 minutes', recorded_at) AS bucket,
+            avg(temperature_c) AS avg_temperature_c,
+            avg(humidity) AS avg_humidity,
+            avg(lux) AS avg_lux,
+            bool_or(presence) AS presence
+        FROM sensor_readings
+        GROUP BY sensor_id, zone_id, bucket;
+
+        SELECT add_continuous_aggregate_policy('sensor_readings_5min',
+            start_offset => INTERVAL '5 minutes',
+            end_offset => INTERVAL '1 minute',
+            schedule_interval => INTERVAL '5 minutes',
+            if_not_exists => TRUE
+        );
+
+        -- Hourly sensor averages
         CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_readings_hourly
         WITH (timescaledb.continuous) AS
-        SELECT 
-            time_bucket('1 hour', recorded_at) AS bucket,
+        SELECT
             sensor_id,
-            AVG(temperature_c) AS avg_temperature,
-            AVG(humidity) AS avg_humidity,
-            COUNT(*) AS reading_count
+            zone_id,
+            time_bucket('1 hour', recorded_at) AS bucket,
+            avg(temperature_c) AS avg_temperature_c,
+            avg(humidity) AS avg_humidity,
+            avg(lux) AS avg_lux,
+            bool_or(presence) AS presence
         FROM sensor_readings
-        WHERE temperature_c IS NOT NULL OR humidity IS NOT NULL
-        GROUP BY bucket, sensor_id
-        WITH NO DATA;
-        
-        -- Add refresh policy
+        GROUP BY sensor_id, zone_id, bucket;
+
         SELECT add_continuous_aggregate_policy('sensor_readings_hourly',
             start_offset => INTERVAL '3 hours',
             end_offset => INTERVAL '1 hour',
-            schedule_interval => INTERVAL '1 hour'
+            schedule_interval => INTERVAL '1 hour',
+            if_not_exists => TRUE
         );
-        
+
         -- Daily sensor averages
         CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_readings_daily
         WITH (timescaledb.continuous) AS
-        SELECT 
-            time_bucket('1 day', recorded_at) AS bucket,
+        SELECT
             sensor_id,
-            AVG(temperature_c) AS avg_temperature,
-            MIN(temperature_c) AS min_temperature,
-            MAX(temperature_c) AS max_temperature,
-            AVG(humidity) AS avg_humidity,
-            COUNT(*) AS reading_count
+            zone_id,
+            time_bucket('1 day', recorded_at) AS bucket,
+            avg(temperature_c) AS avg_temperature_c,
+            avg(humidity) AS avg_humidity,
+            avg(lux) AS avg_lux,
+            bool_or(presence) AS presence
         FROM sensor_readings
-        WHERE temperature_c IS NOT NULL
-        GROUP BY bucket, sensor_id
-        WITH NO DATA;
-        
+        GROUP BY sensor_id, zone_id, bucket;
+
         SELECT add_continuous_aggregate_policy('sensor_readings_daily',
             start_offset => INTERVAL '3 days',
             end_offset => INTERVAL '1 day',
-            schedule_interval => INTERVAL '1 day'
+            schedule_interval => INTERVAL '1 day',
+            if_not_exists => TRUE
         );
     END IF;
 END;

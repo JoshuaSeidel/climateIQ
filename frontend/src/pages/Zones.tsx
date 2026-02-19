@@ -95,8 +95,10 @@ export const Zones = () => {
   const queryClient = useQueryClient()
   const { temperatureUnit } = useSettingsStore()
   const unitKey: 'c' | 'f' = temperatureUnit === 'celsius' ? 'c' : 'f'
-  const [viewMode, setViewMode] = useState<ViewMode>('list')
-  const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null)
+  // Check for ?zone=<id> param from Dashboard navigation
+  const [initialZoneParam] = useState(() => new URLSearchParams(window.location.search).get('zone'))
+  const [viewMode, setViewMode] = useState<ViewMode>(() => initialZoneParam ? 'detail' : 'list')
+  const [selectedZoneId, setSelectedZoneId] = useState<string | null>(() => initialZoneParam)
   const [zoneForm, setZoneForm] = useState<ZoneFormData>(defaultZoneForm)
   const [sensorForm, setSensorForm] = useState<SensorFormData>({
     name: '',
@@ -373,6 +375,22 @@ export const Zones = () => {
     setSelectedZoneId(zoneId)
     setViewMode('detail')
   }, [zonesRaw, unitKey])
+
+  // When navigated from Dashboard with ?zone=<id>, load comfort prefs
+  // once zones data is available, then clean up the URL param.
+  // This is a one-time initialization that syncs React state with URL params
+  // (an external system), so the setState call is intentional.
+  const initialZoneLoaded = useRef(false)
+  useEffect(() => {
+    if (!initialZoneParam || initialZoneLoaded.current || !zonesRaw?.length) return
+    initialZoneLoaded.current = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time init from URL param (external system)
+    handleOpenDetail(initialZoneParam)
+    // Clean up the URL param
+    const url = new URL(window.location.href)
+    url.searchParams.delete('zone')
+    window.history.replaceState({}, '', url.toString())
+  }, [initialZoneParam, zonesRaw, handleOpenDetail])
 
   const handleEditZone = useCallback(
     (zone: Zone) => {

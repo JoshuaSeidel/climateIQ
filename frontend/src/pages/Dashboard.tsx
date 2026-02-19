@@ -1,4 +1,5 @@
 import { useMemo, useEffect, useCallback, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -75,6 +76,7 @@ const getWeatherIcon = (state: string | undefined) => {
 
 export const Dashboard = () => {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [tempOverride, setTempOverride] = useState<{ zoneId: string; temp: string } | null>(null)
   const [overrideSubmitting, setOverrideSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -420,7 +422,7 @@ export const Dashboard = () => {
             <div className="grid gap-4 md:grid-cols-2">
               {zones.map((zone) => (
                 <div key={zone.id} className="relative">
-                  <ZoneCard zone={zone} />
+                  <ZoneCard zone={zone} onClick={() => navigate({ to: '/zones', search: { zone: zone.id } })} />
                   {/* Temperature Override Button */}
                   <div className="absolute right-2 top-2 flex gap-1">
                     {tempOverride?.zoneId === zone.id ? (

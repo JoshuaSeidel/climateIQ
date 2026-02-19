@@ -493,7 +493,16 @@ async def _ensure_timescaledb_objects(conn: Any) -> None:
         except Exception:
             _db_logger.debug("Aggregate policy for %s already exists or not supported", view)
 
-    # 4. Compression policies
+    # 4. Manual refresh so data is available immediately on startup
+    for view in ("sensor_readings_5min", "sensor_readings_hourly", "sensor_readings_daily"):
+        try:
+            await conn.execute(text(
+                f"CALL refresh_continuous_aggregate('{view}', NULL, NULL)"
+            ))
+        except Exception:
+            _db_logger.debug("Could not refresh %s (may not exist yet or no data)", view)
+
+    # 5. Compression policies
     for tbl in ("sensor_readings", "device_actions"):
         try:
             await conn.execute(text(
