@@ -54,6 +54,7 @@ const SENSOR_TYPES: { value: SensorType; label: string }[] = [
   { value: 'temp_only', label: 'Temperature Only' },
   { value: 'humidity_only', label: 'Humidity Only' },
   { value: 'presence_only', label: 'Presence Only' },
+  { value: 'lux_only', label: 'Lux / Illuminance' },
   { value: 'temp_humidity', label: 'Temp + Humidity' },
   { value: 'presence_lux', label: 'Presence + Lux' },
   { value: 'other', label: 'Other' },
@@ -110,8 +111,15 @@ export const Zones = () => {
   const entityPickerRef = useRef<HTMLDivElement>(null)
   const [showDevicePicker, setShowDevicePicker] = useState(false)
   const [deviceSearch, setDeviceSearch] = useState('')
+  const [debouncedDeviceSearch, setDebouncedDeviceSearch] = useState('')
   const [selectedDevice, setSelectedDevice] = useState<HADevice | null>(null)
   const [selectedEntityIds, setSelectedEntityIds] = useState<Set<string>>(new Set())
+
+  // Debounce device search input (300ms)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedDeviceSearch(deviceSearch.trim()), 300)
+    return () => clearTimeout(timer)
+  }, [deviceSearch])
 
   // Close entity picker on outside click
   useEffect(() => {
@@ -191,10 +199,11 @@ export const Zones = () => {
     enabled: viewMode === 'detail' && showSensorForm,
   })
 
-  const { data: haDevices, isLoading: devicesLoading } = useQuery<HADevice[]>({
-    queryKey: ['ha-devices'],
-    queryFn: () => api.get<HADevice[]>('/settings/ha/devices'),
-    enabled: viewMode === 'detail' && showDevicePicker,
+  const { data: haDevices, isFetching: devicesFetching } = useQuery<HADevice[]>({
+    queryKey: ['ha-devices', debouncedDeviceSearch],
+    queryFn: () => api.get<HADevice[]>('/settings/ha/devices', { search: debouncedDeviceSearch }),
+    enabled: viewMode === 'detail' && showDevicePicker && debouncedDeviceSearch.length >= 2,
+    staleTime: 60_000,
   })
 
   // Fetch sensors for a zone
@@ -331,6 +340,7 @@ export const Zones = () => {
     if (hasTemp) return 'temp_only'
     if (hasHumidity) return 'humidity_only'
     if (hasPresence) return 'presence_only'
+    if (hasLux) return 'lux_only'
     return 'other'
   }, [])
 
@@ -660,25 +670,19 @@ export const Zones = () => {
                     <Input
                       value={deviceSearch}
                       onChange={(e) => setDeviceSearch(e.target.value)}
-                      placeholder="Search devices by name, manufacturer, or model..."
+                      placeholder="Type at least 2 characters to search devices..."
                     />
-                    {devicesLoading ? (
+                    {debouncedDeviceSearch.length < 2 ? (
+                      <p className="py-4 text-center text-sm text-muted-foreground">
+                        Type a device name, manufacturer, or model to search
+                      </p>
+                    ) : devicesFetching ? (
                       <div className="flex items-center justify-center py-8">
                         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                       </div>
                     ) : (
                       <div className="max-h-64 space-y-1 overflow-auto">
-                        {(haDevices ?? [])
-                          .filter((d) => {
-                            if (!deviceSearch.trim()) return true
-                            const q = deviceSearch.toLowerCase()
-                            return (
-                              d.name.toLowerCase().includes(q) ||
-                              d.manufacturer.toLowerCase().includes(q) ||
-                              d.model.toLowerCase().includes(q)
-                            )
-                          })
-                          .map((device) => (
+                        {(haDevices ?? []).map((device) => (
                             <button
                               key={device.device_id}
                               type="button"
@@ -700,13 +704,9 @@ export const Zones = () => {
                               </div>
                             </button>
                           ))}
-                        {!devicesLoading && (haDevices ?? []).filter((d) => {
-                          if (!deviceSearch.trim()) return true
-                          const q = deviceSearch.toLowerCase()
-                          return d.name.toLowerCase().includes(q) || d.manufacturer.toLowerCase().includes(q) || d.model.toLowerCase().includes(q)
-                        }).length === 0 && (
+                        {(haDevices ?? []).length === 0 && (
                           <p className="py-4 text-center text-sm text-muted-foreground">
-                            No devices found{deviceSearch ? ' matching your search' : ''}
+                            No devices found matching &ldquo;{debouncedDeviceSearch}&rdquo;
                           </p>
                         )}
                       </div>

@@ -21,6 +21,7 @@ class SensorType(StrEnum):
     temp_only = "temp_only"
     humidity_only = "humidity_only"
     presence_only = "presence_only"
+    lux_only = "lux_only"
     temp_humidity = "temp_humidity"
     presence_lux = "presence_lux"
     other = "other"

@@ -164,7 +164,7 @@ class HAWebSocketClient:
     async def send_command(
         self,
         msg_type: str,
-        cmd_timeout: float = 10.0,
+        cmd_timeout: float = 30.0,
         **kwargs: Any,
     ) -> Any:
         """Send a WS command and wait for the response.
@@ -346,6 +346,9 @@ class HAWebSocketClient:
         except Exception:
             logger.exception("HA WebSocket listen loop crashed")
             self._connected.clear()
+        finally:
+            # Fail any pending command futures so callers don't hang until timeout
+            self._fail_pending_commands("WebSocket connection lost")
 
     def _parse_state_change(
         self,
@@ -368,7 +371,7 @@ class HAWebSocketClient:
 
         device_class = attrs.get("device_class", "")
         device_class = device_class.lower() if isinstance(device_class, str) else ""
-        unit = attrs.get("unit_of_measurement", "") or ""
+        unit = attrs.get("unit_of_measurement", "") or attrs.get("temperature_unit", "") or ""
 
         # ----- Device-class / unit-based extraction (most reliable) -----
         _dc_matched = False
@@ -417,7 +420,11 @@ class HAWebSocketClient:
                     val = attrs.get(key)
                     if val is not None:
                         with suppress(ValueError, TypeError):
-                            setattr(change, field_name, float(val))
+                            val_f = float(val)
+                            # Convert F→C for temperature from attributes
+                            if field_name == "temperature" and unit == "°F":
+                                val_f = (val_f - 32) * 5 / 9
+                            setattr(change, field_name, val_f)
                             break
 
             # Extract boolean sensor values
@@ -451,6 +458,18 @@ class HAWebSocketClient:
                     task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
             except Exception:
                 logger.exception("HA WebSocket callback raised an exception")
+
+    # ------------------------------------------------------------------
+    # Internal — pending command management
+    # ------------------------------------------------------------------
+
+    def _fail_pending_commands(self, reason: str) -> None:
+        """Reject all pending command futures so callers don't hang."""
+        pending = dict(self._pending_commands)
+        self._pending_commands.clear()
+        for cmd_id, fut in pending.items():
+            if not fut.done():
+                fut.set_exception(HAWebSocketError(f"{reason} (cmd_id={cmd_id})"))
 
     # ------------------------------------------------------------------
     # Internal — reconnection

@@ -18,6 +18,7 @@ export type SensorType =
   | 'temp_only'
   | 'humidity_only'
   | 'presence_only'
+  | 'lux_only'
   | 'temp_humidity'
   | 'presence_lux'
   | 'other'

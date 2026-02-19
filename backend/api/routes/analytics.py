@@ -357,6 +357,7 @@ async def get_zone_history(
     based on the lookback window and requested resolution.
     """
     zone = await _require_zone(db, zone_id)
+    zone_name = zone.name  # eagerly capture before any rollback can expire the ORM state
 
     period_end = datetime.now(UTC)
     period_start = period_end - timedelta(hours=hours)
@@ -420,7 +421,7 @@ async def get_zone_history(
 
             return HistoryResponse(
                 zone_id=zone_id,
-                zone_name=zone.name,
+                zone_name=zone_name,
                 period_start=period_start,
                 period_end=period_end,
                 total_readings=agg_row.cnt,
@@ -450,7 +451,7 @@ async def get_zone_history(
     if not sensor_ids:
         return HistoryResponse(
             zone_id=zone_id,
-            zone_name=zone.name,
+            zone_name=zone_name,
             period_start=period_start,
             period_end=period_end,
             total_readings=0,
@@ -488,7 +489,7 @@ async def get_zone_history(
 
     return HistoryResponse(
         zone_id=zone_id,
-        zone_name=zone.name,
+        zone_name=zone_name,
         period_start=period_start,
         period_end=period_end,
         total_readings=len(raw_readings),

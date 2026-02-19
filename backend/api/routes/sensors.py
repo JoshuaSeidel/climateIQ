@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -12,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.dependencies import get_db
-from backend.models.database import Sensor, Zone
+from backend.models.database import Sensor, SensorReading, Zone
 from backend.models.enums import SensorType
 from backend.models.schemas import SensorCreate, SensorResponse, SensorUpdate
 
@@ -27,6 +28,129 @@ class BulkSensorItem(BaseModel):
     ha_entity_id: str
     manufacturer: str = ""
     model: str = ""
+
+
+async def _seed_initial_reading(db: AsyncSession, sensor: Sensor) -> None:
+    """Fetch the current HA state for a sensor and create an initial reading.
+
+    This ensures the zone shows data immediately after a sensor is added,
+    rather than waiting for the next HA state_changed event.
+    """
+    if not sensor.ha_entity_id:
+        return
+    try:
+        from backend.api.dependencies import _ha_client
+        if _ha_client is None:
+            return
+
+        state = await _ha_client.get_state(sensor.ha_entity_id)
+        if state is None:
+            return
+
+        attrs = state.attributes or {}
+        entity_id = sensor.ha_entity_id
+        domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+        device_class = (attrs.get("device_class") or "").lower()
+        unit = attrs.get("unit_of_measurement", "") or attrs.get("temperature_unit", "") or ""
+
+        temperature_c: float | None = None
+        humidity: float | None = None
+        presence: bool | None = None
+        lux: float | None = None
+
+        # Extract values based on domain and device_class
+        if domain == "sensor":
+            if device_class == "temperature":
+                try:
+                    val = float(state.state)
+                    temperature_c = (val - 32) * 5 / 9 if unit == "°F" else val
+                except (ValueError, TypeError):
+                    pass
+            elif device_class == "humidity":
+                try:
+                    humidity = float(state.state)
+                except (ValueError, TypeError):
+                    pass
+            elif device_class == "illuminance":
+                try:
+                    lux = float(state.state)
+                except (ValueError, TypeError):
+                    pass
+        elif domain == "binary_sensor":
+            if device_class in ("occupancy", "motion", "presence"):
+                presence = state.state.lower() in ("on", "true", "1")
+        elif domain == "climate":
+            current_temp = attrs.get("current_temperature")
+            if current_temp is not None:
+                try:
+                    val = float(current_temp)
+                    temperature_c = (val - 32) * 5 / 9 if unit == "°F" else val
+                except (ValueError, TypeError):
+                    pass
+            current_hum = attrs.get("current_humidity")
+            if current_hum is not None:
+                try:
+                    humidity = float(current_hum)
+                except (ValueError, TypeError):
+                    pass
+
+        # Also try attribute-based extraction as fallback
+        if temperature_c is None:
+            for key in ("temperature", "current_temperature"):
+                val = attrs.get(key)
+                if val is not None:
+                    try:
+                        val_f = float(val)
+                        temperature_c = (val_f - 32) * 5 / 9 if unit == "°F" else val_f
+                        break
+                    except (ValueError, TypeError):
+                        pass
+        if humidity is None:
+            for key in ("humidity", "current_humidity"):
+                val = attrs.get(key)
+                if val is not None:
+                    try:
+                        humidity = float(val)
+                        break
+                    except (ValueError, TypeError):
+                        pass
+
+        if temperature_c is None and humidity is None and lux is None and presence is None:
+            return
+
+        # Validate ranges
+        if temperature_c is not None and (temperature_c < -40 or temperature_c > 60):
+            temperature_c = None
+        if humidity is not None and (humidity < 0 or humidity > 100):
+            humidity = None
+
+        if temperature_c is None and humidity is None and lux is None and presence is None:
+            return
+
+        now = datetime.now(UTC)
+        reading = SensorReading(
+            sensor_id=sensor.id,
+            zone_id=sensor.zone_id,
+            recorded_at=now,
+            temperature_c=temperature_c,
+            humidity=humidity,
+            presence=presence,
+            lux=lux,
+            payload=dict(attrs),
+        )
+        db.add(reading)
+        sensor.last_seen = now
+        await db.commit()
+        logger.info(
+            "Seeded initial reading for %s (temp=%s, hum=%s, pres=%s, lux=%s)",
+            sensor.ha_entity_id,
+            temperature_c,
+            humidity,
+            presence,
+            lux,
+        )
+    except Exception:
+        logger.debug("Could not seed initial reading for %s (non-fatal)", sensor.ha_entity_id, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +223,10 @@ async def create_sensor(
         except Exception:
             logger.debug("Could not add entity to WS filter (non-fatal)", exc_info=True)
 
+    # Seed an initial reading from HA's current state so the zone shows
+    # data immediately instead of waiting for the next state_changed event.
+    await _seed_initial_reading(db, sensor)
+
     return SensorResponse.model_validate(sensor)
 
 
@@ -170,6 +298,11 @@ async def create_sensors_bulk(
                     app_state.ha_ws.add_entity_to_filter(sensor.ha_entity_id)
     except Exception:
         logger.debug("Could not add entities to WS filter (non-fatal)", exc_info=True)
+
+    # Seed initial readings from HA's current state so the zone shows
+    # data immediately instead of waiting for the next state_changed events.
+    for sensor in created:
+        await _seed_initial_reading(db, sensor)
 
     return [SensorResponse.model_validate(s) for s in created]
 

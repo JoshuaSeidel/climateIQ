@@ -1065,20 +1065,31 @@ async def _handle_ha_state_change(change: object) -> None:
     ):
         return
 
-    # Validate sensor values are within physically plausible ranges
+    # Validate sensor values are within physically plausible ranges.
+    # Null out bad fields instead of discarding the entire reading so that
+    # other valid values (e.g. humidity, presence) are still persisted.
     if change.temperature is not None and (change.temperature < -40 or change.temperature > 60):
         logger.warning(
-            "Rejecting impossible temperature %.1f°C from %s",
+            "Dropping impossible temperature %.1f°C from %s (keeping other fields)",
             change.temperature,
             change.entity_id,
         )
-        return
+        change.temperature = None
     if change.humidity is not None and (change.humidity < 0 or change.humidity > 100):
         logger.warning(
-            "Rejecting impossible humidity %.1f%% from %s",
+            "Dropping impossible humidity %.1f%% from %s (keeping other fields)",
             change.humidity,
             change.entity_id,
         )
+        change.humidity = None
+
+    # After sanitisation, skip if nothing useful remains
+    if (
+        change.temperature is None
+        and change.humidity is None
+        and change.lux is None
+        and change.presence is None
+    ):
         return
 
     try:

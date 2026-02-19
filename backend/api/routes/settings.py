@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -16,6 +17,17 @@ from backend.models.database import SystemConfig, SystemSetting
 from backend.models.enums import SystemMode
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# In-memory cache for HA device/entity registry (expensive WS calls)
+# ---------------------------------------------------------------------------
+_ha_registry_cache: dict[str, Any] = {
+    "devices": None,
+    "entities": None,
+    "states": None,
+    "timestamp": 0.0,
+}
+_HA_REGISTRY_TTL = 60.0  # seconds
 
 router = APIRouter()
 
@@ -296,13 +308,14 @@ async def list_ha_entities(
 # ---------------------------------------------------------------------------
 # GET /settings/ha/devices — HA device registry (via WebSocket API)
 # ---------------------------------------------------------------------------
-@router.get("/ha/devices", response_model=list[HADeviceInfo])
-async def list_ha_devices() -> list[HADeviceInfo]:
-    """Return HA devices with their sensor/binary_sensor entities grouped.
 
-    Uses the HA WebSocket API (``config/device_registry/list`` and
-    ``config/entity_registry/list``) because the REST API does not expose
-    these endpoints.
+
+async def _fetch_ha_registry() -> tuple[list[Any], list[Any], list[Any]]:
+    """Fetch HA device/entity registries with a short in-memory cache.
+
+    Returns (devices_raw, entities_raw, states).  Results are cached for
+    ``_HA_REGISTRY_TTL`` seconds so that rapid searches don't hammer the
+    HA WebSocket / REST API.
     """
     import asyncio
 
@@ -310,6 +323,17 @@ async def list_ha_devices() -> list[HADeviceInfo]:
     from backend.api.main import app_state
     from backend.integrations.ha_client import HAClientError
     from backend.integrations.ha_websocket import HAWebSocketError
+
+    now = time.monotonic()
+    if (
+        _ha_registry_cache["devices"] is not None
+        and now - _ha_registry_cache["timestamp"] < _HA_REGISTRY_TTL
+    ):
+        return (
+            _ha_registry_cache["devices"],
+            _ha_registry_cache["entities"],
+            _ha_registry_cache["states"],
+        )
 
     ha_ws = app_state.ha_ws
     if ha_ws is None or not ha_ws.connected:
@@ -336,6 +360,36 @@ async def list_ha_devices() -> list[HADeviceInfo]:
             detail=f"Unable to fetch device registry: {exc}",
         ) from exc
 
+    _ha_registry_cache["devices"] = devices_raw
+    _ha_registry_cache["entities"] = entities_raw
+    _ha_registry_cache["states"] = states
+    _ha_registry_cache["timestamp"] = now
+
+    return devices_raw, entities_raw, states
+
+
+@router.get("/ha/devices", response_model=list[HADeviceInfo])
+async def list_ha_devices(
+    search: Annotated[
+        str | None,
+        Query(
+            min_length=2,
+            description="Filter devices by name, manufacturer, or model (min 2 chars)",
+        ),
+    ] = None,
+) -> list[HADeviceInfo]:
+    """Return HA devices with their sensor/binary_sensor entities grouped.
+
+    Uses the HA WebSocket API (``config/device_registry/list`` and
+    ``config/entity_registry/list``) because the REST API does not expose
+    these endpoints.
+
+    Pass ``?search=<term>`` (min 2 characters) to filter devices server-side
+    by name, manufacturer, or model.  Results are cached briefly so repeated
+    searches are fast.
+    """
+    devices_raw, entities_raw, states = await _fetch_ha_registry()
+
     # Build state lookup: entity_id -> EntityState
     state_map: dict[str, Any] = {s.entity_id: s for s in states}
 
@@ -347,12 +401,22 @@ async def list_ha_devices() -> list[HADeviceInfo]:
         if eid and did:
             entity_to_device[eid] = did
 
-    # Build device lookup
+    # Build device lookup — pre-filter by search term if provided
+    q = search.strip().lower() if search else ""
     device_map: dict[str, dict[str, Any]] = {}
     for dev in devices_raw:
         did = dev.get("id", "")
-        if did:
-            device_map[did] = dev
+        if not did:
+            continue
+        if q:
+            dev_name = (
+                (dev.get("name_by_user") or dev.get("name") or "").lower()
+            )
+            dev_mfr = (dev.get("manufacturer") or "").lower()
+            dev_model = (dev.get("model") or "").lower()
+            if q not in dev_name and q not in dev_mfr and q not in dev_model:
+                continue
+        device_map[did] = dev
 
     # Group sensor/binary_sensor entities by device
     device_entities: dict[str, list[HADeviceEntityInfo]] = {}
