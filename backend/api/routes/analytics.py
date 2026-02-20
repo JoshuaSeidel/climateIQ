@@ -254,14 +254,22 @@ async def get_overview(
     view = _pick_overview_view(hours)
     use_raw_fallback = False
 
-    # Single query across all zones
+    # Single query across all zones.
+    # The continuous aggregate views group by (sensor_id, zone_id, bucket),
+    # so a zone with separate temperature and humidity sensors produces
+    # multiple rows per bucket.  We re-aggregate across sensors here so
+    # each (zone_id, bucket) pair yields exactly one row with both metrics.
     # view is from _pick_overview_view() which only returns hardcoded view names
     data_stmt = text(
         f"""
-        SELECT bucket, zone_id, avg_temperature_c, avg_humidity, presence
+        SELECT bucket, zone_id,
+               AVG(avg_temperature_c) AS avg_temperature_c,
+               AVG(avg_humidity) AS avg_humidity,
+               BOOL_OR(presence) AS presence
         FROM {view}
         WHERE zone_id = ANY(:zone_ids)
           AND bucket >= :start AND bucket <= :end
+        GROUP BY zone_id, bucket
         ORDER BY zone_id, bucket ASC
     """  # noqa: S608
     )
@@ -273,7 +281,7 @@ async def get_overview(
                MIN(avg_temperature_c) as min_temp,
                MAX(avg_temperature_c) as max_temp,
                AVG(avg_humidity) as avg_hum,
-               COUNT(*) as cnt
+               COUNT(DISTINCT bucket) as cnt
         FROM {view}
         WHERE zone_id = ANY(:zone_ids)
           AND bucket >= :start AND bucket <= :end

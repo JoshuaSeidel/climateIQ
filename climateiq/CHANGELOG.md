@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.9
+
+### Fixed
+
+- **Single zone selection shows empty graph in Analytics** — selecting a
+  single zone in the Temperature or Occupancy tabs showed "No data available"
+  even when data existed. The single-zone path used a separate `/history`
+  endpoint that picked a different (less-populated) TimescaleDB aggregate
+  view than the multi-zone overview endpoint. Unified all zone selections
+  (single, multi, all) to use the `/overview` endpoint consistently.
+
+- **Humidity not showing in Analytics** — the Temperature tab's Humidity
+  metric toggle showed an empty chart. The continuous aggregate views group
+  by `(sensor_id, zone_id, bucket)`, so zones with separate temperature and
+  humidity sensors produced multiple rows per time bucket. The backend
+  returned these as separate readings, and the frontend overwrote real values
+  with null from the other sensor's row. Fixed by re-aggregating across
+  sensors in the overview SQL query (`GROUP BY zone_id, bucket`) and adding
+  a frontend guard that never overwrites a non-null value with null.
+
 ## 0.7.8
 
 ### Added
