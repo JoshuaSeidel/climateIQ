@@ -842,8 +842,98 @@ async def get_comfort_scores(
     except ProgrammingError:
         await db.rollback()
         logger.warning(
-            "sensor_readings_hourly view missing — comfort scores unavailable"
+            "sensor_readings_hourly view missing — falling back to raw sensor_readings"
         )
+
+    # ── Raw fallback when the continuous aggregate returned no data ──────
+    if not zone_stats:
+        from collections import namedtuple
+
+        _ZoneStat = namedtuple(
+            "_ZoneStat",
+            [
+                "zone_id",
+                "total_readings",
+                "avg_temp",
+                "avg_hum",
+                "temp_in_range",
+                "temp_total",
+                "hum_in_range",
+                "hum_total",
+            ],
+        )
+
+        zone_ids = [zid for zid, _ in zone_info]
+        if zone_ids:
+            from sqlalchemy import case
+
+            raw_stmt = (
+                select(
+                    SensorReading.zone_id,
+                    func.count().label("total_readings"),
+                    func.avg(SensorReading.temperature_c).label("avg_temp"),
+                    func.avg(SensorReading.humidity).label("avg_hum"),
+                    func.sum(
+                        case(
+                            (
+                                SensorReading.temperature_c.between(temp_min, temp_max),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ).label("temp_in_range"),
+                    func.sum(
+                        case(
+                            (
+                                SensorReading.temperature_c.isnot(None),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ).label("temp_total"),
+                    func.sum(
+                        case(
+                            (
+                                SensorReading.humidity.between(humidity_min, humidity_max),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ).label("hum_in_range"),
+                    func.sum(
+                        case(
+                            (
+                                SensorReading.humidity.isnot(None),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ).label("hum_total"),
+                )
+                .where(
+                    SensorReading.zone_id.in_(zone_ids),
+                    SensorReading.recorded_at >= period_start,
+                    SensorReading.recorded_at <= period_end,
+                )
+                .group_by(SensorReading.zone_id)
+            )
+            raw_result = await db.execute(raw_stmt)
+            for row in raw_result.all():
+                zone_stats[row.zone_id] = _ZoneStat(
+                    zone_id=row.zone_id,
+                    total_readings=row.total_readings,
+                    avg_temp=row.avg_temp,
+                    avg_hum=row.avg_hum,
+                    temp_in_range=row.temp_in_range,
+                    temp_total=row.temp_total,
+                    hum_in_range=row.hum_in_range,
+                    hum_total=row.hum_total,
+                )
+            if zone_stats:
+                logger.info(
+                    "Comfort scores: raw fallback returned data for %d zone(s)",
+                    len(zone_stats),
+                )
 
     zone_scores: list[ComfortZoneScore] = []
 

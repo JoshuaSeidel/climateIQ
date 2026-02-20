@@ -249,12 +249,23 @@ _offline_notified: set[str] = set()
 
 
 async def check_sensor_health() -> None:
-    """Check for offline or malfunctioning sensors."""
+    """Check for offline or malfunctioning sensors.
+
+    Before declaring a sensor offline, verifies its state via the Home
+    Assistant REST API when an ``ha_entity_id`` is present.  If HA reports
+    the entity as alive (state is neither "unavailable" nor "unknown") the
+    sensor's ``last_seen`` is refreshed and the offline alert is skipped.
+    """
     from datetime import timedelta
 
+    from backend.integrations.ha_client import HAClientError, HANotFoundError
     from backend.models.database import Sensor
 
     try:
+        import backend.api.dependencies as _deps
+
+        ha_client = _deps._ha_client  # may be None
+
         session_maker = get_session_maker()
         async with session_maker() as db:
             from sqlalchemy import select
@@ -277,7 +288,35 @@ async def check_sensor_health() -> None:
             for sensor in stale_sensors:
                 sensor_key = str(sensor.id)
 
-                # Always broadcast to frontend (lightweight)
+                # ── HA liveness check ───────────────────────────────────
+                # If the sensor has an HA entity, ask HA for its current
+                # state before raising an offline alert.
+                if sensor.ha_entity_id and ha_client is not None:
+                    try:
+                        entity_state = await ha_client.get_state(sensor.ha_entity_id)
+                        if entity_state.state not in ("unavailable", "unknown"):
+                            # Sensor is alive in HA — refresh last_seen & skip alert
+                            sensor.last_seen = datetime.now(UTC)
+                            await db.commit()
+                            logger.debug(
+                                "Sensor %s verified alive via HA (state=%s), "
+                                "refreshed last_seen",
+                                sensor.name,
+                                entity_state.state,
+                            )
+                            # Remove from offline set in case it was there
+                            _offline_notified.discard(sensor_key)
+                            continue
+                    except (HANotFoundError, HAClientError) as ha_err:
+                        logger.debug(
+                            "HA check failed for sensor %s (%s): %s — "
+                            "proceeding with offline alert",
+                            sensor.name,
+                            sensor.ha_entity_id,
+                            ha_err,
+                        )
+
+                # ── Broadcast offline alert to frontend (lightweight) ───
                 await app_state.ws_manager.broadcast(
                     {
                         "type": "sensor_alert",
