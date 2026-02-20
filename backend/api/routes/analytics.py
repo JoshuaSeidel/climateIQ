@@ -231,9 +231,13 @@ async def get_overview(
             zones=[],
         )
 
-    zone_ids = [str(z.id) for z in zones]
+    # Eagerly capture zone info before any DB operation that might rollback
+    # and expire ORM state (which would trigger MissingGreenlet on lazy load).
+    zone_info = [(z.id, z.name) for z in zones]
+    zone_ids = [str(zid) for zid, _ in zone_info]
 
     view = _pick_overview_view(hours)
+    use_raw_fallback = False
 
     # Single query across all zones
     # view is from _pick_overview_view() which only returns hardcoded view names
@@ -269,58 +273,136 @@ async def get_overview(
         agg_result = await db.execute(agg_stmt, params)
     except ProgrammingError:
         # Continuous aggregate view does not exist (TimescaleDB not installed
-        # or init_db hasn't created them yet). Return empty data gracefully.
+        # or init_db hasn't created them yet). Fall through to raw path.
         await db.rollback()
         logger.warning(
-            "Aggregate view %s missing — returning empty overview", view
+            "Aggregate view %s missing — falling back to raw readings", view
         )
+        use_raw_fallback = True
+
+    if not use_raw_fallback:
+        # Group readings by zone_id
+        readings_by_zone: dict[uuid.UUID, list[OverviewReadingPoint]] = {
+            zid: [] for zid, _ in zone_info
+        }
+        for row in data_result.all():
+            zid = row.zone_id
+            if zid in readings_by_zone:
+                readings_by_zone[zid].append(
+                    OverviewReadingPoint(
+                        recorded_at=row.bucket,
+                        temperature_c=round(row.avg_temperature_c, 2)
+                        if row.avg_temperature_c is not None
+                        else None,
+                        humidity=round(row.avg_humidity, 2)
+                        if row.avg_humidity is not None
+                        else None,
+                        presence=row.presence,
+                    )
+                )
+
+        # Index aggregates by zone_id
+        agg_by_zone: dict[uuid.UUID, Any] = {}
+        for row in agg_result.all():
+            agg_by_zone[row.zone_id] = row
+
+        # If aggregate returned 0 rows for ALL zones, fall through to raw path
+        if not any(readings_by_zone.values()):
+            logger.info(
+                "Aggregate view %s returned 0 readings for all zones "
+                "— falling back to raw readings",
+                view,
+            )
+            use_raw_fallback = True
+        else:
+            # Build response from aggregate data
+            overview_zones: list[OverviewZone] = []
+            for zid, zname in zone_info:
+                agg = agg_by_zone.get(zid)
+                overview_zones.append(
+                    OverviewZone(
+                        zone_id=zid,
+                        zone_name=zname,
+                        readings=readings_by_zone.get(zid, []),
+                        avg_temperature_c=round(agg.avg_temp, 2) if agg and agg.avg_temp is not None else None,
+                        min_temperature_c=round(agg.min_temp, 2) if agg and agg.min_temp is not None else None,
+                        max_temperature_c=round(agg.max_temp, 2) if agg and agg.max_temp is not None else None,
+                        avg_humidity=round(agg.avg_hum, 2) if agg and agg.avg_hum is not None else None,
+                        total_readings=int(agg.cnt) if agg else 0,
+                    )
+                )
+
+            return OverviewResponse(
+                period_start=period_start,
+                period_end=period_end,
+                zones=overview_zones,
+            )
+
+    # ----- Raw fallback: query SensorReading directly -----
+    sensor_stmt = select(Sensor.id, Sensor.zone_id).where(
+        Sensor.zone_id.in_([zid for zid, _ in zone_info]),
+        Sensor.is_active.is_(True),
+    )
+    sensor_result = await db.execute(sensor_stmt)
+    sensor_rows = sensor_result.all()
+    sensor_ids = [r.id for r in sensor_rows]
+
+    if not sensor_ids:
         return OverviewResponse(
             period_start=period_start,
             period_end=period_end,
-            zones=[
-                OverviewZone(zone_id=z.id, zone_name=z.name) for z in zones
-            ],
+            zones=[OverviewZone(zone_id=zid, zone_name=zname) for zid, zname in zone_info],
         )
 
-    # Group readings by zone_id
-    readings_by_zone: dict[uuid.UUID, list[OverviewReadingPoint]] = {
-        z.id: [] for z in zones
+    raw_stmt = (
+        select(SensorReading)
+        .where(
+            SensorReading.sensor_id.in_(sensor_ids),
+            SensorReading.recorded_at >= period_start,
+            SensorReading.recorded_at <= period_end,
+        )
+        .order_by(SensorReading.recorded_at.asc())
+    )
+    raw_result = await db.execute(raw_stmt)
+    raw_readings = raw_result.scalars().all()
+
+    # Group by zone_id
+    raw_readings_by_zone: dict[uuid.UUID, list[OverviewReadingPoint]] = {
+        zid: [] for zid, _ in zone_info
     }
-    for row in data_result.all():
-        zid = row.zone_id
-        if zid in readings_by_zone:
-            readings_by_zone[zid].append(
+    raw_temps_by_zone: dict[uuid.UUID, list[float]] = {zid: [] for zid, _ in zone_info}
+    raw_humids_by_zone: dict[uuid.UUID, list[float]] = {zid: [] for zid, _ in zone_info}
+
+    for r in raw_readings:
+        zid = r.zone_id
+        if zid in raw_readings_by_zone:
+            raw_readings_by_zone[zid].append(
                 OverviewReadingPoint(
-                    recorded_at=row.bucket,
-                    temperature_c=round(row.avg_temperature_c, 2)
-                    if row.avg_temperature_c is not None
-                    else None,
-                    humidity=round(row.avg_humidity, 2)
-                    if row.avg_humidity is not None
-                    else None,
-                    presence=row.presence,
+                    recorded_at=r.recorded_at,
+                    temperature_c=round(r.temperature_c, 2) if r.temperature_c is not None else None,
+                    humidity=round(r.humidity, 2) if r.humidity is not None else None,
+                    presence=r.presence,
                 )
             )
+            if r.temperature_c is not None:
+                raw_temps_by_zone[zid].append(r.temperature_c)
+            if r.humidity is not None:
+                raw_humids_by_zone[zid].append(r.humidity)
 
-    # Index aggregates by zone_id
-    agg_by_zone: dict[uuid.UUID, Any] = {}
-    for row in agg_result.all():
-        agg_by_zone[row.zone_id] = row
-
-    # Build response
-    overview_zones: list[OverviewZone] = []
-    for zone in zones:
-        agg = agg_by_zone.get(zone.id)
+    overview_zones = []
+    for zid, zname in zone_info:
+        temps = raw_temps_by_zone.get(zid, [])
+        humids = raw_humids_by_zone.get(zid, [])
         overview_zones.append(
             OverviewZone(
-                zone_id=zone.id,
-                zone_name=zone.name,
-                readings=readings_by_zone.get(zone.id, []),
-                avg_temperature_c=round(agg.avg_temp, 2) if agg and agg.avg_temp is not None else None,
-                min_temperature_c=round(agg.min_temp, 2) if agg and agg.min_temp is not None else None,
-                max_temperature_c=round(agg.max_temp, 2) if agg and agg.max_temp is not None else None,
-                avg_humidity=round(agg.avg_hum, 2) if agg and agg.avg_hum is not None else None,
-                total_readings=int(agg.cnt) if agg else 0,
+                zone_id=zid,
+                zone_name=zname,
+                readings=raw_readings_by_zone.get(zid, []),
+                avg_temperature_c=round(sum(temps) / len(temps), 2) if temps else None,
+                min_temperature_c=round(min(temps), 2) if temps else None,
+                max_temperature_c=round(max(temps), 2) if temps else None,
+                avg_humidity=round(sum(humids) / len(humids), 2) if humids else None,
+                total_readings=len(raw_readings_by_zone.get(zid, [])),
             )
         )
 
@@ -719,6 +801,8 @@ async def get_comfort_scores(
         select(Zone).where(Zone.is_active.is_(True)).order_by(Zone.name)
     )
     zones = zones_result.scalars().all()
+    # Eagerly capture zone info before any rollback can expire ORM state
+    zone_info = [(z.id, z.name) for z in zones]
 
     # Single bulk query against the hourly continuous aggregate
     zone_stats: dict[uuid.UUID, Any] = {}
@@ -763,14 +847,14 @@ async def get_comfort_scores(
 
     zone_scores: list[ComfortZoneScore] = []
 
-    for zone in zones:
-        zrow: Any = zone_stats.get(zone.id)
+    for zid, zname in zone_info:
+        zrow: Any = zone_stats.get(zid)
 
         if zrow is None or zrow.total_readings == 0:
             zone_scores.append(
                 ComfortZoneScore(
-                    zone_id=zone.id,
-                    zone_name=zone.name,
+                    zone_id=zid,
+                    zone_name=zname,
                     score=0.0,
                     temp_in_range_pct=0.0,
                     humidity_in_range_pct=0.0,
@@ -804,8 +888,8 @@ async def get_comfort_scores(
 
         zone_scores.append(
             ComfortZoneScore(
-                zone_id=zone.id,
-                zone_name=zone.name,
+                zone_id=zid,
+                zone_name=zname,
                 score=round(score, 1),
                 avg_temperature_c=avg_temp,
                 avg_humidity=avg_humid,

@@ -320,32 +320,29 @@ async def _enrich_zone_response(
     resp = ZoneResponse.model_validate(zone)
 
     # 1) Fill from per-zone sensor readings in DB
+    #    Use targeted queries per field to find the latest non-null value.
+    #    This avoids the problem where a LIMIT-N scan misses infrequent
+    #    sensor types (e.g. humidity sensor reports every 10 min but temp
+    #    sensors flood the last N rows).
     if zone.sensors:
         sensor_ids = [s.id for s in zone.sensors]
-        reading_stmt = (
-            select(SensorReading)
-            .where(SensorReading.sensor_id.in_(sensor_ids))
-            .order_by(SensorReading.recorded_at.desc())
-            .limit(50)
-        )
-        reading_result = await db.execute(reading_stmt)
-        readings = reading_result.scalars().all()
-        for reading in readings:
-            if resp.current_temp is None and reading.temperature_c is not None:
-                resp.current_temp = reading.temperature_c
-            if resp.current_humidity is None and reading.humidity is not None:
-                resp.current_humidity = reading.humidity
-            if resp.is_occupied is None and reading.presence is not None:
-                resp.is_occupied = reading.presence
-            if resp.current_lux is None and reading.lux is not None:
-                resp.current_lux = reading.lux
-            if (
-                resp.current_temp is not None
-                and resp.current_humidity is not None
-                and resp.is_occupied is not None
-                and resp.current_lux is not None
-            ):
-                break
+        base = select(SensorReading).where(
+            SensorReading.sensor_id.in_(sensor_ids)
+        ).order_by(SensorReading.recorded_at.desc()).limit(1)
+
+        for col_attr, setter in (
+            (SensorReading.temperature_c, "current_temp"),
+            (SensorReading.humidity, "current_humidity"),
+            (SensorReading.presence, "is_occupied"),
+            (SensorReading.lux, "current_lux"),
+        ):
+            row = (await db.execute(
+                base.where(col_attr.isnot(None))
+            )).scalars().first()
+            if row is not None:
+                val = getattr(row, col_attr.key)
+                if val is not None:
+                    setattr(resp, setter, val)
 
     # 2) Try per-zone thermostat device (if one is linked)
     thermostat_entity: str | None = None
