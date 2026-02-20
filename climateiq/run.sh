@@ -59,8 +59,9 @@ else
     ENERGY_ENTITY=""
 fi
 
+CLIMATEIQ_VERSION=$(cat /app/VERSION 2>/dev/null || echo "unknown")
 echo "============================================"
-echo "  ClimateIQ Home Assistant Add-on v0.6.8"
+echo "  ClimateIQ Home Assistant Add-on v${CLIMATEIQ_VERSION}"
 echo "============================================"
 echo "Log level:          ${LOG_LEVEL}"
 echo "Temperature unit:   ${TEMPERATURE_UNIT}"

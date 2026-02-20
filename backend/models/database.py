@@ -405,74 +405,99 @@ def async_session_maker() -> async_sessionmaker[AsyncSession]:
     return get_session_maker()
 
 
+async def _safe_execute(conn: Any, sql: str, label: str, *, level: str = "warning") -> bool:
+    """Execute *sql* inside a SAVEPOINT so a failure doesn't poison the transaction.
+
+    Returns ``True`` on success, ``False`` on failure (logged at *level*).
+    """
+    try:
+        async with conn.begin_nested():
+            await conn.execute(text(sql))
+        return True
+    except Exception as exc:
+        msg = "Could not %s: %s"
+        if level == "debug":
+            _db_logger.debug(msg, label, exc)
+        else:
+            _db_logger.warning(msg, label, exc)
+        return False
+
+
 async def _ensure_timescaledb_objects(conn: Any) -> None:
     """Create TimescaleDB hypertables and continuous aggregate views if missing.
 
     All statements are idempotent so this is safe to call on every startup.
     If TimescaleDB is not installed the errors are caught and logged.
+
+    Each DDL runs inside its own SAVEPOINT so that a single failure (e.g.
+    hypertable creation when TimescaleDB is absent) does not put the
+    transaction into an aborted state and cascade to subsequent statements.
     """
     # 1. Hypertables
     for tbl, col in (("sensor_readings", "recorded_at"), ("device_actions", "created_at")):
-        try:
-            await conn.execute(text(
-                f"SELECT create_hypertable('{tbl}', '{col}', "
-                "if_not_exists => TRUE, migrate_data => TRUE)"
-            ))
-        except Exception:
-            _db_logger.warning(
-                "Could not create hypertable for %s (TimescaleDB may not be installed)", tbl
-            )
+        await _safe_execute(
+            conn,
+            f"SELECT create_hypertable('{tbl}', '{col}', "
+            "if_not_exists => TRUE, migrate_data => TRUE)",
+            f"create hypertable for {tbl}",
+        )
 
     # 2. Continuous aggregates — must match the column names used in analytics.py
     _cagg_ddl = [
-        """
-        CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_readings_5min
-        WITH (timescaledb.continuous) AS
-        SELECT
-            sensor_id,
-            zone_id,
-            time_bucket('5 minutes', recorded_at) AS bucket,
-            avg(temperature_c) AS avg_temperature_c,
-            avg(humidity) AS avg_humidity,
-            avg(lux) AS avg_lux,
-            bool_or(presence) AS presence
-        FROM sensor_readings
-        GROUP BY sensor_id, zone_id, bucket
-        """,
-        """
-        CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_readings_hourly
-        WITH (timescaledb.continuous) AS
-        SELECT
-            sensor_id,
-            zone_id,
-            time_bucket('1 hour', recorded_at) AS bucket,
-            avg(temperature_c) AS avg_temperature_c,
-            avg(humidity) AS avg_humidity,
-            avg(lux) AS avg_lux,
-            bool_or(presence) AS presence
-        FROM sensor_readings
-        GROUP BY sensor_id, zone_id, bucket
-        """,
-        """
-        CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_readings_daily
-        WITH (timescaledb.continuous) AS
-        SELECT
-            sensor_id,
-            zone_id,
-            time_bucket('1 day', recorded_at) AS bucket,
-            avg(temperature_c) AS avg_temperature_c,
-            avg(humidity) AS avg_humidity,
-            avg(lux) AS avg_lux,
-            bool_or(presence) AS presence
-        FROM sensor_readings
-        GROUP BY sensor_id, zone_id, bucket
-        """,
+        (
+            "sensor_readings_5min",
+            """
+            CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_readings_5min
+            WITH (timescaledb.continuous) AS
+            SELECT
+                sensor_id,
+                zone_id,
+                time_bucket('5 minutes', recorded_at) AS bucket,
+                avg(temperature_c) AS avg_temperature_c,
+                avg(humidity) AS avg_humidity,
+                avg(lux) AS avg_lux,
+                bool_or(presence) AS presence
+            FROM sensor_readings
+            GROUP BY sensor_id, zone_id, bucket
+            """,
+        ),
+        (
+            "sensor_readings_hourly",
+            """
+            CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_readings_hourly
+            WITH (timescaledb.continuous) AS
+            SELECT
+                sensor_id,
+                zone_id,
+                time_bucket('1 hour', recorded_at) AS bucket,
+                avg(temperature_c) AS avg_temperature_c,
+                avg(humidity) AS avg_humidity,
+                avg(lux) AS avg_lux,
+                bool_or(presence) AS presence
+            FROM sensor_readings
+            GROUP BY sensor_id, zone_id, bucket
+            """,
+        ),
+        (
+            "sensor_readings_daily",
+            """
+            CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_readings_daily
+            WITH (timescaledb.continuous) AS
+            SELECT
+                sensor_id,
+                zone_id,
+                time_bucket('1 day', recorded_at) AS bucket,
+                avg(temperature_c) AS avg_temperature_c,
+                avg(humidity) AS avg_humidity,
+                avg(lux) AS avg_lux,
+                bool_or(presence) AS presence
+            FROM sensor_readings
+            GROUP BY sensor_id, zone_id, bucket
+            """,
+        ),
     ]
-    for ddl in _cagg_ddl:
-        try:
-            await conn.execute(text(ddl))
-        except Exception as exc:
-            _db_logger.warning("Could not create continuous aggregate: %s", exc)
+    for name, ddl in _cagg_ddl:
+        await _safe_execute(conn, ddl, f"create continuous aggregate {name}")
 
     # 3. Refresh policies (idempotent via IF NOT EXISTS in newer TimescaleDB,
     #    but older versions raise on duplicate — catch and ignore)
@@ -482,35 +507,35 @@ async def _ensure_timescaledb_objects(conn: Any) -> None:
         ("sensor_readings_daily", "'3 days'", "'1 day'", "'1 day'"),
     ]
     for view, start_off, end_off, interval in _policies:
-        try:
-            await conn.execute(text(
-                f"SELECT add_continuous_aggregate_policy('{view}', "
-                f"start_offset => INTERVAL {start_off}, "
-                f"end_offset => INTERVAL {end_off}, "
-                f"schedule_interval => INTERVAL {interval}, "
-                "if_not_exists => TRUE)"
-            ))
-        except Exception:
-            _db_logger.debug("Aggregate policy for %s already exists or not supported", view)
+        await _safe_execute(
+            conn,
+            f"SELECT add_continuous_aggregate_policy('{view}', "
+            f"start_offset => INTERVAL {start_off}, "
+            f"end_offset => INTERVAL {end_off}, "
+            f"schedule_interval => INTERVAL {interval}, "
+            "if_not_exists => TRUE)",
+            f"add refresh policy for {view}",
+            level="debug",
+        )
 
     # 4. Manual refresh so data is available immediately on startup
     for view in ("sensor_readings_5min", "sensor_readings_hourly", "sensor_readings_daily"):
-        try:
-            await conn.execute(text(
-                f"CALL refresh_continuous_aggregate('{view}', NULL, NULL)"
-            ))
-        except Exception:
-            _db_logger.debug("Could not refresh %s (may not exist yet or no data)", view)
+        await _safe_execute(
+            conn,
+            f"CALL refresh_continuous_aggregate('{view}', NULL, NULL)",
+            f"refresh {view}",
+            level="debug",
+        )
 
     # 5. Compression policies
     for tbl in ("sensor_readings", "device_actions"):
-        try:
-            await conn.execute(text(
-                f"SELECT add_compression_policy('{tbl}', "
-                "INTERVAL '30 days', if_not_exists => TRUE)"
-            ))
-        except Exception:
-            _db_logger.debug("Compression policy for %s already exists or not supported", tbl)
+        await _safe_execute(
+            conn,
+            f"SELECT add_compression_policy('{tbl}', "
+            "INTERVAL '30 days', if_not_exists => TRUE)",
+            f"add compression policy for {tbl}",
+            level="debug",
+        )
 
     _db_logger.info("TimescaleDB hypertables and continuous aggregates ensured")
 
