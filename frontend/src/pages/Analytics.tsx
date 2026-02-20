@@ -88,7 +88,7 @@ export const Analytics = () => {
   const unitKey: 'c' | 'f' = temperatureUnit === 'celsius' ? 'c' : 'f'
   const [activeTab, setActiveTab] = useState<AnalyticsTab>('temperature')
   const [hours, setHours] = useState(24)
-  const [selectedZoneId, setSelectedZoneId] = useState<string | null>('all')
+  const [selectedZoneIds, setSelectedZoneIds] = useState<Set<string>>(new Set(['all']))
 
   // Fetch zones
   const { data: zones } = useQuery<ZoneBackend[]>({
@@ -96,8 +96,36 @@ export const Analytics = () => {
     queryFn: () => api.get<ZoneBackend[]>('/zones'),
   })
 
-  // For single-zone views, fall back to first zone if nothing specific selected
-  const effectiveZoneId = selectedZoneId === 'all' ? 'all' : (selectedZoneId ?? zones?.[0]?.id ?? null)
+  const isAllZones = selectedZoneIds.has('all')
+  // For single-zone views (exactly one zone selected), use that zone's ID
+  const selectedArray = Array.from(selectedZoneIds).filter((id) => id !== 'all')
+
+  const toggleZone = (zoneId: string) => {
+    setSelectedZoneIds((prev) => {
+      const next = new Set(prev)
+      // If clicking "all", reset to all
+      if (zoneId === 'all') {
+        return new Set(['all'])
+      }
+      // Remove "all" when selecting specific zones
+      next.delete('all')
+      // Toggle the zone
+      if (next.has(zoneId)) {
+        next.delete(zoneId)
+      } else {
+        next.add(zoneId)
+      }
+      // If nothing selected, go back to "all"
+      if (next.size === 0) {
+        return new Set(['all'])
+      }
+      // If all zones are now individually selected, switch to "all"
+      if (zones && next.size === zones.length) {
+        return new Set(['all'])
+      }
+      return next
+    })
+  }
 
   return (
     <div className="space-y-6">
@@ -147,31 +175,47 @@ export const Analytics = () => {
       {(activeTab === 'temperature' || activeTab === 'occupancy') && zones && zones.length > 0 && (
         <div className="flex flex-wrap gap-2">
           <Button
-            variant={effectiveZoneId === 'all' ? 'default' : 'outline'}
+            variant={isAllZones ? 'default' : 'outline'}
             size="sm"
-            onClick={() => setSelectedZoneId('all')}
+            onClick={() => toggleZone('all')}
           >
             All Zones
           </Button>
           {zones.map((zone) => (
             <Button
               key={zone.id}
-              variant={effectiveZoneId === zone.id ? 'default' : 'outline'}
+              variant={!isAllZones && selectedZoneIds.has(zone.id) ? 'default' : 'outline'}
               size="sm"
-              onClick={() => setSelectedZoneId(zone.id)}
+              onClick={() => toggleZone(zone.id)}
             >
               {zone.name}
             </Button>
           ))}
+          {!isAllZones && selectedArray.length > 1 && (
+            <span className="flex items-center text-xs text-muted-foreground">
+              {selectedArray.length} zones selected
+            </span>
+          )}
         </div>
       )}
 
       {/* Tab Content */}
       {activeTab === 'temperature' && (
-        <TemperatureTab zoneId={effectiveZoneId} hours={hours} zones={zones} unitKey={unitKey} />
+        <TemperatureTab
+          selectedZoneIds={selectedArray}
+          isAllZones={isAllZones}
+          hours={hours}
+          zones={zones}
+          unitKey={unitKey}
+        />
       )}
       {activeTab === 'occupancy' && (
-        <OccupancyTab zoneId={effectiveZoneId} hours={hours} zones={zones} />
+        <OccupancyTab
+          selectedZoneIds={selectedArray}
+          isAllZones={isAllZones}
+          hours={hours}
+          zones={zones}
+        />
       )}
       {activeTab === 'energy' && <EnergyTab hours={hours} />}
       {activeTab === 'comfort' && <ComfortTab hours={hours} unitKey={unitKey} />}
@@ -184,38 +228,47 @@ export const Analytics = () => {
 // Temperature History Tab
 // ============================================================================
 function TemperatureTab({
-  zoneId,
+  selectedZoneIds,
+  isAllZones,
   hours,
   zones,
   unitKey,
 }: {
-  zoneId: string | null
+  selectedZoneIds: string[]
+  isAllZones: boolean
   hours: number
   zones?: ZoneBackend[]
   unitKey: 'c' | 'f'
 }) {
   const [metricView, setMetricView] = useState<'temperature' | 'humidity'>('temperature')
-  const isAllZones = zoneId === 'all'
+  const isSingleZone = !isAllZones && selectedZoneIds.length === 1
+  const isMultiZone = !isAllZones && selectedZoneIds.length > 1
+  const singleZoneId = isSingleZone ? selectedZoneIds[0] : null
 
   // Single-zone history query
   const { data: history, isLoading: historyLoading } = useQuery<HistoryResponse>({
-    queryKey: ['zone-history', zoneId, hours],
+    queryKey: ['zone-history', singleZoneId, hours],
     queryFn: () =>
-      api.get<HistoryResponse>(`/analytics/zones/${zoneId}/history`, {
+      api.get<HistoryResponse>(`/analytics/zones/${singleZoneId}/history`, {
         hours,
         resolution: hours > 24 ? 900 : 300,
       }),
-    enabled: !!zoneId && !isAllZones,
+    enabled: isSingleZone,
   })
 
-  // Overview query for all zones
+  // Overview query for all zones or multi-zone selection
   const { data: overview, isLoading: overviewLoading } = useQuery<OverviewResponse>({
-    queryKey: ['analytics-overview', hours],
-    queryFn: () => api.get<OverviewResponse>('/analytics/overview', { hours }),
-    enabled: isAllZones,
+    queryKey: ['analytics-overview', hours, isAllZones ? 'all' : selectedZoneIds.join(',')],
+    queryFn: () =>
+      api.get<OverviewResponse>('/analytics/overview', {
+        hours,
+        ...(isMultiZone ? { zone_ids: selectedZoneIds } : {}),
+      }),
+    enabled: isAllZones || isMultiZone,
   })
 
-  const isLoading = isAllZones ? overviewLoading : historyLoading
+  const useOverview = isAllZones || isMultiZone
+  const isLoading = useOverview ? overviewLoading : historyLoading
 
   // Single-zone chart data
   const singleZoneChartData = useMemo(() => {
@@ -301,15 +354,15 @@ function TemperatureTab({
     }
   }, [overview])
 
-  const zoneName = zones?.find((z) => z.id === zoneId)?.name ?? 'Zone'
+  const zoneName = isSingleZone ? (zones?.find((z) => z.id === singleZoneId)?.name ?? 'Zone') : 'Selected Zones'
 
   // Build zone list for multi-line chart
   const overviewZones = overview?.zones ?? []
 
   return (
     <div className="space-y-6">
-      {/* Summary Stats - All Zones */}
-      {isAllZones && overviewStats && (
+      {/* Summary Stats - Multi/All Zones */}
+      {useOverview && overviewStats && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Card className="border-border/60">
             <CardContent className="p-4">
@@ -351,7 +404,7 @@ function TemperatureTab({
       )}
 
       {/* Summary Stats - Single Zone */}
-      {!isAllZones && history && (
+      {isSingleZone && history && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Card className="border-border/60">
             <CardContent className="p-4">
@@ -396,19 +449,19 @@ function TemperatureTab({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <CardTitle>
-                {isAllZones
-                  ? `All Zones - ${metricView === 'temperature' ? 'Temperature' : 'Humidity'} (${hours}h)`
+                {useOverview
+                  ? `${isAllZones ? 'All Zones' : `${selectedZoneIds.length} Zones`} - ${metricView === 'temperature' ? 'Temperature' : 'Humidity'} (${hours}h)`
                   : `${zoneName} - Temperature & Humidity (${hours}h)`}
               </CardTitle>
               <CardDescription>
-                {isAllZones
+                {useOverview
                   ? metricView === 'temperature'
                     ? `Temperature shown in ${tempUnitLabel(unitKey)}`
                     : 'Humidity shown in %'
                   : `Temperature shown in ${tempUnitLabel(unitKey)}`}
               </CardDescription>
             </div>
-            {isAllZones && (
+            {useOverview && (
               <div className="flex rounded-xl border border-border/60 p-0.5">
                 <Button
                   variant={metricView === 'temperature' ? 'default' : 'ghost'}
@@ -435,7 +488,7 @@ function TemperatureTab({
             <div className="flex h-80 items-center justify-center">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </div>
-          ) : isAllZones ? (
+          ) : useOverview ? (
             multiZoneChartData.length > 0 ? (
               <ResponsiveContainer width="100%" height={350}>
                 <LineChart data={multiZoneChartData}>
@@ -547,7 +600,7 @@ function TemperatureTab({
             </ResponsiveContainer>
           ) : (
             <div className="flex h-80 items-center justify-center text-muted-foreground">
-              {zoneId ? 'No data available for this time period' : 'Select a zone to view data'}
+              {singleZoneId ? 'No data available for this time period' : 'Select a zone to view data'}
             </div>
           )}
         </CardContent>
@@ -560,34 +613,43 @@ function TemperatureTab({
 // Occupancy Heatmap Tab
 // ============================================================================
 function OccupancyTab({
-  zoneId,
+  selectedZoneIds,
+  isAllZones,
   hours,
 }: {
-  zoneId: string | null
+  selectedZoneIds: string[]
+  isAllZones: boolean
   hours: number
   zones?: ZoneBackend[]
 }) {
-  const isAllZones = zoneId === 'all'
+  const isSingleZone = !isAllZones && selectedZoneIds.length === 1
+  const isMultiZone = !isAllZones && selectedZoneIds.length > 1
+  const singleZoneId = isSingleZone ? selectedZoneIds[0] : null
+  const useOverview = isAllZones || isMultiZone
 
   // Single-zone history query
   const { data: history, isLoading: historyLoading } = useQuery<HistoryResponse>({
-    queryKey: ['zone-history-occupancy', zoneId, hours],
+    queryKey: ['zone-history-occupancy', singleZoneId, hours],
     queryFn: () =>
-      api.get<HistoryResponse>(`/analytics/zones/${zoneId}/history`, {
+      api.get<HistoryResponse>(`/analytics/zones/${singleZoneId}/history`, {
         hours: Math.min(hours, 168),
         resolution: 3600,
       }),
-    enabled: !!zoneId && !isAllZones,
+    enabled: isSingleZone,
   })
 
-  // Overview query for all zones
+  // Overview query for all zones or multi-zone selection
   const { data: overview, isLoading: overviewLoading } = useQuery<OverviewResponse>({
-    queryKey: ['analytics-overview', hours],
-    queryFn: () => api.get<OverviewResponse>('/analytics/overview', { hours }),
-    enabled: isAllZones,
+    queryKey: ['analytics-overview-occ', hours, isAllZones ? 'all' : selectedZoneIds.join(',')],
+    queryFn: () =>
+      api.get<OverviewResponse>('/analytics/overview', {
+        hours,
+        ...(isMultiZone ? { zone_ids: selectedZoneIds } : {}),
+      }),
+    enabled: useOverview,
   })
 
-  const isLoading = isAllZones ? overviewLoading : historyLoading
+  const isLoading = useOverview ? overviewLoading : historyLoading
 
   // Build heatmap data: 7 days x 24 hours (single zone)
   const heatmapData = useMemo(() => {
@@ -670,8 +732,8 @@ function OccupancyTab({
 
   return (
     <div className="space-y-6">
-      {/* All Zones - Grouped Bar Chart */}
-      {isAllZones && (
+      {/* All/Multi Zones - Grouped Bar Chart */}
+      {useOverview && (
         <Card className="border-border/60">
           <CardHeader>
             <CardTitle>Occupancy by Hour - All Zones</CardTitle>
@@ -738,7 +800,7 @@ function OccupancyTab({
       )}
 
       {/* Single Zone - Occupancy by Hour Bar Chart */}
-      {!isAllZones && (
+      {isSingleZone && (
         <Card className="border-border/60">
           <CardHeader>
             <CardTitle>Occupancy by Hour</CardTitle>
@@ -791,7 +853,7 @@ function OccupancyTab({
               </ResponsiveContainer>
             ) : (
               <div className="flex h-64 items-center justify-center text-muted-foreground">
-                {zoneId ? 'No occupancy data available' : 'Select a zone to view data'}
+                {singleZoneId ? 'No occupancy data available' : 'Select a zone to view data'}
               </div>
             )}
           </CardContent>
@@ -799,7 +861,7 @@ function OccupancyTab({
       )}
 
       {/* Single Zone - Heatmap Grid */}
-      {!isAllZones && heatmapData.length > 0 && (
+      {isSingleZone && heatmapData.length > 0 && (
         <Card className="border-border/60">
           <CardHeader>
             <CardTitle>Weekly Occupancy Heatmap</CardTitle>

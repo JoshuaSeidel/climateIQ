@@ -210,19 +210,34 @@ class OverviewResponse(BaseModel):
 async def get_overview(
     db: Annotated[AsyncSession, Depends(get_db)],
     hours: Annotated[int, Query(ge=1, le=720, description="Lookback window in hours")] = 24,
+    zone_ids: Annotated[
+        str | None,
+        Query(description="Comma-separated zone UUIDs to filter (omit for all zones)"),
+    ] = None,
 ) -> OverviewResponse:
-    """Return temperature, humidity, and occupancy history for ALL zones.
+    """Return temperature, humidity, and occupancy history for zones.
 
     Uses the best-fit TimescaleDB continuous aggregate view and returns one
     time series per zone so the frontend can render a multi-line chart.
+
+    Pass ``zone_ids`` as a comma-separated list of UUIDs to filter to
+    specific zones.  Omit the parameter to include all active zones.
     """
     period_end = datetime.now(UTC)
     period_start = period_end - timedelta(hours=hours)
 
-    # Get all active zones
-    zones_result = await db.execute(
-        select(Zone).where(Zone.is_active.is_(True)).order_by(Zone.name)
-    )
+    # Get zones — optionally filtered by zone_ids
+    zone_filter_uuids: list[uuid.UUID] | None = None
+    if zone_ids:
+        try:
+            zone_filter_uuids = [uuid.UUID(zid.strip()) for zid in zone_ids.split(",") if zid.strip()]
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid zone_ids format") from None
+
+    zone_stmt = select(Zone).where(Zone.is_active.is_(True)).order_by(Zone.name)
+    if zone_filter_uuids:
+        zone_stmt = zone_stmt.where(Zone.id.in_(zone_filter_uuids))
+    zones_result = await db.execute(zone_stmt)
     zones = zones_result.scalars().all()
     if not zones:
         return OverviewResponse(
@@ -234,7 +249,7 @@ async def get_overview(
     # Eagerly capture zone info before any DB operation that might rollback
     # and expire ORM state (which would trigger MissingGreenlet on lazy load).
     zone_info = [(z.id, z.name) for z in zones]
-    zone_ids = [str(zid) for zid, _ in zone_info]
+    zone_id_strs = [str(zid) for zid, _ in zone_info]
 
     view = _pick_overview_view(hours)
     use_raw_fallback = False
@@ -266,7 +281,7 @@ async def get_overview(
     """  # noqa: S608
     )
 
-    params = {"zone_ids": zone_ids, "start": period_start, "end": period_end}
+    params = {"zone_ids": zone_id_strs, "start": period_start, "end": period_end}
 
     try:
         data_result = await db.execute(data_stmt, params)
@@ -643,18 +658,32 @@ async def get_energy_usage(
         float,
         Query(ge=0.0, description="Electricity cost per kWh in USD"),
     ] = 0.12,
+    zone_ids: Annotated[
+        str | None,
+        Query(description="Comma-separated zone UUIDs to filter (omit for all zones)"),
+    ] = None,
 ) -> EnergyResponse:
-    """Estimate energy usage across all zones based on device actions.
+    """Estimate energy usage across zones based on device actions.
 
     This is a heuristic estimate: each device action is assumed to represent
     a period of active operation, and energy is estimated using rough per-device
     wattage rates.
+
+    Pass ``zone_ids`` as a comma-separated list of UUIDs to filter to
+    specific zones.  Omit the parameter to include all zones.
     """
     period_end = datetime.now(UTC)
     period_start = period_end - timedelta(hours=hours)
 
-    # Fetch all zones with devices
-    zones_result = await db.execute(select(Zone).order_by(Zone.name))
+    # Fetch zones — optionally filtered by zone_ids
+    zone_stmt = select(Zone).order_by(Zone.name)
+    if zone_ids:
+        try:
+            zone_filter_uuids = [uuid.UUID(zid.strip()) for zid in zone_ids.split(",") if zid.strip()]
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid zone_ids format") from None
+        zone_stmt = zone_stmt.where(Zone.id.in_(zone_filter_uuids))
+    zones_result = await db.execute(zone_stmt)
     zones = zones_result.scalars().all()
     if not zones:
         return EnergyResponse(
@@ -666,8 +695,8 @@ async def get_energy_usage(
             zones=[],
         )
 
-    zone_ids = [zone.id for zone in zones]
-    devices_result = await db.execute(select(Device).where(Device.zone_id.in_(zone_ids)))
+    active_zone_ids = [zone.id for zone in zones]
+    devices_result = await db.execute(select(Device).where(Device.zone_id.in_(active_zone_ids)))
     devices = devices_result.scalars().all()
     devices_by_zone: dict[uuid.UUID, list[Device]] = {}
     for device in devices:
@@ -701,7 +730,7 @@ async def get_energy_usage(
         select(Device.zone_id, Device.type, func.count(DeviceAction.id).label("cnt"))
         .join(DeviceAction, DeviceAction.device_id == Device.id)
         .where(
-            Device.zone_id.in_(zone_ids),
+            Device.zone_id.in_(active_zone_ids),
             DeviceAction.created_at >= period_start,
             DeviceAction.created_at <= period_end,
         )
@@ -784,6 +813,10 @@ async def get_comfort_scores(
         float,
         Query(description="Comfort humidity upper bound (%)"),
     ] = COMFORT_HUMIDITY_MAX,
+    zone_ids: Annotated[
+        str | None,
+        Query(description="Comma-separated zone UUIDs to filter (omit for all zones)"),
+    ] = None,
 ) -> ComfortResponse:
     """Compute a 0-100 comfort score for each zone based on recent readings.
 
@@ -793,13 +826,21 @@ async def get_comfort_scores(
 
     Uses the ``sensor_readings_hourly`` continuous aggregate for efficient
     bulk computation across all zones in a single query.
+
+    Pass ``zone_ids`` as a comma-separated list of UUIDs to filter to
+    specific zones.  Omit the parameter to include all active zones.
     """
     period_end = datetime.now(UTC)
     period_start = period_end - timedelta(hours=hours)
 
-    zones_result = await db.execute(
-        select(Zone).where(Zone.is_active.is_(True)).order_by(Zone.name)
-    )
+    zone_stmt = select(Zone).where(Zone.is_active.is_(True)).order_by(Zone.name)
+    if zone_ids:
+        try:
+            zone_filter_uuids = [uuid.UUID(zid.strip()) for zid in zone_ids.split(",") if zid.strip()]
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid zone_ids format") from None
+        zone_stmt = zone_stmt.where(Zone.id.in_(zone_filter_uuids))
+    zones_result = await db.execute(zone_stmt)
     zones = zones_result.scalars().all()
     # Eagerly capture zone info before any rollback can expire ORM state
     zone_info = [(z.id, z.name) for z in zones]
@@ -863,8 +904,8 @@ async def get_comfort_scores(
             ],
         )
 
-        zone_ids = [zid for zid, _ in zone_info]
-        if zone_ids:
+        active_zone_ids = [zid for zid, _ in zone_info]
+        if active_zone_ids:
             from sqlalchemy import case
 
             raw_stmt = (
@@ -911,7 +952,7 @@ async def get_comfort_scores(
                     ).label("hum_total"),
                 )
                 .where(
-                    SensorReading.zone_id.in_(zone_ids),
+                    SensorReading.zone_id.in_(active_zone_ids),
                     SensorReading.recorded_at >= period_start,
                     SensorReading.recorded_at <= period_end,
                 )

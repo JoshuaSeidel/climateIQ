@@ -36,15 +36,23 @@ export const BASE_PATH = detectBasePath()
 
 const API_BASE = `${BASE_PATH}/api/v1`
 
+type ParamValue = string | number | boolean | undefined
 type FetchOptions = RequestInit & {
-  params?: Record<string, string | number | boolean | undefined>
+  params?: Record<string, ParamValue | ParamValue[]>
 }
 
 const buildUrl = (path: string, params?: FetchOptions['params']) => {
   const url = new URL(`${API_BASE}${path}`, window.location.origin)
   if (params) {
     Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
+      if (value === undefined) return
+      if (Array.isArray(value)) {
+        // Join array values as comma-separated string
+        const filtered = value.filter((v) => v !== undefined)
+        if (filtered.length > 0) {
+          url.searchParams.set(key, filtered.map(String).join(','))
+        }
+      } else {
         url.searchParams.set(key, String(value))
       }
     })
