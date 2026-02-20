@@ -1,5 +1,178 @@
 # Changelog
 
+## 0.7.8
+
+### Added
+
+- **Multi-zone selection in Analytics** — the zone selector on Temperature,
+  Occupancy, and Energy tabs now supports selecting multiple specific zones
+  (toggle buttons) in addition to "All Zones" or a single zone. Previously
+  only "All Zones" or one zone at a time was possible.
+
+- **`zone_ids` query parameter** on `/analytics/overview`, `/analytics/energy`,
+  and `/analytics/comfort` endpoints — accepts a comma-separated list of zone
+  UUIDs to filter results to a subset of zones.
+
+- **Array parameter support in `buildUrl`** — the frontend API helper now
+  supports `ParamValue[]` types, joining array values as comma-separated
+  strings for query parameters.
+
+## 0.7.7
+
+### Added
+
+- **ZoneManager wired into production** — the ZoneManager singleton is now
+  initialized at startup, hydrated from the database with all active zones,
+  and fed real-time sensor data from the WebSocket stream. Zone states are
+  maintained with EMA-smoothed sensor values and live comfort scoring.
+
+- **RuleEngine background task** — runs every 2 minutes to enforce comfort
+  band limits, humidity control, occupancy-based setback adjustments, and
+  anomaly detection across all zones.
+
+- **PID Controller vent optimization** — per-zone PID controllers run every
+  3 minutes, computing smart vent positions (10–100% open) based on the
+  difference between current and target temperatures, with anti-windup and
+  autotuning support.
+
+- **PatternEngine learning** — occupancy and thermal pattern learning runs
+  every 30 minutes, building per-zone models of typical occupancy schedules
+  and thermal response characteristics for preconditioning.
+
+- **Schedule preconditioning** — when a schedule is approaching, the pattern
+  engine's thermal model is used to start heating/cooling early so the zone
+  reaches the target temperature by the scheduled start time.
+
+- **Schedule zone verification** — after a schedule fires, the system
+  monitors zone sensors and sends a notification alert if any zone is more
+  than 1.5°C off its target temperature after 15 minutes.
+
+### Fixed
+
+- **Cover automation crash** — `execute_cover_automation()` referenced
+  `app_state.ha_client` which doesn't exist on the AppState dataclass.
+  Fixed to use `_deps._ha_client`.
+
+## 0.7.6
+
+### Fixed
+
+- **Hypertable primary key incompatibility** — TimescaleDB requires the
+  partitioning column (`recorded_at`) to be part of all unique constraints.
+  The `sensor_readings` and `device_actions` tables had UUID-only primary
+  keys, causing `create_hypertable` to fail. Fixed by dropping the UUID-only
+  PK and adding a composite primary key `(id, recorded_at)`.
+
+- **Continuous aggregates fail inside transactions** — `CREATE MATERIALIZED
+  VIEW ... WITH (timescaledb.continuous)` cannot run inside a transaction
+  block. Previously these ran inside `engine.begin()` and silently failed.
+  Now continuous aggregates are created on a separate AUTOCOMMIT connection.
+
+## 0.7.5
+
+### Fixed
+
+- **Database init cascade failure** — `_ensure_timescaledb_objects()` ran all
+  DDL inside a single transaction. When the first `create_hypertable` call
+  failed, PostgreSQL put the transaction into `InFailedSqlTransaction` state,
+  causing ALL subsequent DDL (continuous aggregates, policies) to silently
+  fail. Restructured to use SAVEPOINTs so each DDL statement is isolated —
+  a failure in one does not abort the rest.
+
+### Changed
+
+- **Dynamic version banner** — `run.sh` now reads the version from
+  `/app/VERSION` at runtime instead of having it hardcoded. One fewer file
+  to update on version bumps.
+
+## 0.7.4
+
+### Fixed
+
+- **Sensor health check verifies with HA before alerting** — `check_sensor_health`
+  previously relied solely on the `Sensor.last_seen` database timestamp to
+  declare sensors offline. Now it pings the Home Assistant REST API
+  (`get_state()`) to verify the entity is actually unavailable before sending
+  a false offline notification.
+
+- **Comfort scores raw fallback** — the `/analytics/comfort` endpoint now
+  falls back to raw `sensor_readings` data when TimescaleDB continuous
+  aggregate views don't exist, instead of returning empty results.
+
+## 0.7.3
+
+### Fixed
+
+- **Analytics MissingGreenlet crash** — `get_overview()` called `db.rollback()`
+  in except blocks, which expired Zone ORM objects. Subsequent access to
+  `zone.id` / `zone.name` triggered synchronous lazy-loading inside an async
+  context, raising `MissingGreenlet`. Fixed by eagerly capturing zone info
+  (`[(z.id, z.name) for z in zones]`) before any rollback can occur.
+
+- **Dashboard humidity display** — `_enrich_zone_response` queried the last
+  50 `SensorReading` rows and picked the first match per field. Humidity
+  readings were pushed out of the 50-row window by more frequent temperature
+  updates. Replaced with 4 targeted queries (one per field: temperature,
+  humidity, lux, occupancy), each fetching only the latest row.
+
+- **Raw fallback for overview endpoint** — when TimescaleDB aggregate views
+  are missing, the overview endpoint now falls back to querying raw
+  `sensor_readings` instead of returning empty time series.
+
+## 0.7.2
+
+### Fixed
+
+- **Sensor offline false alerts** — `check_sensor_health` was sending
+  offline notifications based on stale `last_seen` timestamps even when
+  sensors were actively reporting. Improved the health check logic to
+  reduce false positives.
+
+- **Analytics zero-data** — multiple analytics endpoints returned empty
+  results due to query issues with the continuous aggregate views. Fixed
+  query logic to properly handle missing or empty aggregate data.
+
+- **Dashboard zone navigation** — clicking a zone card on the Dashboard
+  now navigates to the zone detail view. Previously zone cards were not
+  clickable.
+
+## 0.7.1
+
+### Added
+
+- **Lux-driven cover automation** — new background task that monitors
+  illuminance sensors and automatically adjusts cover/blind positions
+  based on configurable lux thresholds. Closes covers when lux exceeds
+  the high threshold (reduce solar heat gain) and opens them when below
+  the low threshold.
+
+- **Occupancy inference** — zones without dedicated occupancy sensors can
+  now infer occupancy from motion sensor activity patterns and door
+  sensor state changes.
+
+### Improved
+
+- **Dashboard enhancements** — zone cards show set temperature alongside
+  current temperature, improved visual hierarchy and status indicators.
+
+## 0.7.0
+
+### Added
+
+- **Lux display in zone detail view** — zones with illuminance sensors
+  now show the current lux reading on a dedicated card in the zone
+  detail page.
+
+- **Occupancy display in zone detail view** — zones with occupancy or
+  motion sensors now show the current occupancy state in the zone detail
+  page.
+
+### Fixed
+
+- **Dashboard humidity not showing** — humidity values were missing from
+  zone cards due to the sensor reading query window being too narrow.
+  Initial fix applied here, with a more thorough fix in v0.7.3.
+
 ## 0.6.8
 
 ### Fixed
