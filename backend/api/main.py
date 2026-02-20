@@ -36,6 +36,10 @@ from backend.api.middleware import (
 from backend.api.routes import api_router
 from backend.api.websocket import ConnectionManager
 from backend.config import get_settings
+from backend.core.pattern_engine import OccupancyReading, PatternEngine, ThermalReading
+from backend.core.pid_controller import PIDConfig, PIDController
+from backend.core.rule_engine import RuleEngine
+from backend.core.zone_manager import ZoneManager
 from backend.integrations.ha_websocket import HAWebSocketClient
 from backend.models.database import close_db, get_session_maker, init_db
 from backend.services.notification_service import NotificationService
@@ -65,6 +69,10 @@ class AppState:
         self.ha_ws: HAWebSocketClient | None = None
         self.startup_time: datetime | None = None
         self.is_healthy: bool = False
+        self.zone_manager: ZoneManager | None = None
+        self.rule_engine: RuleEngine | None = None
+        self.pattern_engine: PatternEngine | None = None
+        self.pid_controllers: dict[str, PIDController] = {}
 
 
 app_state = AppState()
@@ -135,6 +143,23 @@ async def poll_zone_status() -> None:
                     }
                 )
                 logger.debug(f"Broadcast status for {len(zones_data)} zones")
+
+            # ── Refresh ZoneManager comfort metrics from DB ─────────────
+            if app_state.zone_manager:
+                for zone in zones:
+                    state = app_state.zone_manager.get_state(zone.id)
+                    if state:
+                        prefs = zone.comfort_preferences or {}
+                        temp_min = prefs.get("temp_min")
+                        temp_max = prefs.get("temp_max")
+                        if temp_min is not None and temp_max is not None:
+                            target = (float(temp_min) + float(temp_max)) / 2.0
+                            state.set_metric("target_temperature_c", target)
+                            state.set_metric("comfort_min_c", float(temp_min))
+                            state.set_metric("comfort_max_c", float(temp_max))
+                        humidity_target = prefs.get("target_humidity")
+                        if humidity_target is not None:
+                            state.set_metric("target_humidity", float(humidity_target))
     except Exception as e:
         logger.error(f"Error polling zone status: {e}")
 
@@ -454,17 +479,62 @@ async def execute_schedules() -> None:
                 if current_dow not in (schedule.days_of_week or []):
                     continue
 
-                # Check time window (within 2 minutes of start_time)
+                # Parse schedule start time
                 try:
                     sched_hour, sched_min = map(int, schedule.start_time.split(":"))
                     sched_dt = now_utc.replace(
                         hour=sched_hour, minute=sched_min, second=0, microsecond=0
                     )
-                    delta = abs((now_utc - sched_dt).total_seconds())
-                    if delta > 120:  # 2-minute window
-                        continue
                 except (ValueError, AttributeError):
                     logger.warning("Invalid start_time '%s' on schedule %s", schedule.start_time, schedule.id)
+                    continue
+
+                # ── Preconditioning: start HVAC early if needed ─────────
+                precondition_key = f"precondition:{schedule.id}:{now_utc.strftime('%Y-%m-%d')}"
+                seconds_until_start = (sched_dt - now_utc).total_seconds()
+                if (
+                    seconds_until_start > 120
+                    and precondition_key not in _last_executed_schedules
+                    and app_state.zone_manager
+                ):
+                    raw_zone_ids_pre = schedule.zone_ids or []
+                    for zid_str in raw_zone_ids_pre:
+                        try:
+                            _zid = uuid.UUID(str(zid_str))
+                        except (ValueError, AttributeError):
+                            continue
+                        zstate = app_state.zone_manager.get_state(_zid)
+                        if not zstate:
+                            continue
+                        # Use PatternEngine preconditioning time if available
+                        precond_minutes = 15  # default
+                        if app_state.pattern_engine:
+                            try:
+                                precond_minutes = app_state.pattern_engine.get_preconditioning_time(
+                                    str(_zid)
+                                )
+                            except Exception:  # noqa: S110
+                                pass
+                        if 0 < seconds_until_start <= precond_minutes * 60:
+                            # Start preconditioning
+                            target_temp_pre = schedule.target_temp_c
+                            if temp_unit == "F":
+                                target_temp_pre = round(schedule.target_temp_c * 9 / 5 + 32, 1)
+                            try:
+                                await ha_client.set_temperature(climate_entity, target_temp_pre)
+                                _last_executed_schedules.add(precondition_key)
+                                logger.info(
+                                    "Preconditioning: starting HVAC %d min early for schedule '%s'",
+                                    precond_minutes,
+                                    schedule.name,
+                                )
+                            except Exception as pre_err:
+                                logger.warning("Preconditioning failed for '%s': %s", schedule.name, pre_err)
+                            break  # Only precondition once per schedule
+
+                # Check time window (within 2 minutes of start_time)
+                delta = abs((now_utc - sched_dt).total_seconds())
+                if delta > 120:  # 2-minute window
                     continue
 
                 # Dedup: don't re-execute within the same occurrence window
@@ -553,6 +623,50 @@ async def execute_schedules() -> None:
                             await db.commit()
                     except Exception as action_err:
                         logger.debug("Could not record device action: %s", action_err)
+
+                    # ── Verify zone temperatures for active schedules ───
+                    if raw_zone_ids:
+                        from backend.models.database import SensorReading as _SR
+
+                        zone_uuids_verify = []
+                        for zid_str in raw_zone_ids:
+                            try:
+                                zone_uuids_verify.append(uuid.UUID(str(zid_str)))
+                            except (ValueError, AttributeError):
+                                pass
+                        for zone_uuid in zone_uuids_verify:
+                            zone_temp_result = await db.execute(
+                                sa_select(_SR.temperature_c)
+                                .where(
+                                    _SR.zone_id == zone_uuid,
+                                    _SR.temperature_c.isnot(None),
+                                )
+                                .order_by(_SR.recorded_at.desc())
+                                .limit(1)
+                            )
+                            current_temp_row = zone_temp_result.first()
+                            if current_temp_row and current_temp_row[0] is not None:
+                                current_zone_temp = current_temp_row[0]
+                                temp_delta = abs(current_zone_temp - schedule.target_temp_c)
+                                if temp_delta > 1.5:
+                                    await app_state.ws_manager.broadcast({
+                                        "type": "schedule_alert",
+                                        "alert": "zone_not_meeting_target",
+                                        "schedule_name": schedule.name,
+                                        "zone_id": str(zone_uuid),
+                                        "current_temp": current_zone_temp,
+                                        "target_temp": schedule.target_temp_c,
+                                        "delta": round(temp_delta, 1),
+                                        "timestamp": datetime.now(UTC).isoformat(),
+                                    })
+                                    logger.warning(
+                                        "Schedule '%s': zone %s at %.1f°C, target %.1f°C (delta %.1f°C)",
+                                        schedule.name,
+                                        zone_uuid,
+                                        current_zone_temp,
+                                        schedule.target_temp_c,
+                                        temp_delta,
+                                    )
 
                 except Exception as exec_err:
                     logger.error(
@@ -1167,6 +1281,8 @@ async def execute_cover_automation() -> None:
     from backend.models.enums import ActionType, DeviceType, TriggerType
 
     try:
+        import backend.api.dependencies as _deps
+
         session_maker = get_session_maker()
         async with session_maker() as db:
             zone_result = await db.execute(
@@ -1176,7 +1292,7 @@ async def execute_cover_automation() -> None:
             )
             zones = zone_result.scalars().unique().all()
 
-            ha_client = app_state.ha_client
+            ha_client = _deps._ha_client
             if ha_client is None:
                 return
 
@@ -1267,6 +1383,349 @@ async def execute_cover_automation() -> None:
 
     except Exception as e:
         logger.error("Error in cover automation: %s", e)
+
+
+# ============================================================================
+# Rule Engine Comfort Enforcement (every 2 min, all modes except learn)
+# ============================================================================
+
+
+async def execute_rule_engine() -> None:
+    """Deterministic comfort-band enforcement using RuleEngine + ZoneManager.
+
+    Runs every 2 minutes. Checks all zones for:
+    - Temperature outside comfort band -> adjust thermostat or zone devices
+    - Humidity outside comfort band -> turn on humidifier/dehumidifier
+    - Anomaly detection (sensor drift, device unresponsive, humidity spike)
+    - Occupancy transitions -> apply setback when zone becomes unoccupied
+    """
+    from sqlalchemy import select as sa_select
+
+    from backend.models.database import Device, DeviceAction, SystemConfig
+    from backend.models.enums import ActionType, SystemMode, TriggerType
+
+    try:
+        # ── Check system mode ───────────────────────────────────────────
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            cfg_result = await db.execute(sa_select(SystemConfig).limit(1))
+            config = cfg_result.scalar_one_or_none()
+            if config is not None and config.current_mode == SystemMode.learn:
+                return
+
+        zone_manager = app_state.zone_manager
+        if zone_manager is None:
+            return
+        rule_engine = app_state.rule_engine
+        if rule_engine is None:
+            return
+
+        import backend.api.dependencies as _deps
+
+        ha_client = _deps._ha_client
+        if ha_client is None:
+            return
+
+        temp_unit = settings_instance.temperature_unit.upper()
+        safety_min = settings_instance.safety_min_temp_c
+        safety_max = settings_instance.safety_max_temp_c
+
+        async with session_maker() as db:
+            for state in zone_manager.iter_states():
+                reading: dict[str, float | bool] = {}
+                if state.temperature_c is not None:
+                    reading["temperature_c"] = state.temperature_c
+                if state.humidity is not None:
+                    reading["humidity"] = state.humidity
+                if state.occupancy is not None:
+                    reading["occupied"] = state.occupancy
+
+                # ── Comfort band check ──────────────────────────────────
+                action = rule_engine.check_comfort_band(state, reading)
+
+                # ── Occupancy transition check ──────────────────────────
+                if action is None and state.occupancy is not None:
+                    action = rule_engine.check_occupancy_transition(state, state.occupancy)
+
+                # ── Execute action if any ───────────────────────────────
+                if action and action.device_id:
+                    try:
+                        device_uuid = uuid.UUID(action.device_id)
+                        dev_result = await db.execute(
+                            sa_select(Device).where(Device.id == device_uuid).limit(1)
+                        )
+                        device = dev_result.scalar_one_or_none()
+                        if device and device.ha_entity_id:
+                            entity_id = device.ha_entity_id
+                            if action.action_type == ActionType.set_temperature:
+                                temp_c = float(action.parameters.get("temperature", 21.0))
+                                temp_c = max(safety_min, min(safety_max, temp_c))
+                                temp_for_ha = temp_c
+                                if temp_unit == "F":
+                                    temp_for_ha = round(temp_c * 9 / 5 + 32, 1)
+                                await ha_client.set_temperature(entity_id, temp_for_ha)
+                            elif action.action_type == ActionType.turn_on:
+                                await ha_client.turn_on(entity_id)
+                            elif action.action_type == ActionType.turn_off:
+                                await ha_client.turn_off(entity_id)
+                            elif action.action_type == ActionType.set_vent_position:
+                                pos = int(action.parameters.get("position", 50))
+                                await ha_client.set_cover_position(entity_id, max(0, min(100, pos)))
+
+                            # Record DeviceAction
+                            db.add(DeviceAction(
+                                device_id=device.id,
+                                zone_id=state.zone_id,
+                                triggered_by=TriggerType.rule_engine,
+                                action_type=action.action_type,
+                                parameters=dict(action.parameters),
+                                reasoning=action.reason,
+                            ))
+                            await db.commit()
+                            logger.info(
+                                "Rule engine: %s on %s in zone %s — %s",
+                                action.action_type,
+                                entity_id,
+                                state.name,
+                                action.reason,
+                            )
+                    except Exception as act_err:
+                        logger.warning("Rule engine action failed for zone %s: %s", state.name, act_err)
+
+                # ── Anomaly detection ───────────────────────────────────
+                try:
+                    # Build recent readings from zone temp/humidity history
+                    recent_readings: list[dict[str, float | bool]] = []
+                    for _ts, _temp in state._temp_history:
+                        recent_readings.append({"temperature_c": _temp})
+                    anomaly = rule_engine.detect_anomaly(state, recent_readings)
+                    if anomaly:
+                        await app_state.ws_manager.broadcast({
+                            "type": "anomaly_alert",
+                            "alert": anomaly,
+                            "zone_id": str(state.zone_id),
+                            "zone_name": state.name,
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        })
+                        logger.warning(
+                            "Anomaly detected in zone %s: %s", state.name, anomaly
+                        )
+                except Exception as anom_err:
+                    logger.debug("Anomaly detection error for zone %s: %s", state.name, anom_err)
+
+    except Exception as e:
+        logger.error("Error in rule engine execution: %s", e)
+
+
+# ============================================================================
+# Smart Vent PID Optimization (every 3 min, all modes except learn)
+# ============================================================================
+
+
+async def execute_vent_optimization() -> None:
+    """Adjust smart vent positions using PID control for per-zone temperature balancing.
+
+    For each zone with a smart_vent device:
+    - Compute PID output based on (target_temp - current_temp)
+    - Map PID output (0.0-1.0) to vent position (0-100%)
+    - Send set_cover_position to HA
+    """
+    from sqlalchemy import select as sa_select
+
+    from backend.models.database import Device, DeviceAction, SystemConfig
+    from backend.models.enums import ActionType, DeviceType, SystemMode, TriggerType
+
+    try:
+        # ── Check system mode ───────────────────────────────────────────
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            cfg_result = await db.execute(sa_select(SystemConfig).limit(1))
+            config = cfg_result.scalar_one_or_none()
+            if config is not None and config.current_mode == SystemMode.learn:
+                return
+
+        zone_manager = app_state.zone_manager
+        if zone_manager is None:
+            return
+
+        import backend.api.dependencies as _deps
+
+        ha_client = _deps._ha_client
+        if ha_client is None:
+            return
+
+        async with session_maker() as db:
+            for state in zone_manager.iter_states():
+                # Find smart_vent devices in this zone
+                vent_devices: list[tuple[uuid.UUID, str]] = []  # (device_id, entity_id)
+                for dev_id, dev_state in state.devices.items():
+                    dev_type = dev_state.type
+                    if isinstance(dev_type, str):
+                        is_vent = dev_type == DeviceType.smart_vent.value
+                    else:
+                        is_vent = dev_type == DeviceType.smart_vent
+                    if is_vent:
+                        # Look up ha_entity_id from DB
+                        dev_result = await db.execute(
+                            sa_select(Device.ha_entity_id).where(Device.id == dev_id).limit(1)
+                        )
+                        dev_row = dev_result.first()
+                        if dev_row and dev_row[0]:
+                            vent_devices.append((dev_id, dev_row[0]))
+
+                if not vent_devices:
+                    continue
+
+                target_temp = state.metrics.get("target_temperature_c")
+                if target_temp is None or state.temperature_c is None:
+                    continue
+
+                # Get or create PID controller for this zone
+                zone_key = str(state.zone_id)
+                pid = app_state.pid_controllers.setdefault(
+                    zone_key,
+                    PIDController(PIDConfig(
+                        kp=1.0, ki=0.1, kd=0.05,
+                        output_min=0.0, output_max=1.0,
+                    )),
+                )
+
+                # Compute PID output
+                output = pid.compute(target_temp, state.temperature_c)
+                # Map to position: 0.0-1.0 -> 0-100%, clamp minimum 10%
+                position = max(10, int(output * 100))
+
+                for dev_id, entity_id in vent_devices:
+                    try:
+                        await ha_client.set_cover_position(entity_id, position)
+                        db.add(DeviceAction(
+                            device_id=dev_id,
+                            zone_id=state.zone_id,
+                            triggered_by=TriggerType.rule_engine,
+                            action_type=ActionType.set_vent_position,
+                            parameters={
+                                "position": position,
+                                "pid_output": round(output, 3),
+                                "target_temp_c": target_temp,
+                                "current_temp_c": state.temperature_c,
+                            },
+                            reasoning=f"PID vent optimization: target={target_temp:.1f}C current={state.temperature_c:.1f}C",
+                        ))
+                        logger.debug(
+                            "Vent optimization: %s set to %d%% (PID=%.3f) in zone %s",
+                            entity_id, position, output, state.name,
+                        )
+                    except Exception as vent_err:
+                        logger.warning("Vent optimization failed for %s: %s", entity_id, vent_err)
+
+                await db.commit()
+
+    except Exception as e:
+        logger.error("Error in vent optimization: %s", e)
+
+
+# ============================================================================
+# Pattern Learning (every 30 min, all modes)
+# ============================================================================
+
+
+async def execute_pattern_learning() -> None:
+    """Learn occupancy patterns and thermal profiles from sensor history."""
+    from datetime import timedelta as _td
+
+    from sqlalchemy import select as sa_select
+
+    from backend.models.database import SensorReading, Zone
+
+    try:
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            # Fetch active zones
+            zone_result = await db.execute(
+                sa_select(Zone).where(Zone.is_active.is_(True))
+            )
+            zones = zone_result.scalars().all()
+
+            if not zones:
+                return
+
+            pattern_engine = PatternEngine(db)
+            # Store on app_state so preconditioning can use cached data
+            app_state.pattern_engine = pattern_engine
+
+            now = datetime.now(UTC)
+
+            for zone in zones:
+                zone_id_str = str(zone.id)
+
+                # ── Learn occupancy patterns (last 30 days) ─────────────
+                try:
+                    occ_result = await db.execute(
+                        sa_select(
+                            SensorReading.recorded_at,
+                            SensorReading.presence,
+                        )
+                        .where(
+                            SensorReading.zone_id == zone.id,
+                            SensorReading.presence.isnot(None),
+                            SensorReading.recorded_at >= now - _td(days=30),
+                        )
+                        .order_by(SensorReading.recorded_at.asc())
+                    )
+                    occ_rows = occ_result.all()
+                    if occ_rows:
+                        occ_readings = [
+                            OccupancyReading(
+                                zone_id=zone_id_str,
+                                timestamp=row[0],
+                                occupied=bool(row[1]),
+                            )
+                            for row in occ_rows
+                        ]
+                        await pattern_engine.learn_occupancy_patterns(zone_id_str, occ_readings)
+                        logger.debug(
+                            "Learned occupancy patterns for zone %s from %d readings",
+                            zone.name, len(occ_readings),
+                        )
+                except Exception as occ_err:
+                    logger.warning("Occupancy pattern learning failed for zone %s: %s", zone.name, occ_err)
+
+                # ── Learn thermal profile (last 7 days) ─────────────────
+                try:
+                    thermal_result = await db.execute(
+                        sa_select(
+                            SensorReading.recorded_at,
+                            SensorReading.temperature_c,
+                        )
+                        .where(
+                            SensorReading.zone_id == zone.id,
+                            SensorReading.temperature_c.isnot(None),
+                            SensorReading.recorded_at >= now - _td(days=7),
+                        )
+                        .order_by(SensorReading.recorded_at.asc())
+                    )
+                    thermal_rows = thermal_result.all()
+                    if thermal_rows:
+                        thermal_readings = [
+                            ThermalReading(
+                                zone_id=zone_id_str,
+                                timestamp=row[0],
+                                temperature_c=float(row[1]),
+                            )
+                            for row in thermal_rows
+                        ]
+                        await pattern_engine.learn_thermal_profile(zone_id_str, thermal_readings)
+                        logger.debug(
+                            "Learned thermal profile for zone %s from %d readings",
+                            zone.name, len(thermal_readings),
+                        )
+                except Exception as therm_err:
+                    logger.warning("Thermal profile learning failed for zone %s: %s", zone.name, therm_err)
+
+            logger.info("Pattern learning complete for %d zones", len(zones))
+
+    except Exception as e:
+        logger.error("Error in pattern learning: %s", e)
 
 
 # ============================================================================
@@ -1490,6 +1949,32 @@ async def _handle_ha_state_change(change: object) -> None:
                     },
                 }
             )
+
+            # ── Feed ZoneManager with live sensor data ──────────────────
+            if app_state.zone_manager and sensor.zone_id:
+                zone_name = "unknown"
+                zone_state = app_state.zone_manager.get_state(sensor.zone_id)
+                if zone_state:
+                    zone_name = zone_state.name
+                else:
+                    # Look up zone name from DB
+                    from backend.models.database import Zone as _ZoneLookup
+
+                    _zr = await db.execute(
+                        select(_ZoneLookup.name).where(_ZoneLookup.id == sensor.zone_id)
+                    )
+                    _zrow = _zr.first()
+                    if _zrow:
+                        zone_name = _zrow[0]
+
+                await app_state.zone_manager.update_from_sensor_payload(
+                    zone_id=sensor.zone_id,
+                    zone_name=zone_name,
+                    temperature_c=change.temperature,
+                    humidity=change.humidity,
+                    occupancy=change.presence,
+                    timestamp=change.timestamp,
+                )
     except Exception as e:
         logger.error(f"Error ingesting HA state change for {change.entity_id}: {e}")
 
@@ -1603,6 +2088,33 @@ def init_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # Rule engine (comfort enforcement) - every 2 minutes
+    scheduler.add_job(
+        execute_rule_engine,
+        IntervalTrigger(minutes=2),
+        id="execute_rule_engine",
+        name="Rule Engine Comfort Enforcement",
+        replace_existing=True,
+    )
+
+    # Smart vent PID optimization - every 3 minutes
+    scheduler.add_job(
+        execute_vent_optimization,
+        IntervalTrigger(minutes=3),
+        id="execute_vent_optimization",
+        name="Smart Vent PID Optimization",
+        replace_existing=True,
+    )
+
+    # Pattern learning - every 30 minutes
+    scheduler.add_job(
+        execute_pattern_learning,
+        IntervalTrigger(minutes=30),
+        id="execute_pattern_learning",
+        name="Occupancy & Thermal Pattern Learning",
+        replace_existing=True,
+    )
+
     # Data retention cleanup - daily at 3am UTC
     from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
 
@@ -1642,6 +2154,41 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         set_shared_redis(app_state.redis_client)
 
         await app_state.ws_manager.subscribe_redis()
+
+        # Initialize ZoneManager and RuleEngine singletons
+        logger.info("Initializing ZoneManager and RuleEngine...")
+        zone_manager = ZoneManager()
+        try:
+            _sm = get_session_maker()
+            async with _sm() as _init_session:
+                await zone_manager.refresh_from_db(_init_session)
+                # Load comfort preferences into zone metrics
+                from sqlalchemy import select as _init_sel
+
+                from backend.models.database import Zone as _InitZone
+
+                _init_zones_result = await _init_session.execute(
+                    _init_sel(_InitZone).where(_InitZone.is_active.is_(True))
+                )
+                for _iz in _init_zones_result.scalars().all():
+                    _zs = zone_manager.get_state(_iz.id)
+                    if _zs:
+                        _prefs = _iz.comfort_preferences or {}
+                        _tmin = _prefs.get("temp_min")
+                        _tmax = _prefs.get("temp_max")
+                        if _tmin is not None and _tmax is not None:
+                            _target = (float(_tmin) + float(_tmax)) / 2.0
+                            _zs.set_metric("target_temperature_c", _target)
+                            _zs.set_metric("comfort_min_c", float(_tmin))
+                            _zs.set_metric("comfort_max_c", float(_tmax))
+                        _htarget = _prefs.get("target_humidity")
+                        if _htarget is not None:
+                            _zs.set_metric("target_humidity", float(_htarget))
+        except Exception as zm_err:
+            logger.warning("ZoneManager hydration failed (will retry on next poll): %s", zm_err)
+        app_state.zone_manager = zone_manager
+        app_state.rule_engine = RuleEngine()
+        logger.info("ZoneManager and RuleEngine initialized")
 
         # Initialize and start scheduler
         logger.info("Starting background scheduler...")
