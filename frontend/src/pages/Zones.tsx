@@ -454,12 +454,12 @@ export const Zones = () => {
             Back
           </Button>
           <div>
-            <p className="text-xs uppercase tracking-widest text-muted-foreground">Zones</p>
-            <h2 className="text-2xl font-semibold">{isEdit ? 'Edit Zone' : 'Create Zone'}</h2>
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Zones</p>
+            <h2 className="text-2xl font-black tracking-tight">{isEdit ? 'Edit Zone' : 'Create Zone'}</h2>
           </div>
         </div>
 
-        <Card className="border-border/60">
+        <Card>
           <CardContent className="space-y-4 pt-6">
             <div>
               <label className="text-sm font-medium">Name</label>
@@ -483,7 +483,7 @@ export const Zones = () => {
                 <select
                   value={zoneForm.type}
                   onChange={(e) => setZoneForm((f) => ({ ...f, type: e.target.value as ZoneType }))}
-                  className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm"
+                  className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
                 >
                   {ZONE_TYPES.map((t) => (
                     <option key={t.value} value={t.value}>
@@ -555,8 +555,8 @@ export const Zones = () => {
             Back
           </Button>
           <div className="flex-1">
-            <p className="text-xs uppercase tracking-widest text-muted-foreground">Zone Detail</p>
-            <h2 className="text-2xl font-semibold">{selectedZone.name}</h2>
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Zone Detail</p>
+            <h2 className="text-2xl font-black tracking-tight">{selectedZone.name}</h2>
             {selectedZone.description && (
               <p className="text-sm text-muted-foreground">{selectedZone.description}</p>
             )}
@@ -569,58 +569,58 @@ export const Zones = () => {
 
         {/* Zone Stats */}
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <Card className="border-border/60">
+          <Card>
             <CardContent className="p-4">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2 text-sm font-bold text-muted-foreground">
                 <Thermometer className="h-4 w-4" /> Avg Temp
               </div>
-              <p className="text-2xl font-semibold">
+              <p className="text-2xl font-black">
                 {zoneHistory?.avg_temperature_c != null
                   ? formatTemperature(zoneHistory.avg_temperature_c, unitKey)
                   : '--'}
               </p>
             </CardContent>
           </Card>
-          <Card className="border-border/60">
+          <Card>
             <CardContent className="p-4">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2 text-sm font-bold text-muted-foreground">
                 <Droplets className="h-4 w-4" /> Avg Humidity
               </div>
-              <p className="text-2xl font-semibold">
+              <p className="text-2xl font-black">
                 {zoneHistory?.avg_humidity != null
                   ? `${zoneHistory.avg_humidity.toFixed(0)}%`
                   : '--'}
               </p>
             </CardContent>
           </Card>
-          <Card className="border-border/60">
+          <Card>
             <CardContent className="p-4">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2 text-sm font-bold text-muted-foreground">
                 <Thermometer className="h-4 w-4" /> Temp Range
               </div>
-              <p className="text-2xl font-semibold">
+              <p className="text-2xl font-black">
                 {zoneHistory?.min_temperature_c != null && zoneHistory?.max_temperature_c != null
                   ? `${toDisplayTemp(zoneHistory.min_temperature_c, unitKey).toFixed(0)}-${toDisplayTemp(zoneHistory.max_temperature_c, unitKey).toFixed(0)}${tempUnitLabel(unitKey)}`
                   : '--'}
               </p>
             </CardContent>
           </Card>
-          <Card className="border-border/60">
+          <Card>
             <CardContent className="p-4">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2 text-sm font-bold text-muted-foreground">
                 <Users className="h-4 w-4" /> Occupancy
               </div>
-              <p className="text-2xl font-semibold">
+              <p className="text-2xl font-black">
                 {selectedZone.occupancy === 'occupied' ? 'Occupied' : selectedZone.occupancy === 'vacant' ? 'Vacant' : '--'}
               </p>
             </CardContent>
           </Card>
-          <Card className="border-border/60">
+          <Card>
             <CardContent className="p-4">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2 text-sm font-bold text-muted-foreground">
                 <Lightbulb className="h-4 w-4" /> Lux
               </div>
-              <p className="text-2xl font-semibold">
+              <p className="text-2xl font-black">
                 {selectedZone.lux != null ? `${Math.round(selectedZone.lux)} lx` : '--'}
               </p>
             </CardContent>
@@ -628,7 +628,7 @@ export const Zones = () => {
         </div>
 
         {/* 24-hour Temperature/Humidity Chart */}
-        <Card className="border-border/60">
+        <Card>
           <CardHeader>
             <CardTitle>24-Hour History</CardTitle>
             <CardDescription>Temperature and humidity over the last 24 hours</CardDescription>
@@ -647,9 +647,10 @@ export const Zones = () => {
                   <YAxis yAxisId="humidity" orientation="right" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" domain={[0, 100]} />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: 'hsl(var(--card))',
-                      border: '1px solid hsl(var(--border))',
-                      borderRadius: '8px',
+                      backgroundColor: 'var(--glass-bg, hsl(var(--card)))',
+                      border: '1px solid var(--glass-border, hsl(var(--border)))',
+                      borderRadius: '12px',
+                      backdropFilter: 'blur(12px)',
                     }}
                   />
                   <Legend />
@@ -682,7 +683,7 @@ export const Zones = () => {
         </Card>
 
         {/* Sensors */}
-        <Card className="border-border/60">
+        <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>Sensors</CardTitle>
@@ -714,7 +715,7 @@ export const Zones = () => {
           </CardHeader>
           <CardContent>
             {showDevicePicker && (
-              <div className="mb-4 space-y-3 rounded-lg border border-border/60 p-4">
+              <div className="mb-4 space-y-3 rounded-lg border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium">Select a Device</p>
@@ -745,7 +746,7 @@ export const Zones = () => {
                             <button
                               key={device.device_id}
                               type="button"
-                              className="w-full rounded-lg border border-border/40 p-3 text-left hover:bg-muted"
+                              className="w-full rounded-lg border border-border/40 p-3 text-left hover:bg-muted dark:border-[rgba(148,163,184,0.15)] dark:hover:bg-white/5"
                               onClick={() => {
                                 setSelectedDevice(device)
                                 setSelectedEntityIds(new Set(device.entities.map((e) => e.entity_id)))
@@ -773,7 +774,7 @@ export const Zones = () => {
                   </>
                 ) : (
                   <>
-                    <div className="flex items-center gap-3 rounded-lg bg-muted/50 p-3">
+                    <div className="flex items-center gap-3 rounded-lg bg-muted/50 p-3 dark:bg-[rgba(2,6,23,0.35)]">
                       <Cpu className="h-5 w-5 text-primary" />
                       <div className="flex-1">
                         <p className="text-sm font-medium">{selectedDevice.name}</p>
@@ -814,7 +815,7 @@ export const Zones = () => {
                         {selectedDevice.entities.map((entity) => (
                           <label
                             key={entity.entity_id}
-                            className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/40 p-2.5 hover:bg-muted/50"
+                            className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/40 p-2.5 hover:bg-muted/50 dark:border-[rgba(148,163,184,0.15)] dark:hover:bg-white/5"
                           >
                             <input
                               type="checkbox"
@@ -881,7 +882,7 @@ export const Zones = () => {
             )}
 
             {showSensorForm && (
-              <div className="mb-4 space-y-3 rounded-lg border border-border/60 p-4">
+              <div className="mb-4 space-y-3 rounded-lg border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div>
                     <label className="text-sm font-medium">Name</label>
@@ -896,7 +897,7 @@ export const Zones = () => {
                     <select
                       value={sensorForm.type}
                       onChange={(e) => setSensorForm((f) => ({ ...f, type: e.target.value as SensorType }))}
-                      className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm"
+                      className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
                     >
                       {SENSOR_TYPES.map((t) => (
                         <option key={t.value} value={t.value}>
@@ -949,7 +950,7 @@ export const Zones = () => {
                         </button>
                       )}
                       {entityPickerOpen && (
-                        <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-border bg-background shadow-lg">
+                        <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-border bg-background shadow-lg dark:border-[rgba(148,163,184,0.2)] dark:bg-[rgba(10,12,16,0.95)] dark:backdrop-blur-xl">
                           <button
                             type="button"
                             className="w-full px-3 py-2 text-left text-sm hover:bg-muted"
@@ -1042,7 +1043,7 @@ export const Zones = () => {
                 {(zoneSensors ?? selectedZoneRaw?.sensors ?? []).map((sensor) => (
                   <div
                     key={sensor.id}
-                    className="flex items-center justify-between rounded-lg border border-border/40 p-3"
+                    className="flex items-center justify-between rounded-lg border border-border/40 p-3 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]"
                   >
                     <div>
                       <p className="text-sm font-medium">{sensor.name}</p>
@@ -1070,7 +1071,7 @@ export const Zones = () => {
         </Card>
 
         {/* Comfort Preferences */}
-        <Card className="border-border/60">
+        <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
               <Lightbulb className="h-5 w-5 text-primary" />
@@ -1160,7 +1161,7 @@ export const Zones = () => {
         </Card>
 
         {/* Metrics & Control Exclusion */}
-        <Card className="border-border/60">
+        <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
@@ -1173,8 +1174,8 @@ export const Zones = () => {
                 <span
                   className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
                     selectedZoneRaw.is_currently_excluded
-                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400'
-                      : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400 dark:border dark:border-amber-500/30'
+                      : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400 dark:border dark:border-green-500/30'
                   }`}
                 >
                   {selectedZoneRaw.is_currently_excluded ? 'Currently excluded' : 'Currently active'}
@@ -1278,8 +1279,8 @@ export const Zones = () => {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <p className="text-xs uppercase tracking-widest text-muted-foreground">Zones</p>
-          <h2 className="text-2xl font-semibold">Manage Zones</h2>
+          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Zones</p>
+          <h2 className="text-2xl font-black tracking-tight">Manage Zones</h2>
         </div>
         <Button
           className="gap-2"
@@ -1296,16 +1297,16 @@ export const Zones = () => {
       {zonesLoading ? (
         <div className="grid gap-4">
           {[1, 2, 3].map((i) => (
-            <Card key={i} className="h-40 animate-pulse border-border/60 bg-muted/20" />
+            <Card key={i} className="h-40 animate-pulse bg-muted/20" />
           ))}
         </div>
       ) : (
         <div className="grid gap-4">
           {zones.map((zone) => (
-            <Card key={zone.id} className="border-border/60">
+            <Card key={zone.id}>
               <CardHeader className="flex flex-row items-center justify-between">
                 <div className="cursor-pointer" onClick={() => handleOpenDetail(zone.id)}>
-                  <p className="text-xs uppercase tracking-widest text-muted-foreground">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
                     {zone.type?.replace('_', ' ') ?? 'Zone'}
                     {zone.floor != null ? ` - Floor ${zone.floor}` : ''}
                   </p>
@@ -1361,35 +1362,35 @@ export const Zones = () => {
               </CardHeader>
               <CardContent>
                 <div className="grid gap-4 md:grid-cols-4">
-                  <div className="rounded-2xl border border-border/60 p-4">
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <div className="rounded-2xl border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
+                    <div className="flex items-center gap-2 text-sm font-bold text-muted-foreground">
                       <Thermometer className="h-4 w-4" /> Temp
                     </div>
-                    <p className="text-2xl font-semibold text-foreground">
+                    <p className="text-2xl font-black text-foreground">
                       {zone.temperature != null ? formatTemperature(zone.temperature, unitKey) : '--'}
                     </p>
                   </div>
-                  <div className="rounded-2xl border border-border/60 p-4">
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <div className="rounded-2xl border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
+                    <div className="flex items-center gap-2 text-sm font-bold text-muted-foreground">
                       <Droplets className="h-4 w-4" /> Humidity
                     </div>
-                    <p className="text-2xl font-semibold text-foreground">
+                    <p className="text-2xl font-black text-foreground">
                       {zone.humidity != null ? `${zone.humidity.toFixed(0)}%` : '--'}
                     </p>
                   </div>
-                  <div className="rounded-2xl border border-border/60 p-4">
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <div className="rounded-2xl border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
+                    <div className="flex items-center gap-2 text-sm font-bold text-muted-foreground">
                       <Users className="h-4 w-4" /> Occupancy
                     </div>
-                    <p className="text-2xl font-semibold text-foreground">
+                    <p className="text-2xl font-black text-foreground">
                       {zone.occupancy === 'occupied' ? 'Occupied' : zone.occupancy === 'vacant' ? 'Vacant' : '--'}
                     </p>
                   </div>
-                  <div className="rounded-2xl border border-border/60 p-4">
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <div className="rounded-2xl border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
+                    <div className="flex items-center gap-2 text-sm font-bold text-muted-foreground">
                       Sensors / Devices
                     </div>
-                    <p className="text-2xl font-semibold text-foreground">
+                    <p className="text-2xl font-black text-foreground">
                       {zone.sensors?.length ?? 0} / {zone.devices?.length ?? 0}
                     </p>
                   </div>

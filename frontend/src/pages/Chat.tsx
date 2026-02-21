@@ -226,14 +226,14 @@ export const Chat = () => {
         />
       )}
       <div
-        className={`flex flex-col border-r border-border/60 bg-card transition-all ${
+        className={`flex flex-col border-r border-border/40 bg-card dark:border-[rgba(148,163,184,0.12)] dark:bg-[rgba(10,12,16,0.78)] dark:backdrop-blur-xl transition-all ${
           sidebarOpen
             ? 'fixed inset-y-0 left-0 z-40 w-72 lg:static lg:z-auto'
             : 'w-0 overflow-hidden'
         }`}
       >
-        <div className="flex items-center justify-between border-b border-border/60 p-3">
-          <h3 className="text-sm font-medium">Conversations</h3>
+        <div className="flex items-center justify-between border-b border-border/40 p-3 dark:border-[rgba(148,163,184,0.12)]">
+          <h3 className="text-sm font-bold">Conversations</h3>
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleNewConversation}>
             <MessageSquarePlus className="h-4 w-4" />
           </Button>
@@ -246,8 +246,8 @@ export const Chat = () => {
                   key={session.session_id}
                   className={`group flex items-center justify-between rounded-lg p-2 text-sm transition-colors cursor-pointer ${
                     sessionId === session.session_id
-                      ? 'bg-primary/10 text-primary'
-                      : 'hover:bg-muted/50'
+                      ? 'bg-primary/10 text-primary dark:bg-primary/15'
+                      : 'hover:bg-muted/50 dark:hover:bg-white/5'
                   }`}
                   onClick={() => loadConversation(session.session_id)}
                 >
@@ -323,9 +323,9 @@ export const Chat = () => {
               )}
             </Button>
             <div className="min-w-0">
-              <p className="text-xs uppercase tracking-widest text-muted-foreground">Assistant</p>
-              <h2 className="flex items-center gap-2 truncate text-lg font-semibold sm:text-2xl">
-                <Sparkles className="h-5 w-5 shrink-0 text-primary sm:h-6 sm:w-6" />
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Assistant</p>
+              <h2 className="flex items-center gap-2 truncate text-lg font-black tracking-tight sm:text-2xl">
+                <Sparkles className="h-5 w-5 shrink-0 text-primary sm:h-6 sm:w-6 dark:drop-shadow-[0_0_6px_rgba(56,189,248,0.4)]" />
                 <span className="truncate">ClimateIQ Advisor</span>
               </h2>
             </div>
@@ -342,8 +342,8 @@ export const Chat = () => {
           </div>
         </div>
 
-        <Card className="flex flex-1 flex-col overflow-hidden border-border/60">
-          <CardHeader className="border-b border-border/60 py-3">
+        <Card className="flex flex-1 flex-col overflow-hidden">
+          <CardHeader className="border-b border-border/40 py-3 dark:border-[rgba(148,163,184,0.12)]">
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
               <MessageCircle className="h-4 w-4" />
               {sessionId ? 'Conversation' : 'New Conversation'}
@@ -357,7 +357,7 @@ export const Chat = () => {
                   className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
                   {message.role === 'assistant' && (
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 dark:shadow-[0_0_10px_rgba(56,189,248,0.15)]">
                       <Bot className="h-4 w-4 text-primary" />
                     </div>
                   )}
@@ -365,7 +365,7 @@ export const Chat = () => {
                     className={`max-w-[80%] rounded-2xl px-4 py-2 ${
                       message.role === 'user'
                         ? 'bg-primary text-primary-foreground'
-                        : 'bg-muted'
+                        : 'bg-muted dark:bg-[rgba(2,6,23,0.45)] dark:backdrop-blur-[10px]'
                     }`}
                   >
                     <p className="whitespace-pre-wrap text-sm">{message.content}</p>
@@ -392,7 +392,7 @@ export const Chat = () => {
               ))}
               {sendMessage.isPending && (
                 <div className="flex gap-3">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 dark:shadow-[0_0_10px_rgba(56,189,248,0.15)]">
                     <Bot className="h-4 w-4 text-primary" />
                   </div>
                   <div className="rounded-2xl bg-muted px-4 py-2">
@@ -409,13 +409,13 @@ export const Chat = () => {
 
           {/* Suggestions */}
           {messages.length <= 2 && (
-            <div className="border-t border-border/60 px-4 py-2">
+            <div className="border-t border-border/40 px-4 py-2 dark:border-[rgba(148,163,184,0.12)]">
               <div className="flex flex-wrap gap-2">
                 {SUGGESTIONS.map((suggestion) => (
                   <button
                     key={suggestion}
                     onClick={() => handleSuggestionClick(suggestion)}
-                    className="rounded-full border border-border/60 bg-background px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    className="rounded-full border border-border/40 bg-background px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground dark:border-[rgba(148,163,184,0.18)] dark:bg-[rgba(2,6,23,0.30)] dark:backdrop-blur-[10px]"
                   >
                     {suggestion}
                   </button>
@@ -425,7 +425,7 @@ export const Chat = () => {
           )}
 
           {/* Input */}
-          <div className="border-t border-border/60 p-4">
+          <div className="border-t border-border/40 p-4 dark:border-[rgba(148,163,184,0.12)]">
             <div className="flex gap-3">
               <Input
                 placeholder="Ask ClimateIQ anything..."

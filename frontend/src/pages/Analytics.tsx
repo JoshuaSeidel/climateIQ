@@ -130,15 +130,15 @@ export const Analytics = () => {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="text-xs uppercase tracking-widest text-muted-foreground">Analytics</p>
-          <h2 className="flex items-center gap-2 text-2xl font-semibold">
-            <BarChart3 className="h-6 w-6 text-primary" />
+          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Analytics</p>
+          <h2 className="flex items-center gap-2 text-2xl font-black tracking-tight">
+            <BarChart3 className="h-6 w-6 text-primary dark:drop-shadow-[0_0_6px_rgba(56,189,248,0.4)]" />
             Climate Analytics
           </h2>
         </div>
         <div className="flex items-center gap-2">
           {/* Time range selector */}
-          <div className="flex rounded-xl border border-border/60 p-0.5">
+          <div className="flex rounded-2xl border border-border/60 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.35)] p-0.5">
             {HOURS_OPTIONS.map((opt) => (
               <Button
                 key={opt.value}
@@ -155,7 +155,7 @@ export const Analytics = () => {
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex flex-wrap gap-1 rounded-2xl border border-border/60 p-1">
+      <div className="flex flex-wrap gap-1 rounded-2xl border border-border/60 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.35)] p-1">
         {TABS.map((tab) => (
           <Button
             key={tab.id}
@@ -344,47 +344,47 @@ function TemperatureTab({
       {/* Summary Stats */}
       {overviewStats && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Card className="border-border/60">
+          <Card>
             <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">Avg Temperature</p>
-              <p className="text-2xl font-semibold">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Avg Temperature</p>
+              <p className="text-2xl font-black">
                 {overviewStats.avgTemp != null
                   ? formatTemperature(overviewStats.avgTemp, unitKey)
                   : '--'}
               </p>
             </CardContent>
           </Card>
-          <Card className="border-border/60">
+          <Card>
             <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">Min / Max</p>
-              <p className="text-2xl font-semibold">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Min / Max</p>
+              <p className="text-2xl font-black">
                 {overviewStats.minTemp != null && overviewStats.maxTemp != null
                   ? `${toDisplayTemp(overviewStats.minTemp, unitKey).toFixed(1)} / ${toDisplayTemp(overviewStats.maxTemp, unitKey).toFixed(1)}${tempUnitLabel(unitKey)}`
                   : '--'}
               </p>
             </CardContent>
           </Card>
-          <Card className="border-border/60">
+          <Card>
             <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">Avg Humidity</p>
-              <p className="text-2xl font-semibold">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Avg Humidity</p>
+              <p className="text-2xl font-black">
                 {overviewStats.avgHumidity != null
                   ? `${overviewStats.avgHumidity.toFixed(0)}%`
                   : '--'}
               </p>
             </CardContent>
           </Card>
-          <Card className="border-border/60">
+          <Card>
             <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">Total Readings</p>
-              <p className="text-2xl font-semibold">{overviewStats.totalReadings}</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Total Readings</p>
+              <p className="text-2xl font-black">{overviewStats.totalReadings}</p>
             </CardContent>
           </Card>
         </div>
       )}
 
       {/* Chart */}
-      <Card className="border-border/60">
+      <Card>
         <CardHeader>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -402,7 +402,7 @@ function TemperatureTab({
                   : 'Humidity shown in %'}
               </CardDescription>
             </div>
-            <div className="flex rounded-xl border border-border/60 p-0.5">
+            <div className="flex rounded-2xl border border-border/60 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.35)] p-0.5">
                 <Button
                   variant={metricView === 'temperature' ? 'default' : 'ghost'}
                   size="sm"
@@ -444,9 +444,10 @@ function TemperatureTab({
                 />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: 'hsl(var(--card))',
-                    border: '1px solid hsl(var(--border))',
-                    borderRadius: '8px',
+                    backgroundColor: 'var(--glass-bg, hsl(var(--card)))',
+                    border: '1px solid var(--glass-border, hsl(var(--border)))',
+                    borderRadius: '12px',
+                    backdropFilter: 'blur(12px)',
                   }}
                   formatter={(value: number | undefined, name: string | undefined) => {
                     const zoneIdFromKey = (name ?? '').replace('zone_', '')
@@ -608,7 +609,7 @@ function OccupancyTab({
     <div className="space-y-6">
       {/* All/Multi Zones - Grouped Bar Chart */}
       {!isSingleZone && (
-        <Card className="border-border/60">
+        <Card>
           <CardHeader>
             <CardTitle>Occupancy by Hour - All Zones</CardTitle>
             <CardDescription>
@@ -636,9 +637,10 @@ function OccupancyTab({
                   />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: 'hsl(var(--card))',
-                      border: '1px solid hsl(var(--border))',
-                      borderRadius: '8px',
+                      backgroundColor: 'var(--glass-bg, hsl(var(--card)))',
+                      border: '1px solid var(--glass-border, hsl(var(--border)))',
+                      borderRadius: '12px',
+                      backdropFilter: 'blur(12px)',
                     }}
                     formatter={(value: number | undefined, name: string | undefined) => {
                       const zoneIdFromKey = (name ?? '').replace('zone_', '')
@@ -675,7 +677,7 @@ function OccupancyTab({
 
       {/* Single Zone - Occupancy by Hour Bar Chart */}
       {isSingleZone && (
-        <Card className="border-border/60">
+        <Card>
           <CardHeader>
             <CardTitle>Occupancy by Hour</CardTitle>
             <CardDescription>
@@ -703,9 +705,10 @@ function OccupancyTab({
                   />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: 'hsl(var(--card))',
-                      border: '1px solid hsl(var(--border))',
-                      borderRadius: '8px',
+                      backgroundColor: 'var(--glass-bg, hsl(var(--card)))',
+                      border: '1px solid var(--glass-border, hsl(var(--border)))',
+                      borderRadius: '12px',
+                      backdropFilter: 'blur(12px)',
                     }}
                     formatter={(value) => [`${value}%`, 'Occupancy Rate']}
                   />
@@ -736,7 +739,7 @@ function OccupancyTab({
 
       {/* Single Zone - Heatmap Grid */}
       {isSingleZone && heatmapData.length > 0 && (
-        <Card className="border-border/60">
+        <Card>
           <CardHeader>
             <CardTitle>Weekly Occupancy Heatmap</CardTitle>
             <CardDescription>Darker cells indicate higher occupancy</CardDescription>
@@ -815,31 +818,31 @@ function EnergyTab({ hours }: { hours: number }) {
       {/* Summary */}
       {energy && (
         <div className="grid gap-4 sm:grid-cols-3">
-          <Card className="border-border/60">
+          <Card>
             <CardContent className="flex items-center justify-between p-4">
               <div>
-                <p className="text-xs text-muted-foreground">Total Energy</p>
-                <p className="text-2xl font-semibold">{energy.total_estimated_kwh.toFixed(1)} kWh</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Total Energy</p>
+                <p className="text-2xl font-black">{energy.total_estimated_kwh.toFixed(1)} kWh</p>
               </div>
               <Zap className="h-8 w-8 text-yellow-500" />
             </CardContent>
           </Card>
-          <Card className="border-border/60">
+          <Card>
             <CardContent className="flex items-center justify-between p-4">
               <div>
-                <p className="text-xs text-muted-foreground">Estimated Cost</p>
-                <p className="text-2xl font-semibold">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Estimated Cost</p>
+                <p className="text-2xl font-black">
                   ${energy.total_estimated_cost_usd.toFixed(2)}
                 </p>
               </div>
               <DollarSign className="h-8 w-8 text-green-500" />
             </CardContent>
           </Card>
-          <Card className="border-border/60">
+          <Card>
             <CardContent className="flex items-center justify-between p-4">
               <div>
-                <p className="text-xs text-muted-foreground">Rate</p>
-                <p className="text-2xl font-semibold">${energy.cost_per_kwh}/kWh</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Rate</p>
+                <p className="text-2xl font-black">${energy.cost_per_kwh}/kWh</p>
               </div>
               <Activity className="h-8 w-8 text-primary" />
             </CardContent>
@@ -848,7 +851,7 @@ function EnergyTab({ hours }: { hours: number }) {
       )}
 
       {/* Energy by Zone Chart */}
-      <Card className="border-border/60">
+      <Card>
         <CardHeader>
           <CardTitle>Energy Usage by Zone</CardTitle>
           <CardDescription>Estimated energy consumption per zone ({hours}h)</CardDescription>
@@ -866,9 +869,10 @@ function EnergyTab({ hours }: { hours: number }) {
                 <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: 'hsl(var(--card))',
-                    border: '1px solid hsl(var(--border))',
-                    borderRadius: '8px',
+                    backgroundColor: 'var(--glass-bg, hsl(var(--card)))',
+                    border: '1px solid var(--glass-border, hsl(var(--border)))',
+                    borderRadius: '12px',
+                    backdropFilter: 'blur(12px)',
                   }}
                 />
                 <Legend />
@@ -885,7 +889,7 @@ function EnergyTab({ hours }: { hours: number }) {
 
       {/* Zone Details Table */}
       {energy?.zones && energy.zones.length > 0 && (
-        <Card className="border-border/60">
+        <Card>
           <CardHeader>
             <CardTitle>Zone Breakdown</CardTitle>
           </CardHeader>
@@ -894,12 +898,12 @@ function EnergyTab({ hours }: { hours: number }) {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border/60">
-                    <th className="pb-2 text-left font-medium">Zone</th>
-                    <th className="pb-2 text-right font-medium">Devices</th>
-                    <th className="pb-2 text-right font-medium">Actions</th>
-                    <th className="pb-2 text-right font-medium">Energy (kWh)</th>
-                    <th className="pb-2 text-right font-medium">Cost</th>
-                    <th className="pb-2 text-right font-medium">Primary Device</th>
+                    <th className="pb-2 text-left font-bold">Zone</th>
+                    <th className="pb-2 text-right font-bold">Devices</th>
+                    <th className="pb-2 text-right font-bold">Actions</th>
+                    <th className="pb-2 text-right font-bold">Energy (kWh)</th>
+                    <th className="pb-2 text-right font-bold">Cost</th>
+                    <th className="pb-2 text-right font-bold">Primary Device</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -948,10 +952,10 @@ function ComfortTab({ hours, unitKey }: { hours: number; unitKey: 'c' | 'f' }) {
     <div className="space-y-6">
       {/* Overall Score */}
       {comfort && (
-        <Card className="border-border/60">
+        <Card>
           <CardContent className="flex items-center gap-6 p-6">
             <div
-              className="flex h-24 w-24 items-center justify-center rounded-full border-4"
+              className="flex h-24 w-24 items-center justify-center rounded-full border-4 dark:shadow-[0_0_20px_rgba(74,222,128,0.2)]"
               style={{
                 borderColor:
                   comfort.overall_score >= 80
@@ -984,7 +988,7 @@ function ComfortTab({ hours, unitKey }: { hours: number; unitKey: 'c' | 'f' }) {
       {comfort?.zones && comfort.zones.length > 0 && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {comfort.zones.map((zone) => (
-            <Card key={zone.zone_id} className="border-border/60">
+            <Card key={zone.zone_id}>
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
                   <h4 className="font-medium">{zone.zone_name}</h4>
@@ -1014,7 +1018,7 @@ function ComfortTab({ hours, unitKey }: { hours: number; unitKey: 'c' | 'f' }) {
                       <span>Temperature in range</span>
                       <span>{zone.temp_in_range_pct.toFixed(0)}%</span>
                     </div>
-                    <div className="mt-1 h-2 rounded-full bg-muted">
+                    <div className="mt-1 h-2 rounded-full bg-muted dark:bg-[rgba(2,6,23,0.38)]">
                       <div
                         className="h-2 rounded-full bg-orange-500"
                         style={{ width: `${Math.min(100, zone.temp_in_range_pct)}%` }}
@@ -1026,7 +1030,7 @@ function ComfortTab({ hours, unitKey }: { hours: number; unitKey: 'c' | 'f' }) {
                       <span>Humidity in range</span>
                       <span>{zone.humidity_in_range_pct.toFixed(0)}%</span>
                     </div>
-                    <div className="mt-1 h-2 rounded-full bg-muted">
+                    <div className="mt-1 h-2 rounded-full bg-muted dark:bg-[rgba(2,6,23,0.38)]">
                       <div
                         className="h-2 rounded-full bg-blue-500"
                         style={{ width: `${Math.min(100, zone.humidity_in_range_pct)}%` }}
@@ -1049,7 +1053,7 @@ function ComfortTab({ hours, unitKey }: { hours: number; unitKey: 'c' | 'f' }) {
 
       {/* Radar Chart */}
       {radarData.length > 0 && (
-        <Card className="border-border/60">
+        <Card>
           <CardHeader>
             <CardTitle>Comfort Comparison</CardTitle>
             <CardDescription>Zone comfort scores compared</CardDescription>
@@ -1122,7 +1126,7 @@ function DecisionsTab({ hours }: { hours: number }) {
 
   return (
     <div className="space-y-6">
-      <Card className="border-border/60">
+      <Card>
         <CardHeader>
           <CardTitle>Decision Log</CardTitle>
           <CardDescription>
@@ -1144,7 +1148,7 @@ function DecisionsTab({ hours }: { hours: number }) {
                   .map((zone) => (
                     <div
                       key={zone.zone_id}
-                      className="flex items-center justify-between rounded-lg border border-border/40 p-3"
+                      className="flex items-center justify-between rounded-lg border border-border/40 dark:bg-[rgba(2,6,23,0.35)] dark:border-[rgba(148,163,184,0.15)] p-3"
                     >
                       <div className="flex items-center gap-3">
                         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">

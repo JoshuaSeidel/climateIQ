@@ -260,12 +260,12 @@ export const Schedules = () => {
             Back
           </Button>
           <div>
-            <p className="text-xs uppercase tracking-widest text-muted-foreground">Schedules</p>
-            <h2 className="text-2xl font-semibold">{isEdit ? 'Edit Schedule' : 'Create Schedule'}</h2>
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Schedules</p>
+            <h2 className="text-2xl font-black tracking-tight">{isEdit ? 'Edit Schedule' : 'Create Schedule'}</h2>
           </div>
         </div>
 
-        <Card className="border-border/60">
+        <Card>
           <CardContent className="space-y-5 pt-6">
             {/* Name */}
             <div>
@@ -299,8 +299,8 @@ export const Schedules = () => {
                       }}
                       className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
                         form.zone_ids.includes(z.id)
-                          ? 'border-primary bg-primary/10 text-primary'
-                          : 'border-border/60 text-muted-foreground hover:border-border hover:text-foreground'
+                          ? 'border-primary bg-primary/10 text-primary dark:bg-primary/15 dark:border-primary/30'
+                          : 'border-border/60 text-muted-foreground hover:border-border hover:text-foreground dark:border-[rgba(148,163,184,0.15)]'
                       }`}
                     >
                       {z.name}
@@ -329,7 +329,7 @@ export const Schedules = () => {
                 <select
                   value={form.hvac_mode}
                   onChange={(e) => setForm((f) => ({ ...f, hvac_mode: e.target.value }))}
-                  className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm"
+                  className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
                 >
                   {HVAC_MODES.map((m) => (
                     <option key={m.value} value={m.value}>
@@ -351,8 +351,8 @@ export const Schedules = () => {
                     onClick={() => handleToggleDay(day)}
                     className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
                       form.days_of_week.includes(day)
-                        ? 'border-primary bg-primary/10 text-primary'
-                        : 'border-border/60 text-muted-foreground hover:border-border hover:text-foreground'
+                        ? 'border-primary bg-primary/10 text-primary dark:bg-primary/15 dark:border-primary/30'
+                        : 'border-border/60 text-muted-foreground hover:border-border hover:text-foreground dark:border-[rgba(148,163,184,0.15)]'
                     }`}
                   >
                     {DAY_LABELS[idx]}
@@ -424,7 +424,7 @@ export const Schedules = () => {
                     onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}
                     className="h-2 flex-1 cursor-pointer appearance-none rounded-lg bg-border accent-primary"
                   />
-                  <span className="w-6 text-center text-sm font-semibold">{form.priority}</span>
+                  <span className="w-6 text-center text-sm font-black">{form.priority}</span>
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
                   Higher priority schedules override lower ones when they overlap.
@@ -480,8 +480,8 @@ export const Schedules = () => {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <p className="text-xs uppercase tracking-widest text-muted-foreground">Schedules</p>
-          <h2 className="text-2xl font-semibold">Manage Schedules</h2>
+          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Schedules</p>
+          <h2 className="text-2xl font-black tracking-tight">Manage Schedules</h2>
         </div>
         <Button
           className="gap-2"
@@ -534,7 +534,7 @@ export const Schedules = () => {
       {schedulesLoading ? (
         <div className="grid gap-4">
           {[1, 2, 3].map((i) => (
-            <Card key={i} className="h-36 animate-pulse border-border/60 bg-muted/20" />
+            <Card key={i} className="h-36 animate-pulse bg-muted/20" />
           ))}
         </div>
       ) : sortedSchedules.length === 0 ? (
@@ -567,7 +567,7 @@ export const Schedules = () => {
           {sortedSchedules.map((schedule) => (
             <Card
               key={schedule.id}
-              className={`border-border/60 transition-opacity ${
+              className={`transition-opacity ${
                 !schedule.is_enabled ? 'opacity-60' : ''
               }`}
             >
@@ -662,7 +662,7 @@ export const Schedules = () => {
                         key={day}
                         className={`rounded px-2 py-0.5 text-xs font-medium ${
                           schedule.days_of_week.includes(day)
-                            ? 'bg-primary/10 text-primary'
+                            ? 'bg-primary/10 text-primary dark:bg-primary/15'
                             : 'bg-muted/30 text-muted-foreground/40'
                         }`}
                       >

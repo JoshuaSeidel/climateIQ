@@ -104,12 +104,12 @@ export const Settings = () => {
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-xs uppercase tracking-widest text-muted-foreground">Settings</p>
-        <h2 className="text-2xl font-semibold">System Preferences</h2>
+        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Settings</p>
+        <h2 className="text-2xl font-black tracking-tight">System Preferences</h2>
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex flex-wrap gap-1 rounded-2xl border border-border/60 p-1">
+      <div className="flex flex-wrap gap-1 rounded-2xl border border-border/60 p-1 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.35)]">
         {TABS.map((tab) => (
           <Button
             key={tab.id}
@@ -227,12 +227,12 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
   }
 
   if (loading) {
-    return <Card className="h-64 animate-pulse border-border/60 bg-muted/20" />
+    return <Card className="h-64 animate-pulse bg-muted/20" />
   }
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
-      <Card className="border-border/60">
+      <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
             <Globe className="h-5 w-5 text-primary" />
@@ -278,7 +278,7 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
         </CardContent>
       </Card>
 
-      <Card className="border-border/60">
+      <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
             <Thermometer className="h-5 w-5 text-primary" />
@@ -505,7 +505,7 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
   })
 
   return (
-    <Card className="border-border/60">
+    <Card>
       <CardHeader>
         <div className="flex items-center gap-2">
           <Home className="h-5 w-5 text-blue-500" />
@@ -546,7 +546,7 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
           <select
             value={settings?.weather_entity ?? ''}
             onChange={(e) => updateWeatherEntity.mutate(e.target.value)}
-            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm"
+            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
           >
             <option value="">Select a weather entity...</option>
             {weatherEntities?.map((entity) => (
@@ -573,7 +573,7 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
           <select
             value={settings?.energy_entity ?? ''}
             onChange={(e) => updateEnergyEntity.mutate(e.target.value)}
-            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm"
+            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
           >
             <option value="">None — energy tracking disabled</option>
             {(sensorEntities ?? []).map((entity) => (
@@ -624,7 +624,7 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
 
           <div className="grid gap-4 lg:grid-cols-2">
             {/* Climate Entities */}
-            <div className="rounded-lg border border-border/60 p-3">
+            <div className="rounded-lg border border-border/40 p-3 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
               <div className="mb-2 flex items-center justify-between">
                 <h5 className="text-sm font-medium">Climate</h5>
                 {selectedClimate.size > 0 && (
@@ -642,7 +642,7 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
                   filterEntities(climateEntities).map((entity) => (
                     <label
                       key={entity.entity_id}
-                      className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 transition-colors hover:bg-muted/50 ${
+                      className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 transition-colors hover:bg-muted/50 dark:hover:bg-white/5 ${
                         selectedClimate.has(entity.entity_id) ? 'bg-primary/5' : ''
                       }`}
                     >
@@ -668,7 +668,7 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
             </div>
 
             {/* Sensor Entities */}
-            <div className="rounded-lg border border-border/60 p-3">
+            <div className="rounded-lg border border-border/40 p-3 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
               <div className="mb-2 flex items-center justify-between">
                 <h5 className="text-sm font-medium">Sensors</h5>
                 {selectedSensors.size > 0 && (
@@ -686,7 +686,7 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
                   filterEntities(sensorEntities).map((entity) => (
                     <label
                       key={entity.entity_id}
-                      className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 transition-colors hover:bg-muted/50 ${
+                      className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 transition-colors hover:bg-muted/50 dark:hover:bg-white/5 ${
                         selectedSensors.has(entity.entity_id) ? 'bg-primary/5' : ''
                       }`}
                     >
@@ -826,7 +826,7 @@ function LLMTab({
 
   return (
     <div className="space-y-6">
-      <Card className="border-border/60">
+      <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -848,8 +848,8 @@ function LLMTab({
                 onClick={() => setSelectedProvider(provider.provider)}
                 className={`rounded-lg border p-3 text-left text-sm transition-colors ${
                   selectedProvider === provider.provider
-                    ? 'border-primary bg-primary/5'
-                    : 'border-border/60 hover:border-border'
+                    ? 'border-primary bg-primary/5 dark:border-primary/40 dark:bg-primary/10'
+                    : 'border-border/60 hover:border-border dark:border-[rgba(148,163,184,0.15)]'
                 }`}
               >
                 <div className="font-medium capitalize">{provider.provider}</div>
@@ -882,7 +882,7 @@ function LLMTab({
 
           {/* Model Selection */}
           {selectedProvider && (
-            <div className="space-y-3 rounded-lg border border-border/60 p-4">
+            <div className="space-y-3 rounded-lg border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
               <h4 className="font-medium capitalize">{selectedProvider} Configuration</h4>
               <div className="flex items-center justify-between gap-2">
                 <div className="text-sm text-muted-foreground">
@@ -926,7 +926,7 @@ function LLMTab({
                   <label className="text-sm font-medium">
                     Available Models ({currentProvider.models.length})
                   </label>
-                  <div className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-border/60 p-2">
+                  <div className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-border/40 p-2 dark:border-[rgba(148,163,184,0.15)]">
                     {currentProvider.models.map((model) => (
                       <button
                         key={model.id}
@@ -936,7 +936,7 @@ function LLMTab({
                         className={`flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm transition-colors ${
                           selectedModels[selectedProvider] === model.id
                             ? 'bg-primary/10 text-primary'
-                            : 'hover:bg-muted/50'
+                            : 'hover:bg-muted/50 dark:hover:bg-white/5'
                         }`}
                       >
                         <span>{model.display_name || model.id}</span>
@@ -983,7 +983,7 @@ function ModesTab({ settings }: { settings?: SystemSettings }) {
 
   return (
     <div className="space-y-4">
-      <Card className="border-border/60">
+      <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
             <Brain className="h-5 w-5 text-primary" />
@@ -1000,15 +1000,15 @@ function ModesTab({ settings }: { settings?: SystemSettings }) {
               key={mode}
               className={`flex items-start gap-4 rounded-lg border p-4 transition-colors ${
                 currentMode === mode
-                  ? 'border-primary bg-primary/5'
-                  : 'border-border/60 hover:border-border'
+                  ? 'border-primary bg-primary/5 dark:border-primary/40 dark:bg-primary/10'
+                  : 'border-border/60 hover:border-border dark:border-[rgba(148,163,184,0.15)]'
               }`}
             >
               <div className="flex-1">
                 <div className="flex items-center gap-2">
                   <h4 className="font-medium capitalize">{mode.replace('_', ' ')}</h4>
                   {currentMode === mode && (
-                    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary dark:bg-primary/15 dark:border-primary/30">
                       Active
                     </span>
                   )}
@@ -1090,7 +1090,7 @@ function BackupTab() {
 
   return (
     <div className="space-y-6">
-      <Card className="border-border/60">
+      <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
             <Database className="h-5 w-5 text-primary" />
@@ -1143,7 +1143,7 @@ function BackupTab() {
               {(backups ?? []).map((backup) => (
                 <div
                   key={backup.backup_id}
-                  className="flex items-center justify-between rounded-lg border border-border/40 p-3"
+                  className="flex items-center justify-between rounded-lg border border-border/40 p-3 dark:bg-[rgba(2,6,23,0.35)] dark:border-[rgba(148,163,184,0.15)]"
                 >
                   <div>
                     <p className="text-sm font-medium">{backup.filename}</p>
@@ -1166,7 +1166,7 @@ function BackupTab() {
 // ============================================================================
 const LogicTab = ({ sections }: { sections: Array<{ id: string; title: string; description: string; details: string[] }> }) => (
   <div className="space-y-4">
-    <Card className="border-border/60">
+    <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <BookOpen className="h-5 w-5" />
@@ -1178,7 +1178,7 @@ const LogicTab = ({ sections }: { sections: Array<{ id: string; title: string; d
       </CardHeader>
     </Card>
     {sections.map((section) => (
-      <Card key={section.id} className="border-border/60">
+      <Card key={section.id}>
         <CardHeader className="pb-2">
           <CardTitle className="text-base">{section.title}</CardTitle>
           <CardDescription>{section.description}</CardDescription>
@@ -1210,7 +1210,7 @@ function AboutTab({
 }) {
   return (
     <div className="space-y-6">
-      <Card className="border-border/60">
+      <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
             <Info className="h-5 w-5 text-primary" />
@@ -1219,39 +1219,39 @@ function AboutTab({
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="rounded-lg border border-border/60 p-4">
+            <div className="rounded-lg border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
               <p className="text-sm text-muted-foreground">Application</p>
-              <p className="text-lg font-semibold">{version?.name ?? 'ClimateIQ'}</p>
+              <p className="text-lg font-black">{version?.name ?? 'ClimateIQ'}</p>
             </div>
-            <div className="rounded-lg border border-border/60 p-4">
+            <div className="rounded-lg border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
               <p className="text-sm text-muted-foreground">Version</p>
-              <p className="text-lg font-semibold">{version?.version ?? '0.1.0'}</p>
+              <p className="text-lg font-black">{version?.version ?? '0.1.0'}</p>
             </div>
-            <div className="rounded-lg border border-border/60 p-4">
+            <div className="rounded-lg border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
               <p className="text-sm text-muted-foreground">System Health</p>
               <div className="flex items-center gap-2">
                 {health?.status === 'ok' ? (
                   <>
                     <div className="h-2 w-2 rounded-full bg-green-500" />
-                    <p className="text-lg font-semibold text-green-600">Healthy</p>
+                    <p className="text-lg font-black text-green-600">Healthy</p>
                   </>
                 ) : (
                   <>
                     <div className="h-2 w-2 rounded-full bg-yellow-500" />
-                    <p className="text-lg font-semibold text-yellow-600">
+                    <p className="text-lg font-black text-yellow-600">
                       {health?.status ?? 'Unknown'}
                     </p>
                   </>
                 )}
               </div>
             </div>
-            <div className="rounded-lg border border-border/60 p-4">
+            <div className="rounded-lg border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
               <p className="text-sm text-muted-foreground">Frontend</p>
-              <p className="text-lg font-semibold">React + Vite</p>
+              <p className="text-lg font-black">React + Vite</p>
             </div>
           </div>
 
-          <div className="rounded-lg border border-border/60 p-4">
+          <div className="rounded-lg border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
             <p className="text-sm text-muted-foreground">Description</p>
             <p className="mt-1 text-sm">
               ClimateIQ is an intelligent HVAC zone management system that uses AI to optimize home
@@ -1260,7 +1260,7 @@ function AboutTab({
             </p>
           </div>
 
-          <div className="rounded-lg border border-border/60 p-4">
+          <div className="rounded-lg border border-border/40 p-4 dark:border-[rgba(148,163,184,0.15)] dark:bg-[rgba(2,6,23,0.25)]">
             <p className="text-sm font-medium">Tech Stack</p>
             <div className="mt-2 flex flex-wrap gap-2">
               {[
@@ -1277,7 +1277,7 @@ function AboutTab({
               ].map((tech) => (
                 <span
                   key={tech}
-                  className="rounded-full border border-border/60 px-2 py-0.5 text-xs"
+                  className="rounded-full border border-border/40 px-2 py-0.5 text-xs dark:border-[rgba(148,163,184,0.18)] dark:bg-[rgba(2,6,23,0.30)]"
                 >
                   {tech}
                 </span>

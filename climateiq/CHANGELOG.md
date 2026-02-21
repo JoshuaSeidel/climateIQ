@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.8.1
+
+### Changed
+
+- **Dark glassmorphism UI redesign** — complete visual overhaul of the
+  frontend with a dark glassmorphism aesthetic inspired by Humidity
+  Intelligence V2. In dark mode, cards use translucent backgrounds with
+  backdrop-blur, colored glow shadows, and gradient accents. Light mode
+  uses clean solid backgrounds with subtle shadows.
+
+- **Design system foundation** — new CSS custom properties for glass
+  backgrounds, borders, and glow effects. Utility classes `.glass-card`
+  and `.glow-border-*` for consistent glassmorphism across components.
+  State-driven color tokens (safe, cool, warning, danger, purple).
+
+- **Updated UI components** — Card, Button, Input, and ThemeToggle
+  components updated with dark-mode translucent backgrounds, gradient
+  buttons with glow, and glass input fields.
+
+- **Layout shell redesign** — sidebar with dark glass background and
+  glowing active nav items, header with lane-button mode switcher,
+  ambient radial gradient overlays on the main container.
+
+- **Dashboard redesign** — hero stat cards with glowing icon circles,
+  instrument-panel typography (font-black), glass weather widget, glass
+  schedule items, and glass temperature override popup.
+
+- **ZoneCard redesign** — status-driven colored left border and glow
+  shadow (green for occupied, sky for idle), pulse animation on occupied
+  status dot, horizontal chip/pill layout for metrics.
+
+- **Analytics redesign** — glass chart containers with updated tooltip
+  styling, glass stat cards, glass tab navigation and time range
+  selectors.
+
+- **All pages updated** — Zones, Schedules, Chat, and Settings pages
+  all updated with consistent glassmorphism treatment, refined
+  typography (font-black for values, 10px bold uppercase labels), and
+  dark-mode glass borders/backgrounds.
+
 ## 0.8.0
 
 ### Added

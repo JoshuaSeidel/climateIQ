@@ -289,7 +289,7 @@ export const Dashboard = () => {
   return (
     <div className="space-y-6">
       {error && (
-        <div className="flex items-center justify-between rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+        <div className="flex items-center justify-between rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive dark:bg-red-500/10 dark:border-red-500/30 dark:backdrop-blur-xl">
           <span>{error}</span>
           <button onClick={() => setError(null)} className="ml-4 font-medium underline">
             Dismiss
@@ -300,8 +300,8 @@ export const Dashboard = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-xs uppercase tracking-widest text-muted-foreground">Dashboard</p>
-          <h2 className="text-2xl font-semibold">Home Overview</h2>
+          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Dashboard</p>
+          <h2 className="text-2xl font-black tracking-tight">Home Overview</h2>
         </div>
         <Button variant="outline" size="sm" onClick={() => refetchZones()}>
           <RefreshCw className="mr-2 h-4 w-4" />
@@ -312,11 +312,11 @@ export const Dashboard = () => {
       {/* Stats Grid */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {/* Average Temperature + Set Temp */}
-        <Card className="border-border/60 bg-card">
+        <Card>
           <CardContent className="flex items-center justify-between p-4">
             <div>
-              <p className="text-xs uppercase tracking-widest text-muted-foreground">Avg Temp</p>
-              <p className="text-2xl font-semibold text-foreground">
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Avg Temp</p>
+              <p className="text-3xl font-black text-foreground">
                 {stats.avgTemp > 0 ? formatTemperature(stats.avgTemp, unitKey) : '--'}
               </p>
               {stats.avgTargetTemp > 0 && (
@@ -325,37 +325,37 @@ export const Dashboard = () => {
                 </p>
               )}
             </div>
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-orange-500/10">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-orange-500/10 dark:bg-orange-500/15 dark:shadow-[0_0_12px_rgba(249,115,22,0.15)]">
               <Thermometer className="h-6 w-6 text-orange-500" />
             </div>
           </CardContent>
         </Card>
 
         {/* Average Humidity */}
-        <Card className="border-border/60 bg-card">
+        <Card>
           <CardContent className="flex items-center justify-between p-4">
             <div>
-              <p className="text-xs uppercase tracking-widest text-muted-foreground">Humidity</p>
-              <p className="text-2xl font-semibold text-foreground">
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Humidity</p>
+              <p className="text-3xl font-black text-foreground">
                 {stats.avgHumidity > 0 ? `${stats.avgHumidity.toFixed(0)}%` : '--'}
               </p>
             </div>
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-500/10">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-500/10 dark:bg-blue-500/15 dark:shadow-[0_0_12px_rgba(59,130,246,0.15)]">
               <Droplets className="h-6 w-6 text-blue-500" />
             </div>
           </CardContent>
         </Card>
 
         {/* Occupied Zones */}
-        <Card className="border-border/60 bg-card">
+        <Card>
           <CardContent className="flex items-center justify-between p-4">
             <div>
-              <p className="text-xs uppercase tracking-widest text-muted-foreground">Occupied</p>
-              <p className="text-2xl font-semibold text-foreground">
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Occupied</p>
+              <p className="text-3xl font-black text-foreground">
                 {stats.activeZones} / {stats.totalZones}
               </p>
             </div>
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-500/10">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-500/10 dark:bg-green-500/15 dark:shadow-[0_0_12px_rgba(34,197,94,0.15)]">
               <Users className="h-6 w-6 text-green-500" />
             </div>
           </CardContent>
@@ -363,15 +363,15 @@ export const Dashboard = () => {
 
         {/* Energy — only shown when an HA energy entity is configured */}
         {energyData?.configured && (
-          <Card className="border-border/60 bg-card">
+          <Card>
             <CardContent className="flex items-center justify-between p-4">
               <div>
-                <p className="text-xs uppercase tracking-widest text-muted-foreground">Energy</p>
-                <p className="text-2xl font-semibold text-foreground">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Energy</p>
+                <p className="text-3xl font-black text-foreground">
                   {energyData.value != null ? `${energyData.value.toFixed(1)} ${energyData.unit ?? 'kWh'}` : '--'}
                 </p>
               </div>
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-yellow-500/10">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-yellow-500/10 dark:bg-yellow-500/15 dark:shadow-[0_0_12px_rgba(234,179,8,0.15)]">
                 <Zap className="h-6 w-6 text-yellow-500" />
               </div>
             </CardContent>
@@ -380,10 +380,10 @@ export const Dashboard = () => {
       </div>
 
       {/* LLM Summary */}
-      <Card className="border-border/60">
+      <Card>
         <CardHeader className="flex flex-row items-center justify-between pb-2">
-          <CardTitle className="flex items-center gap-2 text-sm font-medium">
-            <Brain className="h-4 w-4 text-primary" />
+          <CardTitle className="flex items-center gap-2 text-sm font-bold">
+            <Brain className="h-4 w-4 text-primary dark:text-primary dark:drop-shadow-[0_0_6px_rgba(56,189,248,0.4)]" />
             What's Happening
           </CardTitle>
           <Button variant="ghost" size="sm" onClick={() => refetchSummary()} disabled={summaryLoading}>
@@ -408,14 +408,14 @@ export const Dashboard = () => {
         <div className="xl:col-span-2">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <p className="text-xs uppercase tracking-widest text-muted-foreground">Zones</p>
-              <h3 className="text-xl font-semibold text-foreground">Climate Zones</h3>
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Zones</p>
+              <h3 className="text-xl font-black tracking-tight text-foreground">Climate Zones</h3>
             </div>
           </div>
           {zonesLoading ? (
             <div className="grid gap-4 md:grid-cols-2">
               {[1, 2, 3, 4].map((i) => (
-                <Card key={i} className="h-32 animate-pulse border-border/60 bg-muted/20" />
+                <Card key={i} className="h-32 animate-pulse bg-muted/20" />
               ))}
             </div>
           ) : zones.length ? (
@@ -426,7 +426,7 @@ export const Dashboard = () => {
                   {/* Temperature Override Button */}
                   <div className="absolute right-2 top-2 flex gap-1">
                     {tempOverride?.zoneId === zone.id ? (
-                      <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">
+                      <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-lg dark:bg-[rgba(10,12,16,0.85)] dark:border-[rgba(148,163,184,0.2)] dark:backdrop-blur-xl">
                         <Button
                           variant="ghost"
                           size="icon"
@@ -499,7 +499,7 @@ export const Dashboard = () => {
               ))}
             </div>
           ) : (
-            <Card className="border-dashed border-border/70 bg-card/20 p-8 text-center text-muted-foreground">
+            <Card className="border-dashed bg-card/20 p-8 text-center text-muted-foreground">
               No zones configured yet. Add zones to start monitoring.
             </Card>
           )}
@@ -508,9 +508,9 @@ export const Dashboard = () => {
         {/* Sidebar */}
         <div className="space-y-6">
           {/* HVAC Status */}
-          <Card className="border-border/60">
+          <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-medium">
+              <CardTitle className="flex items-center gap-2 text-sm font-bold">
                 <Gauge className="h-4 w-4 text-muted-foreground" />
                 HVAC Status
               </CardTitle>
@@ -519,20 +519,20 @@ export const Dashboard = () => {
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm">Mode</span>
-                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary capitalize">
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium capitalize dark:bg-primary/15 dark:text-primary dark:border dark:border-primary/30">
                     {currentMode.replace('_', ' ')}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm">Zones Occupied</span>
-                  <span className="text-sm font-medium">
+                  <span className="text-sm font-bold">
                     {stats.activeZones}/{stats.totalZones}
                   </span>
                 </div>
                 {energyData?.configured && (
                   <div className="flex items-center justify-between">
                     <span className="text-sm">Energy</span>
-                    <span className="text-sm font-medium">
+                    <span className="text-sm font-bold">
                       {energyData.value != null ? `${energyData.value.toFixed(1)} ${energyData.unit ?? 'kWh'}` : '--'}
                     </span>
                   </div>
@@ -542,9 +542,9 @@ export const Dashboard = () => {
           </Card>
 
           {/* Weather Widget */}
-          <Card className="border-border/60">
+          <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-medium">
+              <CardTitle className="flex items-center gap-2 text-sm font-bold">
                 <Cloud className="h-4 w-4 text-muted-foreground" />
                 Current Weather
                 {weatherEnvelope?.stale && (
@@ -567,14 +567,14 @@ export const Dashboard = () => {
                 </div>
               ) : weather ? (
                 <div className="flex items-center gap-4">
-                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
+                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 dark:bg-primary/15 dark:shadow-[0_0_12px_rgba(56,189,248,0.2)]">
                     <WeatherIcon className="h-8 w-8 text-primary" />
                   </div>
                   <div>
-                    <p className="text-3xl font-bold">
+                    <p className="text-4xl font-black">
                       {weather.temperature != null ? `${weather.temperature.toFixed(0)}${weather.temperature_unit}` : '--'}
                     </p>
-                    <p className="text-sm capitalize text-muted-foreground">{weather.state}</p>
+                    <p className="font-bold capitalize text-muted-foreground">{weather.state}</p>
                   </div>
                 </div>
               ) : (
@@ -600,9 +600,9 @@ export const Dashboard = () => {
           </Card>
 
           {/* Upcoming Schedules */}
-          <Card className="border-border/60">
+          <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-medium">
+              <CardTitle className="flex items-center gap-2 text-sm font-bold">
                 <Calendar className="h-4 w-4 text-muted-foreground" />
                 Upcoming Schedules
               </CardTitle>
@@ -613,10 +613,10 @@ export const Dashboard = () => {
                   {schedules.slice(0, 4).map((schedule) => (
                     <div
                       key={schedule.schedule_id}
-                      className="flex items-center justify-between rounded-lg border border-border/40 p-2"
+                      className="flex items-center justify-between rounded-lg border border-border/40 p-2 dark:bg-[rgba(2,6,23,0.35)] dark:border-[rgba(148,163,184,0.15)]"
                     >
                       <div>
-                        <p className="text-sm font-medium">{schedule.schedule_name}</p>
+                        <p className="text-sm font-bold">{schedule.schedule_name}</p>
                         <p className="text-xs text-muted-foreground">
                           {schedule.zone_names?.length
                             ? schedule.zone_names.join(', ')
@@ -624,7 +624,7 @@ export const Dashboard = () => {
                         </p>
                       </div>
                       <div className="text-right">
-                        <p className="text-sm font-medium">{formatTemperature(schedule.target_temp_c, unitKey)}</p>
+                        <p className="text-sm font-bold">{formatTemperature(schedule.target_temp_c, unitKey)}</p>
                         <p className="flex items-center gap-1 text-xs text-muted-foreground">
                           <Clock className="h-3 w-3" />
                           {new Date(schedule.start_time).toLocaleTimeString([], {
@@ -643,9 +643,9 @@ export const Dashboard = () => {
           </Card>
 
           {/* Quick Actions */}
-          <Card className="border-border/60">
+          <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium">Quick Actions</CardTitle>
+              <CardTitle className="text-sm font-bold">Quick Actions</CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-2">
               <Button
