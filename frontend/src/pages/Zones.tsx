@@ -141,6 +141,8 @@ export const Zones = () => {
     humidity_max: '60',
     lux_max: '500',
   })
+  const [excludeFromMetrics, setExcludeFromMetrics] = useState(false)
+  const [excludeMonths, setExcludeMonths] = useState<number[]>([])
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
   // Fetch zones from backend
@@ -332,6 +334,26 @@ export const Zones = () => {
     },
   })
 
+  // Save metrics exclusion mutation
+  const [exclusionSaveStatus, setExclusionSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
+  const saveExclusionPrefs = useMutation({
+    mutationFn: ({ id, exclude_from_metrics, exclude_months }: { id: string; exclude_from_metrics: boolean; exclude_months: number[] }) =>
+      api.put<ZoneBackend>(`/zones/${id}`, {
+        exclude_from_metrics,
+        exclude_months,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['zones-raw'] })
+      queryClient.invalidateQueries({ queryKey: ['zones'] })
+      setExclusionSaveStatus('success')
+      setTimeout(() => setExclusionSaveStatus('idle'), 3000)
+    },
+    onError: () => {
+      setExclusionSaveStatus('error')
+      setTimeout(() => setExclusionSaveStatus('idle'), 3000)
+    },
+  })
+
   const inferSensorType = useCallback((entities: HADeviceEntity[]): SensorType => {
     const classes = new Set(entities.map(e => e.device_class ?? '').filter(Boolean))
     const hasTemp = classes.has('temperature')
@@ -372,6 +394,8 @@ export const Zones = () => {
         lux_max: '500',
       })
     }
+    setExcludeFromMetrics(zoneRaw?.exclude_from_metrics ?? false)
+    setExcludeMonths(zoneRaw?.exclude_months ?? [])
     setSelectedZoneId(zoneId)
     setViewMode('detail')
   }, [zonesRaw, unitKey])
@@ -1132,6 +1156,115 @@ export const Zones = () => {
               Comfort range: {comfortPrefs.temp_min}-{comfortPrefs.temp_max}{tempUnitLabel(unitKey)},{' '}
               {comfortPrefs.humidity_min}-{comfortPrefs.humidity_max}% humidity, max {comfortPrefs.lux_max} lx
             </p>
+          </CardContent>
+        </Card>
+
+        {/* Metrics & Control Exclusion */}
+        <Card className="border-border/60">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>Metrics & Control Exclusion</CardTitle>
+                <CardDescription>
+                  Exclude this zone from analytics aggregates and AI-driven control
+                </CardDescription>
+              </div>
+              {selectedZoneRaw && (
+                <span
+                  className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                    selectedZoneRaw.is_currently_excluded
+                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400'
+                      : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+                  }`}
+                >
+                  {selectedZoneRaw.is_currently_excluded ? 'Currently excluded' : 'Currently active'}
+                </span>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={excludeFromMetrics}
+                  onChange={(e) => setExcludeFromMetrics(e.target.checked)}
+                  className="h-4 w-4 rounded border-border"
+                />
+                <label className="text-sm font-medium">Exclude from metrics</label>
+              </div>
+
+              {excludeFromMetrics && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-sm font-medium">Exclusion months</label>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {[
+                        { value: 1, label: 'Jan' },
+                        { value: 2, label: 'Feb' },
+                        { value: 3, label: 'Mar' },
+                        { value: 4, label: 'Apr' },
+                        { value: 5, label: 'May' },
+                        { value: 6, label: 'Jun' },
+                        { value: 7, label: 'Jul' },
+                        { value: 8, label: 'Aug' },
+                        { value: 9, label: 'Sep' },
+                        { value: 10, label: 'Oct' },
+                        { value: 11, label: 'Nov' },
+                        { value: 12, label: 'Dec' },
+                      ].map((month) => (
+                        <Button
+                          key={month.value}
+                          variant={excludeMonths.includes(month.value) ? 'default' : 'outline'}
+                          size="sm"
+                          onClick={() => {
+                            setExcludeMonths((prev) =>
+                              prev.includes(month.value)
+                                ? prev.filter((m) => m !== month.value)
+                                : [...prev, month.value]
+                            )
+                          }}
+                        >
+                          {month.label}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Select specific months when this zone should be excluded, or leave all unselected to exclude year-round.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex items-center gap-3">
+                <Button
+                  size="sm"
+                  disabled={saveExclusionPrefs.isPending}
+                  onClick={() => {
+                    if (selectedZoneId) {
+                      saveExclusionPrefs.mutate({
+                        id: selectedZoneId,
+                        exclude_from_metrics: excludeFromMetrics,
+                        exclude_months: excludeMonths,
+                      })
+                    }
+                  }}
+                >
+                  {saveExclusionPrefs.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Check className="mr-2 h-4 w-4" />
+                  )}
+                  Save Exclusion Settings
+                </Button>
+                {exclusionSaveStatus === 'success' && (
+                  <span className="text-sm text-green-600">Exclusion settings saved</span>
+                )}
+                {exclusionSaveStatus === 'error' && (
+                  <span className="text-sm text-red-500">Failed to save exclusion settings</span>
+                )}
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>

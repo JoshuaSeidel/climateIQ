@@ -30,6 +30,14 @@ class ZoneBase(BaseModel):
     is_active: bool = True
     comfort_preferences: dict[str, Any] = Field(default_factory=dict)
     thermal_profile: dict[str, Any] = Field(default_factory=dict)
+    exclude_from_metrics: bool = False
+    exclude_months: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Calendar months (1-12) during which the zone is excluded. "
+            "Empty list means always excluded when exclude_from_metrics is true."
+        ),
+    )
 
 
 class ZoneCreate(ZoneBase):
@@ -44,6 +52,8 @@ class ZoneUpdate(BaseModel):
     is_active: bool | None = None
     comfort_preferences: dict[str, Any] | None = None
     thermal_profile: dict[str, Any] | None = None
+    exclude_from_metrics: bool | None = None
+    exclude_months: list[int] | None = None
 
 
 class SensorBase(BaseModel):
@@ -139,6 +149,9 @@ class ZoneResponse(ZoneBase):
     current_lux: float | None = None
     is_occupied: bool | None = None
     target_temp: float | None = None
+
+    # Computed: whether the zone is currently excluded right now
+    is_currently_excluded: bool = False
 
 
 class SensorReadingCreate(BaseModel):

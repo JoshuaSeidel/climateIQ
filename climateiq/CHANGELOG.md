@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0
+
+### Added
+
+- **Zone metrics exclusion** — zones can now be excluded from analytics
+  aggregates (overview, comfort scores, energy estimates) and from the AI
+  control loop (RuleEngine comfort enforcement, PID vent optimization,
+  PatternEngine learning). Useful for zones like basements that are
+  intentionally kept at different temperatures and would skew whole-house
+  metrics.
+
+- **Month-based exclusion schedule** — exclusion can be limited to specific
+  calendar months (e.g. Nov-Mar for a basement that's only excluded in
+  winter). When no months are selected, the exclusion applies year-round.
+
+- **Exclusion UI in zone settings** — new "Metrics & Control Exclusion"
+  card on the zone detail page with a toggle, month selector buttons, and
+  a status badge showing whether the zone is currently excluded or active.
+
+- **`is_currently_excluded` computed field** on zone API responses — tells
+  the frontend whether the zone is excluded right now based on the current
+  month and the configured exclusion settings.
+
 ## 0.7.9
 
 ### Fixed

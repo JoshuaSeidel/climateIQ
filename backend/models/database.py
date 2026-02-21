@@ -77,6 +77,14 @@ class Zone(Base):
     comfort_preferences: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     thermal_profile: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
+    # Zone exclusion from metrics and AI control loop.
+    # When exclude_from_metrics is True, the zone is omitted from analytics
+    # aggregates (overview, comfort, energy) and from the AI decision loop
+    # (RuleEngine, PID, PatternEngine).  If exclude_months is non-empty,
+    # the exclusion only applies during those calendar months (1-12).
+    exclude_from_metrics: Mapped[bool] = mapped_column(Boolean(), default=False)
+    exclude_months: Mapped[list[int]] = mapped_column(JSONB, default=list)
+
     sensors: Mapped[list[Sensor]] = relationship(
         back_populates="zone", cascade="all, delete-orphan"
     )
@@ -86,6 +94,20 @@ class Zone(Base):
     occupancy_patterns: Mapped[list[OccupancyPattern]] = relationship(
         back_populates="zone", cascade="all, delete-orphan"
     )
+
+    @property
+    def is_currently_excluded(self) -> bool:
+        """Return True if the zone should be excluded from metrics right now.
+
+        If ``exclude_from_metrics`` is False, always returns False.
+        If ``exclude_months`` is empty, the exclusion is year-round.
+        Otherwise, the exclusion only applies during the listed months.
+        """
+        if not self.exclude_from_metrics:
+            return False
+        if not self.exclude_months:
+            return True  # year-round exclusion
+        return datetime.now(UTC).month in self.exclude_months
 
 
 class Sensor(Base):
@@ -638,6 +660,19 @@ async def init_db() -> None:
             """))
         except Exception:
             _db_logger.warning("Could not migrate schedule zone_id -> zone_ids")
+
+        # --- Migration: add zone exclusion columns if missing ----------------
+        try:
+            await conn.execute(text(
+                "ALTER TABLE zones "
+                "ADD COLUMN IF NOT EXISTS exclude_from_metrics BOOLEAN DEFAULT FALSE"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE zones "
+                "ADD COLUMN IF NOT EXISTS exclude_months JSONB DEFAULT '[]'::jsonb"
+            ))
+        except Exception:
+            _db_logger.warning("Could not add zone exclusion columns")
 
         # --- TimescaleDB hypertables (runs inside the transaction) -----------
         await _ensure_hypertables(conn)

@@ -53,6 +53,8 @@ class ZoneState:
     floor: int | None = None
     zone_type: str | None = None
     is_active: bool = True
+    exclude_from_metrics: bool = False
+    exclude_months: list[int] = field(default_factory=list)
     temperature_c: float | None = None
     humidity: float | None = None
     occupancy: bool | None = None
@@ -66,6 +68,15 @@ class ZoneState:
     _humidity_history: deque[tuple[datetime, float]] = field(
         default_factory=lambda: deque(maxlen=288)
     )
+
+    @property
+    def is_currently_excluded(self) -> bool:
+        """Return True if this zone should be skipped by the control loop."""
+        if not self.exclude_from_metrics:
+            return False
+        if not self.exclude_months:
+            return True
+        return _utc_now().month in self.exclude_months
 
     def register_device(self, device: Device) -> None:
         self.devices[device.id] = DeviceState(
@@ -192,6 +203,8 @@ class ZoneManager:
                         if hasattr(zone.type, "value")
                         else str(zone.type),
                         is_active=zone.is_active,
+                        exclude_from_metrics=zone.exclude_from_metrics,
+                        exclude_months=zone.exclude_months or [],
                     )
                     self._zones[zone.id] = state
                 else:
@@ -201,6 +214,8 @@ class ZoneManager:
                         zone.type.value if hasattr(zone.type, "value") else str(zone.type)
                     )
                     state.is_active = zone.is_active
+                    state.exclude_from_metrics = zone.exclude_from_metrics
+                    state.exclude_months = zone.exclude_months or []
                 for device in zone.devices:
                     state.register_device(device)
                 for sensor in zone.sensors:

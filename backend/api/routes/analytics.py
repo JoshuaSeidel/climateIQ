@@ -239,6 +239,13 @@ async def get_overview(
         zone_stmt = zone_stmt.where(Zone.id.in_(zone_filter_uuids))
     zones_result = await db.execute(zone_stmt)
     zones = zones_result.scalars().all()
+
+    # When showing "all zones" (no explicit zone_ids filter), exclude zones
+    # that are currently excluded from metrics.  Explicit selection always
+    # shows the requested zones so users can still inspect excluded zones.
+    if not zone_filter_uuids:
+        zones = [z for z in zones if not z.is_currently_excluded]
+
     if not zones:
         return OverviewResponse(
             period_start=period_start,
@@ -684,8 +691,10 @@ async def get_energy_usage(
     period_start = period_end - timedelta(hours=hours)
 
     # Fetch zones — optionally filtered by zone_ids
+    explicit_filter = False
     zone_stmt = select(Zone).order_by(Zone.name)
     if zone_ids:
+        explicit_filter = True
         try:
             zone_filter_uuids = [uuid.UUID(zid.strip()) for zid in zone_ids.split(",") if zid.strip()]
         except ValueError:
@@ -693,6 +702,11 @@ async def get_energy_usage(
         zone_stmt = zone_stmt.where(Zone.id.in_(zone_filter_uuids))
     zones_result = await db.execute(zone_stmt)
     zones = zones_result.scalars().all()
+
+    # Exclude currently-excluded zones from the "all zones" aggregate
+    if not explicit_filter:
+        zones = [z for z in zones if not z.is_currently_excluded]
+
     if not zones:
         return EnergyResponse(
             period_start=period_start,
@@ -841,8 +855,10 @@ async def get_comfort_scores(
     period_end = datetime.now(UTC)
     period_start = period_end - timedelta(hours=hours)
 
+    explicit_filter = False
     zone_stmt = select(Zone).where(Zone.is_active.is_(True)).order_by(Zone.name)
     if zone_ids:
+        explicit_filter = True
         try:
             zone_filter_uuids = [uuid.UUID(zid.strip()) for zid in zone_ids.split(",") if zid.strip()]
         except ValueError:
@@ -850,6 +866,11 @@ async def get_comfort_scores(
         zone_stmt = zone_stmt.where(Zone.id.in_(zone_filter_uuids))
     zones_result = await db.execute(zone_stmt)
     zones = zones_result.scalars().all()
+
+    # Exclude currently-excluded zones from the "all zones" aggregate
+    if not explicit_filter:
+        zones = [z for z in zones if not z.is_currently_excluded]
+
     # Eagerly capture zone info before any rollback can expire ORM state
     zone_info = [(z.id, z.name) for z in zones]
 

@@ -80,6 +80,9 @@ export type ZoneBackend = {
   is_active: boolean
   comfort_preferences: Record<string, unknown>
   thermal_profile: Record<string, unknown>
+  exclude_from_metrics: boolean
+  exclude_months: number[]
+  is_currently_excluded: boolean
   created_at: string
   updated_at: string
   sensors: Sensor[]

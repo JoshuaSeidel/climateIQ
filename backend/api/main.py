@@ -1432,6 +1432,10 @@ async def execute_rule_engine() -> None:
 
         async with session_maker() as db:
             for state in zone_manager.iter_states():
+                # Skip zones excluded from metrics / AI control
+                if state.is_currently_excluded:
+                    continue
+
                 reading: dict[str, float | bool] = {}
                 if state.temperature_c is not None:
                     reading["temperature_c"] = state.temperature_c
@@ -1556,6 +1560,10 @@ async def execute_vent_optimization() -> None:
 
         async with session_maker() as db:
             for state in zone_manager.iter_states():
+                # Skip zones excluded from metrics / AI control
+                if state.is_currently_excluded:
+                    continue
+
                 # Find smart_vent devices in this zone
                 vent_devices: list[tuple[uuid.UUID, str]] = []  # (device_id, entity_id)
                 for dev_id, dev_state in state.devices.items():
@@ -1656,6 +1664,10 @@ async def execute_pattern_learning() -> None:
             now = datetime.now(UTC)
 
             for zone in zones:
+                # Skip zones excluded from metrics / AI control
+                if zone.is_currently_excluded:
+                    continue
+
                 zone_id_str = str(zone.id)
 
                 # ── Learn occupancy patterns (last 30 days) ─────────────
