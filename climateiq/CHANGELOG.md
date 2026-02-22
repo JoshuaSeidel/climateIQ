@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.8.2
+
+### Fixed
+
+- **Chat history crash** -- fixed `ConversationHistoryItem` Pydantic
+  validation error where the SQLAlchemy `metadata` descriptor (from
+  `DeclarativeBase`) was returned instead of the JSONB column value.
+  Applied the same fix to `ConversationResponse` and
+  `UserFeedbackResponse` schemas.
+
+- **Chat zone status accuracy** -- the LLM now falls back to live Home
+  Assistant sensor states when DB readings are missing, preventing
+  incorrect "offline" reports for zones that are actually online.
+  Zone context explicitly labels zones as ONLINE with sensor counts.
+
+### Added
+
+- **Chat memory system** -- conversations are now mined for long-term
+  user preferences and directives (e.g. "never heat the basement above
+  65 F", "I prefer it cooler at night"). Extracted directives are stored
+  in a new `user_directives` table and injected into both the chat
+  system prompt and the Active-mode AI decision loop so the system
+  remembers user preferences across sessions.
+
+- **Directive management API** -- `GET /api/v1/chat/directives` to list
+  active directives, `POST` to create manually, `DELETE` to deactivate.
+
+- **Memory sidebar in Chat UI** -- the conversation sidebar now shows a
+  "Memory" section listing all active directives with the ability to
+  remove them.
+
 ## 0.8.1
 
 ### Changed

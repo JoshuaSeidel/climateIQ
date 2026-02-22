@@ -59,6 +59,29 @@ class ConversationHistoryItem(BaseModel):
     created_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @classmethod
+    def model_validate(cls, obj: Any, **kwargs: Any) -> ConversationHistoryItem:
+        """Handle SQLAlchemy Conversation model where the column is ``metadata_``.
+
+        The ORM ``Conversation`` stores the JSONB column as ``metadata_``
+        (Python attr) mapped to ``"metadata"`` (DB column) and exposes a
+        ``meta`` property.  ``DeclarativeBase`` already occupies the plain
+        ``metadata`` attribute with the SQLAlchemy ``MetaData`` registry, so
+        we must read the value through ``metadata_`` or ``meta``.
+        """
+        if hasattr(obj, "metadata_"):
+            # Build a dict so Pydantic doesn't touch the SA MetaData descriptor.
+            data = {
+                "id": obj.id,
+                "session_id": obj.session_id,
+                "user_message": obj.user_message,
+                "assistant_response": obj.assistant_response,
+                "created_at": obj.created_at,
+                "metadata": obj.metadata_ if obj.metadata_ is not None else {},
+            }
+            return super().model_validate(data, **kwargs)
+        return super().model_validate(obj, **kwargs)
+
 
 class CommandRequest(BaseModel):
     """Voice/text command request."""
@@ -75,6 +98,149 @@ class CommandResponse(BaseModel):
     action: str | None = None
     zone_affected: str | None = None
     new_value: Any | None = None
+
+
+# ============================================================================
+# Directive / Memory Helpers
+# ============================================================================
+
+DIRECTIVE_EXTRACTION_PROMPT = """Analyze the following conversation exchange and extract any user preferences, constraints, or directives about their HVAC/climate system. Only extract actionable, long-term preferences — NOT one-time requests.
+
+Examples of directives to extract:
+- "Never heat the basement above 65F"
+- "I prefer it cooler at night"
+- "Always keep the nursery at 72F"
+- "Don't run the AC when outdoor temp is below 60F"
+- "I work from home on Mondays and Fridays"
+
+For each directive found, output a JSON array of objects with:
+- "directive": the preference in clear, concise language
+- "category": one of "preference", "constraint", "schedule_hint", "comfort", "energy"
+- "zone_name": the zone name if zone-specific, or null
+
+If no directives are found, return an empty array: []
+
+IMPORTANT: Return ONLY the JSON array, no other text.
+
+User message: {user_message}
+Assistant response: {assistant_response}"""
+
+
+async def _extract_directives(
+    user_message: str,
+    assistant_response: str,
+    conversation_id: uuid.UUID,
+    db: AsyncSession,
+    zones: list[Zone],
+) -> None:
+    """Extract user directives from a conversation and persist them.
+
+    Runs as a fire-and-forget background task after each chat message.
+    Uses a lightweight LLM call to identify actionable preferences.
+    """
+    import json as _json
+
+    from backend.models.database import UserDirective
+
+    try:
+        llm = await get_llm_provider()
+    except Exception:
+        return
+
+    try:
+        response = await llm.chat(
+            messages=[
+                {
+                    "role": "user",
+                    "content": DIRECTIVE_EXTRACTION_PROMPT.format(
+                        user_message=user_message,
+                        assistant_response=assistant_response,
+                    ),
+                }
+            ],
+            system="You extract user preferences from HVAC conversations. Return only valid JSON.",
+        )
+
+        content = response.get("content", "").strip()
+        # Strip markdown code fences if present
+        if content.startswith("```"):
+            content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+        directives = _json.loads(content)
+        if not isinstance(directives, list):
+            return
+
+        # Build zone name -> id map for matching
+        zone_map = {z.name.lower(): z.id for z in zones}
+
+        for d in directives:
+            if not isinstance(d, dict) or not d.get("directive"):
+                continue
+
+            directive_text = str(d["directive"]).strip()
+            if not directive_text:
+                continue
+
+            category = d.get("category", "preference")
+            if category not in ("preference", "constraint", "schedule_hint", "comfort", "energy"):
+                category = "preference"
+
+            # Try to match zone
+            zone_id: uuid.UUID | None = None
+            zone_name = d.get("zone_name")
+            if zone_name and isinstance(zone_name, str):
+                zone_id = zone_map.get(zone_name.lower())
+
+            # Check for duplicates (same directive text)
+            existing = await db.execute(
+                select(UserDirective).where(
+                    UserDirective.directive == directive_text,
+                    UserDirective.is_active.is_(True),
+                )
+            )
+            if existing.scalar_one_or_none():
+                continue
+
+            db.add(UserDirective(
+                directive=directive_text,
+                source_conversation_id=conversation_id,
+                zone_id=zone_id,
+                category=category,
+            ))
+
+        await db.commit()
+        logger.info("Extracted %d directive(s) from conversation %s", len(directives), conversation_id)
+
+    except Exception as e:
+        logger.debug("Directive extraction failed (non-critical): %s", e)
+
+
+async def _get_active_directives(db: AsyncSession) -> str:
+    """Load all active user directives for injection into prompts."""
+    from sqlalchemy.orm import selectinload
+
+    from backend.models.database import UserDirective
+
+    result = await db.execute(
+        select(UserDirective)
+        .where(UserDirective.is_active.is_(True))
+        .options(selectinload(UserDirective.zone))
+        .order_by(UserDirective.created_at.asc())
+    )
+    directives = result.scalars().all()
+
+    if not directives:
+        return ""
+
+    lines = ["=== USER PREFERENCES & DIRECTIVES (from past conversations) ===\n"]
+    lines.append("IMPORTANT: These are standing user preferences. Always respect them unless the user explicitly overrides one in the current conversation.\n")
+    for d in directives:
+        zone_note = ""
+        if d.zone_id and d.zone:
+            zone_note = f" [zone: {d.zone.name}]"
+        lines.append(f"- [{d.category}]{zone_note} {d.directive}")
+
+    return "\n".join(lines)
 
 
 # ============================================================================
@@ -96,6 +262,8 @@ You can:
 When users request changes, use the available tools to execute them. Always confirm what action you're taking.
 
 {logic_reference}
+
+{directives}
 
 === CURRENT SYSTEM STATE ===
 
@@ -407,22 +575,42 @@ async def get_llm_provider() -> LLMProvider:
 
 
 async def get_zone_context(db: AsyncSession, temperature_unit: str) -> str:
-    """Get current zone information for context."""
+    """Get current zone information for context.
+
+    Queries DB sensor readings first, then falls back to live HA sensor
+    states so the LLM never sees a zone as "offline" when HA still has data.
+    """
     from sqlalchemy.orm import selectinload
 
     from backend.models.database import SensorReading
 
     result = await db.execute(
-        select(Zone).where(Zone.is_active.is_(True)).options(selectinload(Zone.sensors))
+        select(Zone)
+        .where(Zone.is_active.is_(True))
+        .options(selectinload(Zone.sensors), selectinload(Zone.devices))
     )
     zones = list(result.scalars().unique().all())
 
     if not zones:
         return "No zones configured."
 
+    # Try to get HA client for live fallback
+    ha_client = None
+    try:
+        import backend.api.dependencies as _deps
+        ha_client = _deps._ha_client
+    except Exception:  # noqa: S110
+        pass
+
     zone_info = []
     for zone in zones:
-        details = [f"- {zone.name} (ID: {zone.id})"]
+        details = [f"- {zone.name} (ID: {zone.id}, status: ONLINE)"]
+        sensor_count = len(zone.sensors) if zone.sensors else 0
+        details.append(f"[{sensor_count} sensor(s)]")
+
+        temp_c: float | None = None
+
+        # 1) Try DB readings
         if zone.sensors:
             reading_result = await db.execute(
                 select(SensorReading)
@@ -432,23 +620,50 @@ async def get_zone_context(db: AsyncSession, temperature_unit: str) -> str:
             )
             readings = reading_result.scalars().all()
             temp_c = next(
-                (
-                    reading.temperature_c
-                    for reading in readings
-                    if reading.temperature_c is not None
-                ),
+                (r.temperature_c for r in readings if r.temperature_c is not None),
                 None,
             )
-            if temp_c is not None:
-                display_temp, display_unit = _format_temp_for_display(temp_c, temperature_unit)
-                details.append(f"temp {display_temp:.1f}\u00b0{display_unit}")
+
+        # 2) Fallback: try live HA sensor entities
+        if temp_c is None and ha_client and zone.sensors:
+            for sensor in zone.sensors:
+                if not sensor.ha_entity_id:
+                    continue
+                try:
+                    state = await ha_client.get_state(sensor.ha_entity_id)
+                    if state and state.state not in ("unavailable", "unknown", None):
+                        try:
+                            raw = float(state.state)
+                            # HA may report in F — check unit_of_measurement
+                            uom = (state.attributes or {}).get("unit_of_measurement", "")
+                            if "F" in str(uom).upper():
+                                raw = (raw - 32) * 5 / 9
+                            temp_c = raw
+                            break
+                        except (ValueError, TypeError):
+                            pass
+                except Exception:  # noqa: S110
+                    pass
+
+        if temp_c is not None:
+            display_temp, display_unit = _format_temp_for_display(temp_c, temperature_unit)
+            details.append(f"temp {display_temp:.1f}\u00b0{display_unit}")
+        elif zone.sensors:
+            details.append("(awaiting sensor data)")
+        else:
+            details.append("(no sensors assigned)")
+
         zone_info.append(" ".join(details))
 
     return "\n".join(zone_info)
 
 
 async def get_conditions_context(db: AsyncSession, temperature_unit: str) -> str:
-    """Get current conditions from sensor data for LLM context."""
+    """Get current conditions from sensor data for LLM context.
+
+    Queries DB sensor readings first, then falls back to live HA sensor
+    states so the LLM never mistakes a zone as offline when HA has data.
+    """
     try:
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
@@ -463,12 +678,21 @@ async def get_conditions_context(db: AsyncSession, temperature_unit: str) -> str
         if not zones:
             return "No zones configured."
 
+        # Try to get HA client for live fallback
+        ha_client = None
+        try:
+            import backend.api.dependencies as _deps
+            ha_client = _deps._ha_client
+        except Exception:  # noqa: S110
+            pass
+
         conditions = []
         for zone in zones:
             if not zone.sensors:
-                conditions.append(f"- {zone.name}: no sensors")
+                conditions.append(f"- {zone.name}: no sensors assigned (zone is active)")
                 continue
 
+            # 1) Try DB readings
             reading_result = await db.execute(
                 select(SensorReading)
                 .where(SensorReading.sensor_id.in_([s.id for s in zone.sensors]))
@@ -476,9 +700,9 @@ async def get_conditions_context(db: AsyncSession, temperature_unit: str) -> str
                 .limit(25)
             )
             readings = reading_result.scalars().all()
-            current_temp = None
-            current_humidity = None
-            current_presence = None
+            current_temp: float | None = None
+            current_humidity: float | None = None
+            current_presence: bool | None = None
             for reading in readings:
                 if current_temp is None and reading.temperature_c is not None:
                     current_temp = reading.temperature_c
@@ -492,6 +716,35 @@ async def get_conditions_context(db: AsyncSession, temperature_unit: str) -> str
                     and current_presence is not None
                 ):
                     break
+
+            # 2) Fallback: try live HA sensor entities for missing values
+            if ha_client and (current_temp is None or current_humidity is None):
+                for sensor in zone.sensors:
+                    if not sensor.ha_entity_id:
+                        continue
+                    try:
+                        state = await ha_client.get_state(sensor.ha_entity_id)
+                        if state and state.state not in ("unavailable", "unknown", None):
+                            attrs = state.attributes or {}
+                            device_class = attrs.get("device_class", "")
+                            uom = str(attrs.get("unit_of_measurement", ""))
+
+                            if current_temp is None and device_class == "temperature":
+                                try:
+                                    raw = float(state.state)
+                                    if "F" in uom.upper():
+                                        raw = (raw - 32) * 5 / 9
+                                    current_temp = raw
+                                except (ValueError, TypeError):
+                                    pass
+
+                            if current_humidity is None and device_class == "humidity":
+                                try:
+                                    current_humidity = float(state.state)
+                                except (ValueError, TypeError):
+                                    pass
+                    except Exception:  # noqa: S110
+                        pass
 
             if (
                 current_temp is not None
@@ -511,7 +764,11 @@ async def get_conditions_context(db: AsyncSession, temperature_unit: str) -> str
                     parts.append("occupied" if current_presence else "unoccupied")
                 conditions.append(" ".join(parts))
             else:
-                conditions.append(f"- {zone.name}: no recent readings")
+                # Zone is active with sensors but no data from DB or HA
+                conditions.append(
+                    f"- {zone.name}: no data available yet "
+                    f"(zone is active, {len(zone.sensors)} sensor(s) assigned)"
+                )
 
         return "\n".join(conditions) if conditions else "No sensor data available."
     except Exception as e:
@@ -1032,9 +1289,11 @@ async def send_chat_message(
     # Build context
     zone_context = await get_zone_context(db, settings.temperature_unit)
     conditions_context = await get_conditions_context(db, settings.temperature_unit)
+    directives_context = await _get_active_directives(db)
 
     system_prompt = SYSTEM_PROMPT.format(
         logic_reference=_get_logic_reference_text(),
+        directives=directives_context,
         system_state=await _get_live_system_context(db, settings.temperature_unit),
         zones=zone_context,
         conditions=conditions_context,
@@ -1098,12 +1357,23 @@ async def send_chat_message(
     db.add(conversation)
     await db.commit()
 
-    # Generate contextual suggestions based on zones and time
-    suggestions = _generate_suggestions(
-        zones_list=list(
-            (await db.execute(select(Zone).where(Zone.is_active.is_(True)))).scalars().all()
-        )
+    # Extract directives from the conversation (fire-and-forget)
+    zones_for_extraction = list(
+        (await db.execute(select(Zone).where(Zone.is_active.is_(True)))).scalars().all()
     )
+    try:
+        await _extract_directives(
+            user_message=payload.message,
+            assistant_response=assistant_message,
+            conversation_id=conversation.id,
+            db=db,
+            zones=zones_for_extraction,
+        )
+    except Exception as extract_err:
+        logger.debug("Directive extraction error (non-critical): %s", extract_err)
+
+    # Generate contextual suggestions based on zones and time
+    suggestions = _generate_suggestions(zones_list=zones_for_extraction)
 
     return ChatResponse(
         message=assistant_message,
@@ -1520,10 +1790,13 @@ async def chat_websocket(
                         settings.temperature_unit,
                     )
 
+                    directives_ctx = await _get_active_directives(db)
+
                     response = await llm.chat(
                         messages=[{"role": "user", "content": user_message}],
                         system=SYSTEM_PROMPT.format(
                             logic_reference=_get_logic_reference_text(),
+                            directives=directives_ctx,
                             system_state=await _get_live_system_context(
                                 db, settings.temperature_unit
                             ),
@@ -1588,3 +1861,85 @@ async def chat_websocket(
             )
         except Exception:
             return
+
+
+# ============================================================================
+# Directive / Memory Endpoints
+# ============================================================================
+
+
+class DirectiveResponse(BaseModel):
+    """A user directive / preference."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    directive: str
+    source_conversation_id: uuid.UUID | None = None
+    zone_id: uuid.UUID | None = None
+    category: str = "preference"
+    is_active: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+
+class DirectiveCreate(BaseModel):
+    """Create a directive manually."""
+
+    directive: str = Field(..., min_length=1, max_length=2000)
+    zone_id: uuid.UUID | None = None
+    category: str = "preference"
+
+
+@router.get("/directives", response_model=list[DirectiveResponse])
+async def list_directives(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    active_only: bool = True,
+) -> list[DirectiveResponse]:
+    """List all user directives / memory items."""
+    from backend.models.database import UserDirective
+
+    stmt = select(UserDirective).order_by(desc(UserDirective.created_at))
+    if active_only:
+        stmt = stmt.where(UserDirective.is_active.is_(True))
+
+    result = await db.execute(stmt)
+    return [DirectiveResponse.model_validate(d) for d in result.scalars().all()]
+
+
+@router.post("/directives", response_model=DirectiveResponse, status_code=status.HTTP_201_CREATED)
+async def create_directive(
+    payload: DirectiveCreate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> DirectiveResponse:
+    """Create a user directive manually."""
+    from backend.models.database import UserDirective
+
+    directive = UserDirective(
+        directive=payload.directive,
+        zone_id=payload.zone_id,
+        category=payload.category,
+    )
+    db.add(directive)
+    await db.commit()
+    await db.refresh(directive)
+    return DirectiveResponse.model_validate(directive)
+
+
+@router.delete("/directives/{directive_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_directive(
+    directive_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """Delete (deactivate) a user directive."""
+    from backend.models.database import UserDirective
+
+    result = await db.execute(
+        select(UserDirective).where(UserDirective.id == directive_id)
+    )
+    directive = result.scalar_one_or_none()
+    if not directive:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Directive not found")
+
+    directive.is_active = False
+    await db.commit()

@@ -1104,6 +1104,34 @@ async def execute_active_mode() -> None:
             zones_text = "\n".join(zone_summaries) if zone_summaries else "No zone data available."
             schedules_text = "\n".join(schedule_summaries) if schedule_summaries else "No active schedules today."
 
+            # ── Load user directives (chat memory) ──────────────────────
+            directives_text = ""
+            try:
+                from sqlalchemy.orm import selectinload as _sil
+
+                from backend.models.database import UserDirective
+
+                dir_result = await db.execute(
+                    sa_select(UserDirective)
+                    .where(UserDirective.is_active.is_(True))
+                    .options(_sil(UserDirective.zone))
+                    .order_by(UserDirective.created_at.asc())
+                )
+                user_directives = dir_result.scalars().all()
+                if user_directives:
+                    lines = [
+                        "\n## User Preferences (from past conversations)\n"
+                        "IMPORTANT: Always respect these standing user preferences.\n"
+                    ]
+                    for ud in user_directives:
+                        zone_note = ""
+                        if ud.zone_id and ud.zone:
+                            zone_note = f" [zone: {ud.zone.name}]"
+                        lines.append(f"- [{ud.category}]{zone_note} {ud.directive}")
+                    directives_text = "\n".join(lines)
+            except Exception as dir_err:
+                logger.debug("Could not load user directives for active mode: %s", dir_err)
+
             system_prompt = (
                 "You are ClimateIQ's AI HVAC controller. Your job is to recommend "
                 "the optimal thermostat target temperature in °C based on the context "
@@ -1126,6 +1154,7 @@ async def execute_active_mode() -> None:
                 f"## Thermostat\n{thermostat_info}\n\n"
                 f"## Weather\n{weather_info}\n\n"
                 f"## Today's Schedules\n{schedules_text}\n\n"
+                f"{directives_text}\n\n"
                 f"Safety limits: {safety_min}°C - {safety_max}°C\n\n"
                 "What target temperature (°C) should the thermostat be set to right now?"
             )

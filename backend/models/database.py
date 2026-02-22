@@ -335,6 +335,38 @@ class SystemSetting(Base):
     )
 
 
+class UserDirective(Base):
+    """User directives / preferences extracted from chat conversations.
+
+    These are long-term memory items that persist across sessions and are
+    injected into both the chat system prompt and the AI decision loop so
+    the system remembers user preferences (e.g. "never heat the basement
+    above 65 F", "I prefer it cooler at night").
+    """
+
+    __tablename__ = "user_directives"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid_pk)
+    directive: Mapped[str] = mapped_column(Text(), nullable=False)
+    source_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    zone_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("zones.id", ondelete="SET NULL")
+    )
+    category: Mapped[str] = mapped_column(
+        String(64), default="preference"
+    )  # preference, constraint, schedule_hint, comfort, energy
+    is_active: Mapped[bool] = mapped_column(Boolean(), default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    zone: Mapped[Zone | None] = relationship()
+    source_conversation: Mapped[Conversation | None] = relationship()
+
+
 class User(Base):
     """User accounts for multi-user support."""
 

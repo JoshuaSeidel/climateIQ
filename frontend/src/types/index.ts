@@ -279,6 +279,20 @@ export type ConversationHistoryItem = {
 }
 
 // ============================================================================
+// Memory / Directive Types
+// ============================================================================
+export type UserDirective = {
+  id: string
+  directive: string
+  source_conversation_id?: string
+  zone_id?: string
+  category: 'preference' | 'constraint' | 'schedule_hint' | 'comfort' | 'energy'
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+// ============================================================================
 // Settings Types
 // ============================================================================
 export type WeatherEntity = {

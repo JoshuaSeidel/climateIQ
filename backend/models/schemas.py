@@ -225,8 +225,17 @@ class UserFeedbackResponse(BaseModel):
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> UserFeedbackResponse:
-        if hasattr(obj, "meta") and not hasattr(obj, "metadata"):
-            obj.metadata = obj.meta
+        if hasattr(obj, "metadata_"):
+            data = {
+                "id": obj.id,
+                "zone_id": obj.zone_id,
+                "feedback_type": obj.feedback_type,
+                "comment": obj.comment,
+                "embedding": list(obj.embedding) if obj.embedding is not None else None,
+                "metadata": obj.metadata_ if obj.metadata_ is not None else {},
+                "created_at": obj.created_at,
+            }
+            return super().model_validate(data, **kwargs)
         return super().model_validate(obj, **kwargs)
 
 
@@ -242,8 +251,16 @@ class ConversationResponse(BaseModel):
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> ConversationResponse:
-        if hasattr(obj, "meta") and not hasattr(obj, "metadata"):
-            obj.metadata = obj.meta
+        if hasattr(obj, "metadata_"):
+            data = {
+                "id": obj.id,
+                "session_id": obj.session_id,
+                "user_message": obj.user_message,
+                "assistant_response": obj.assistant_response,
+                "metadata": obj.metadata_ if obj.metadata_ is not None else {},
+                "created_at": obj.created_at,
+            }
+            return super().model_validate(data, **kwargs)
         return super().model_validate(obj, **kwargs)
 
 
@@ -259,6 +276,29 @@ class ConversationCreate(BaseModel):
     user_message: str
     assistant_response: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UserDirectiveResponse(BaseModel):
+    """A user directive / preference extracted from chat."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    directive: str
+    source_conversation_id: uuid.UUID | None = None
+    zone_id: uuid.UUID | None = None
+    category: str = "preference"
+    is_active: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+
+class UserDirectiveCreate(BaseModel):
+    """Create a user directive manually."""
+
+    directive: str = Field(..., min_length=1, max_length=2000)
+    zone_id: uuid.UUID | None = None
+    category: str = Field(default="preference", pattern=r"^(preference|constraint|schedule_hint|comfort|energy)$")
 
 
 class WebSocketMessage(BaseModel):

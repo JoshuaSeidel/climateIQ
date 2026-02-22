@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { api, BASE_PATH } from '@/lib/api'
-import type { ChatMessage, ChatResponse, ConversationHistoryItem } from '@/types'
+import type { ChatMessage, ChatResponse, ConversationHistoryItem, UserDirective } from '@/types'
 import {
   MessageSquarePlus,
   Send,
@@ -17,6 +17,7 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  Brain,
 } from 'lucide-react'
 
 const SUGGESTIONS = [
@@ -50,6 +51,12 @@ export const Chat = () => {
   const { data: conversations, refetch: refetchConversations } = useQuery<ConversationHistoryItem[]>({
     queryKey: ['chat-history'],
     queryFn: () => api.get<ConversationHistoryItem[]>('/chat/history', { limit: 50 }),
+  })
+
+  // Fetch user directives (memory)
+  const { data: directives, refetch: refetchDirectives } = useQuery<UserDirective[]>({
+    queryKey: ['chat-directives'],
+    queryFn: () => api.get<UserDirective[]>('/chat/directives', { active_only: true }),
   })
 
   // Group conversations by session_id
@@ -110,6 +117,8 @@ export const Chat = () => {
         },
       ])
       refetchConversations()
+      // Refetch directives since new ones may have been extracted
+      refetchDirectives()
     },
     onError: (error) => {
       setMessages((prev) => [
@@ -133,6 +142,14 @@ export const Chat = () => {
       if (sessionId === sid) {
         handleNewConversation()
       }
+    },
+  })
+
+  // Delete directive mutation
+  const deleteDirective = useMutation({
+    mutationFn: (id: string) => api.delete(`/chat/directives/${id}`),
+    onSuccess: () => {
+      refetchDirectives()
     },
   })
 
@@ -301,6 +318,40 @@ export const Chat = () => {
           ) : (
             <div className="p-4 text-center text-sm text-muted-foreground">
               No conversations yet
+            </div>
+          )}
+
+          {/* Memory / Directives Section */}
+          {directives && directives.length > 0 && (
+            <div className="border-t border-border/40 dark:border-[rgba(148,163,184,0.12)]">
+              <div className="flex items-center gap-2 p-3">
+                <Brain className="h-4 w-4 text-primary" />
+                <h3 className="text-sm font-bold">Memory</h3>
+                <span className="ml-auto text-xs text-muted-foreground">{directives.length}</span>
+              </div>
+              <div className="space-y-1 px-2 pb-2">
+                {directives.map((d) => (
+                  <div
+                    key={d.id}
+                    className="group flex items-start gap-2 rounded-lg p-2 text-xs hover:bg-muted/50 dark:hover:bg-white/5"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-muted-foreground">{d.directive}</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground/60">
+                        {d.category} -- {new Date(d.created_at).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100"
+                      onClick={() => deleteDirective.mutate(d.id)}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
