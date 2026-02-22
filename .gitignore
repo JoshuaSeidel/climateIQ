@@ -4,6 +4,7 @@
 # Project-specific
 # =============================================================================
 notes.md
+DESIGN_SYSTEM.md
 *.local
 .env
 .env.*
