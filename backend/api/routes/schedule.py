@@ -191,7 +191,18 @@ def _build_schedule_response(
 
 
 async def _get_user_tz(db: AsyncSession) -> ZoneInfo:
-    """Get the user's configured timezone, defaulting to UTC."""
+    """Get the user's configured timezone.
+
+    Resolution order:
+    1. ``system_settings`` table, key ``"timezone"``
+    2. HA config (``time_zone`` from ``/api/config``)
+    3. Falls back to UTC
+    """
+    import logging
+
+    _log = logging.getLogger(__name__)
+
+    # 1. DB system_settings
     try:
         from backend.models.database import SystemSetting
 
@@ -202,17 +213,28 @@ async def _get_user_tz(db: AsyncSession) -> ZoneInfo:
         if row and row.value:
             tz_str = row.value.get("value", "") if isinstance(row.value, dict) else str(row.value)
             if tz_str:
-                return ZoneInfo(tz_str)
-    except Exception:  # noqa: S110
-        pass
-    try:
-        from backend.config import get_settings
+                tz = ZoneInfo(tz_str)
+                _log.debug("_get_user_tz: resolved from DB system_settings: %s", tz_str)
+                return tz
+    except Exception as exc:
+        _log.debug("_get_user_tz: DB lookup failed: %s", exc)
 
-        s = get_settings()
-        if s.timezone:
-            return ZoneInfo(s.timezone)
-    except Exception:  # noqa: S110
-        pass
+    # 2. HA config time_zone (via the global HA client)
+    try:
+        from backend.integrations import get_ha_client
+
+        ha = get_ha_client()
+        if ha:
+            config = await ha.get_config()
+            ha_tz = config.get("time_zone", "")
+            if ha_tz:
+                tz = ZoneInfo(ha_tz)
+                _log.debug("_get_user_tz: resolved from HA config: %s", ha_tz)
+                return tz
+    except Exception as exc:
+        _log.debug("_get_user_tz: HA config lookup failed: %s", exc)
+
+    _log.warning("_get_user_tz: could not determine timezone, falling back to UTC")
     return ZoneInfo("UTC")
 
 

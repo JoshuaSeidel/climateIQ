@@ -438,7 +438,7 @@ async def execute_schedules() -> None:
 
             user_tz = ZoneInfo("UTC")
 
-            # Also try DB setting (takes precedence)
+            # Try DB system_settings first
             try:
                 tz_result = await db.execute(
                     sa_select(SystemSetting).where(SystemSetting.key == "timezone")
@@ -450,6 +450,17 @@ async def execute_schedules() -> None:
                         user_tz = ZoneInfo(tz_val)
             except Exception:  # noqa: S110
                 pass
+
+            # Fall back to HA config time_zone
+            if str(user_tz) == "UTC":
+                try:
+                    ha_config = await ha_client.get_config()
+                    ha_tz_str = ha_config.get("time_zone", "")
+                    if ha_tz_str:
+                        user_tz = ZoneInfo(ha_tz_str)
+                        logger.debug("execute_schedules: using HA timezone %s", ha_tz_str)
+                except Exception:  # noqa: S110
+                    pass
 
             now_local = datetime.now(user_tz)
             current_dow = now_local.weekday()  # 0=Monday ... 6=Sunday

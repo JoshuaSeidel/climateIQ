@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.10
+
+### Fixed
+
+- **Timezone resolution falling back to UTC** -- ``_get_user_tz()``
+  had a fallback path that tried ``Settings.timezone`` which doesn't
+  exist, causing a silent ``AttributeError`` that fell through to UTC.
+  If the ``system_settings`` DB table has no timezone row, the system
+  was treating all schedule times as UTC, shifting them by the user's
+  offset (e.g., an 8:00 AM schedule showing as 3:00 AM in EST).
+  Now falls back to the HA config ``time_zone`` field (from
+  ``/api/config``) before defaulting to UTC. Added debug logging to
+  trace which source the timezone came from. Same fix applied to
+  ``execute_schedules()`` in ``main.py``.
+
+- **Active schedule shown twice on dashboard** -- the active schedule
+  badge and the upcoming schedules list both showed the same schedule.
+  The upcoming list now filters out the first occurrence of the
+  currently active schedule so it only appears in the green "Now
+  Active" badge. Also fixed React duplicate key warnings by using
+  index-based keys for schedule occurrences.
+
 ## 0.8.9
 
 ### Fixed

@@ -814,38 +814,52 @@ export const Dashboard = () => {
                   </div>
                 </div>
               )}
-              {schedules && schedules.length > 0 ? (
-                <div className="space-y-3">
-                  {schedules.slice(0, 4).map((schedule) => (
-                    <div
-                      key={schedule.schedule_id}
-                      className="flex items-center justify-between rounded-lg border border-border/40 p-2 dark:bg-[rgba(2,6,23,0.35)] dark:border-[rgba(148,163,184,0.15)]"
-                    >
-                      <div>
-                        <p className="text-sm font-bold">{schedule.schedule_name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {schedule.zone_names?.length
-                            ? schedule.zone_names.join(', ')
-                            : 'All zones'}
-                        </p>
+              {(() => {
+                // Filter out the currently active schedule's next occurrence
+                // to avoid showing it twice (once in the active badge, once here)
+                const activeId = activeSchedule?.active ? activeSchedule.schedule?.schedule_id : null
+                const filtered = (schedules ?? []).filter((s, i) => {
+                  // Remove the first occurrence of the active schedule
+                  if (activeId && s.schedule_id === activeId) {
+                    // Only remove the first match (closest upcoming)
+                    const firstIdx = (schedules ?? []).findIndex(x => x.schedule_id === activeId)
+                    return i !== firstIdx
+                  }
+                  return true
+                })
+                return filtered.length > 0 ? (
+                  <div className="space-y-3">
+                    {filtered.slice(0, 4).map((schedule, idx) => (
+                      <div
+                        key={`${schedule.schedule_id}-${idx}`}
+                        className="flex items-center justify-between rounded-lg border border-border/40 p-2 dark:bg-[rgba(2,6,23,0.35)] dark:border-[rgba(148,163,184,0.15)]"
+                      >
+                        <div>
+                          <p className="text-sm font-bold">{schedule.schedule_name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {schedule.zone_names?.length
+                              ? schedule.zone_names.join(', ')
+                              : 'All zones'}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-bold">{formatTemperature(schedule.target_temp_c, unitKey)}</p>
+                          <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                            <Clock className="h-3 w-3" />
+                            {new Date(schedule.start_time).toLocaleTimeString([], {
+                              hour: 'numeric',
+                              minute: '2-digit',
+                              hour12: true,
+                            })}
+                          </p>
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <p className="text-sm font-bold">{formatTemperature(schedule.target_temp_c, unitKey)}</p>
-                        <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                          <Clock className="h-3 w-3" />
-                          {new Date(schedule.start_time).toLocaleTimeString([], {
-                            hour: 'numeric',
-                            minute: '2-digit',
-                            hour12: true,
-                          })}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-muted-foreground">No upcoming schedules</p>
-              )}
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No upcoming schedules</p>
+                )
+              })()}
             </CardContent>
           </Card>
 
