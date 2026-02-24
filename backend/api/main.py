@@ -545,10 +545,22 @@ async def execute_schedules() -> None:
                             except Exception:  # noqa: S110
                                 pass
                         if 0 < seconds_until_start <= precond_minutes * 60:
-                            # Start preconditioning
-                            target_temp_pre = schedule.target_temp_c
+                            # Start preconditioning (with offset compensation)
+                            from backend.core.temp_compensation import apply_offset_compensation
+
+                            precond_temp_c = schedule.target_temp_c
+                            try:
+                                precond_temp_c, _pre_offset, _pre_zone = await apply_offset_compensation(
+                                    db, ha_client, climate_entity,
+                                    schedule.target_temp_c,
+                                    zone_ids=schedule.zone_ids or None,
+                                )
+                            except Exception as _comp_err:
+                                logger.debug("Preconditioning offset compensation (non-critical): %s", _comp_err)
+
+                            target_temp_pre = precond_temp_c
                             if temp_unit == "F":
-                                target_temp_pre = round(schedule.target_temp_c * 9 / 5 + 32, 1)
+                                target_temp_pre = round(precond_temp_c * 9 / 5 + 32, 1)
                             try:
                                 await ha_client.set_temperature(climate_entity, target_temp_pre)
                                 _last_executed_schedules.add(precondition_key)
@@ -571,10 +583,25 @@ async def execute_schedules() -> None:
                 if exec_key in _last_executed_schedules:
                     continue
 
-                # Convert temperature if needed
-                target_temp = schedule.target_temp_c
+                # Apply offset compensation before converting units
+                from backend.core.temp_compensation import apply_offset_compensation
+
+                adjusted_temp_c = schedule.target_temp_c
+                offset_c = 0.0
+                priority_zone_name = None
+                try:
+                    adjusted_temp_c, offset_c, priority_zone_name = await apply_offset_compensation(
+                        db, ha_client, climate_entity,
+                        schedule.target_temp_c,
+                        zone_ids=schedule.zone_ids or None,
+                    )
+                except Exception as comp_err:
+                    logger.debug("Offset compensation failed (non-critical): %s", comp_err)
+
+                # Convert temperature to HA units
+                target_temp = adjusted_temp_c
                 if temp_unit == "F":
-                    target_temp = round(schedule.target_temp_c * 9 / 5 + 32, 1)
+                    target_temp = round(adjusted_temp_c * 9 / 5 + 32, 1)
 
                 # Fire the schedule
                 try:
@@ -614,6 +641,13 @@ async def execute_schedules() -> None:
                         temp_display,
                         climate_entity,
                     )
+
+                    if offset_c and abs(offset_c) > 0.1:
+                        offset_f = round(offset_c * 9 / 5, 1)
+                        logger.info(
+                            "Offset compensation: +%.1f F for zone '%s'",
+                            offset_f, priority_zone_name or "unknown",
+                        )
 
                     # Send notification
                     if _notification_service:
@@ -861,6 +895,38 @@ async def execute_follow_me_mode() -> None:
                 target_temp_c = eco_temp_c
                 zone_names = "no occupied zones (eco mode)"
 
+            # ── Apply offset compensation ───────────────────────────
+            from backend.core.temp_compensation import (
+                compute_adjusted_setpoint,
+                get_max_offset_setting,
+                get_priority_zone_temp_c,
+                get_thermostat_reading_c,
+            )
+
+            adjusted_temp_c = target_temp_c
+            offset_c = 0.0
+            try:
+                # Use the highest-priority occupied zone for compensation
+                if occupied_zones:
+                    sorted_zones = sorted(
+                        occupied_zones,
+                        key=lambda zp: getattr(zp[0], "priority", 5),
+                        reverse=True,
+                    )
+                    best_zone = sorted_zones[0][0]
+                    zone_temp_c, _, _ = await get_priority_zone_temp_c(
+                        db, zone_ids=[str(best_zone.id)]
+                    )
+                    if zone_temp_c is not None:
+                        thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity)
+                        if thermostat_c is not None:
+                            max_offset_f = await get_max_offset_setting(db)
+                            adjusted_temp_c, offset_c = await compute_adjusted_setpoint(
+                                target_temp_c, thermostat_c, zone_temp_c, max_offset_f,
+                            )
+            except Exception as comp_err:
+                logger.debug("Follow-me offset compensation (non-critical): %s", comp_err)
+
             # ── Check if change is needed (> 0.5°C diff) ───────────────
             try:
                 state = await ha_client.get_state(climate_entity)
@@ -870,16 +936,16 @@ async def execute_follow_me_mode() -> None:
                     current_target_c = float(current_target)
                     if temp_unit == "F":
                         current_target_c = round((current_target_c - 32) * 5 / 9, 2)
-                    if abs(current_target_c - target_temp_c) <= 0.5:
+                    if abs(current_target_c - adjusted_temp_c) <= 0.5:
                         return  # No meaningful change needed
             except Exception as state_err:
                 logger.debug("Could not read current thermostat state: %s", state_err)
                 # Proceed anyway — we'll set the temperature
 
             # ── Convert and apply ───────────────────────────────────────
-            target_for_ha = target_temp_c
+            target_for_ha = adjusted_temp_c
             if temp_unit == "F":
-                target_for_ha = round(target_temp_c * 9 / 5 + 32, 1)
+                target_for_ha = round(adjusted_temp_c * 9 / 5 + 32, 1)
 
             try:
                 await ha_client.set_temperature_with_hold(climate_entity, target_for_ha)
@@ -894,6 +960,13 @@ async def execute_follow_me_mode() -> None:
                 temp_display,
                 zone_names,
             )
+
+            if offset_c and abs(offset_c) > 0.1:
+                offset_f = round(offset_c * 9 / 5, 1)
+                logger.info(
+                    "Follow-Me offset compensation: +%.1f F",
+                    offset_f,
+                )
 
             # ── Send notification ───────────────────────────────────────
             if _notification_service:

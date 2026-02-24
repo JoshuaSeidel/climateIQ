@@ -78,6 +78,7 @@ export type ZoneBackend = {
   type: ZoneType
   floor?: number
   is_active: boolean
+  priority: number
   comfort_preferences: Record<string, unknown>
   thermal_profile: Record<string, unknown>
   exclude_from_metrics: boolean
@@ -343,6 +344,7 @@ export type SystemSettings = {
   climate_entities: string
   sensor_entities: string
   energy_entity: string
+  max_temp_offset_f: number
 
   home_assistant_url: string
   home_assistant_token: string
@@ -405,10 +407,19 @@ export type ActiveScheduleResponse = {
 // ============================================================================
 // Override Types
 // ============================================================================
+export type OffsetInfo = {
+  priority_zone?: string
+  priority_zone_temp_c?: number
+  thermostat_reading_c?: number
+  offset_c?: number
+  offset_f?: number
+}
+
 export type OverrideStatus = {
   current_temp: number | null
   target_temp: number | null
   hvac_mode: string | null
   preset_mode: string | null
   is_override_active: boolean
+  offset_info?: OffsetInfo
 }

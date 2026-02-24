@@ -65,6 +65,7 @@ interface ZoneFormData {
   type: ZoneType
   floor: string
   is_active: boolean
+  priority: number
 }
 
 interface SensorFormData {
@@ -89,6 +90,7 @@ const defaultZoneForm: ZoneFormData = {
   type: 'living_area',
   floor: '1',
   is_active: true,
+  priority: 5,
 }
 
 export const Zones = () => {
@@ -228,6 +230,7 @@ export const Zones = () => {
         type: data.type,
         floor: data.floor ? Number(data.floor) : undefined,
         is_active: data.is_active,
+        priority: data.priority,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['zones-raw'] })
@@ -246,6 +249,7 @@ export const Zones = () => {
         type: data.type,
         floor: data.floor ? Number(data.floor) : undefined,
         is_active: data.is_active,
+        priority: data.priority,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['zones-raw'] })
@@ -419,16 +423,19 @@ export const Zones = () => {
   const handleEditZone = useCallback(
     (zone: Zone) => {
       setSelectedZoneId(zone.id)
+      // Look up the raw backend zone to get priority
+      const rawZone = (zonesRaw ?? []).find((z) => z.id === zone.id)
       setZoneForm({
         name: zone.name,
         description: zone.description ?? '',
         type: zone.type ?? 'other',
         floor: String(zone.floor ?? 1),
         is_active: zone.is_active ?? true,
+        priority: (rawZone as Record<string, unknown>)?.priority as number ?? 5,
       })
       setViewMode('edit')
     },
-    [],
+    [zonesRaw],
   )
 
   // Chart data from history
@@ -509,6 +516,24 @@ export const Zones = () => {
                 className="h-4 w-4 rounded border-border"
               />
               <label className="text-sm font-medium">Active</label>
+            </div>
+            <div>
+              <label className="text-sm font-medium">Zone Priority: {zoneForm.priority}</label>
+              <input
+                type="range"
+                min={1}
+                max={10}
+                value={zoneForm.priority}
+                onChange={(e) => setZoneForm((f) => ({ ...f, priority: Number(e.target.value) }))}
+                className="w-full accent-primary"
+              />
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>1 (Low)</span>
+                <span>10 (High)</span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Higher priority zones are used for temperature offset compensation (1-10)
+              </p>
             </div>
             <div className="flex gap-3 pt-2">
               <Button

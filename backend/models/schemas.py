@@ -28,6 +28,7 @@ class ZoneBase(BaseModel):
     type: ZoneType
     floor: int | None = None
     is_active: bool = True
+    priority: int = Field(default=5, ge=1, le=10, description="Zone priority (1-10, higher = more important)")
     comfort_preferences: dict[str, Any] = Field(default_factory=dict)
     thermal_profile: dict[str, Any] = Field(default_factory=dict)
     exclude_from_metrics: bool = False
@@ -50,6 +51,7 @@ class ZoneUpdate(BaseModel):
     type: ZoneType | None = None
     floor: int | None = None
     is_active: bool | None = None
+    priority: int | None = Field(default=None, ge=1, le=10)
     comfort_preferences: dict[str, Any] | None = None
     thermal_profile: dict[str, Any] | None = None
     exclude_from_metrics: bool | None = None

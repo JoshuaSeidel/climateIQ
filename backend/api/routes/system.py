@@ -503,21 +503,40 @@ async def execute_quick_action(
                     action=action,
                 )
 
-            # Convert target temp from Celsius to HA unit if needed
+            # Apply offset compensation
+            from backend.core.temp_compensation import apply_offset_compensation
+
+            adjusted_temp_c = active_schedule.target_temp_c
+            offset_c = 0.0
+            priority_zone_name = None
+            try:
+                adjusted_temp_c, offset_c, priority_zone_name = await apply_offset_compensation(
+                    db, _ha_client, climate_entity,
+                    active_schedule.target_temp_c,
+                    zone_ids=active_schedule.zone_ids or None,
+                )
+            except Exception as comp_err:
+                _logger.debug("Resume offset compensation (non-critical): %s", comp_err)
+
+            # Convert adjusted temp to HA unit
             ha_config = await _ha_client.get_config()
             ha_temp_unit = (
                 ha_config.get("unit_system", {}).get("temperature", "\u00b0C")
             )
-            target_temp = active_schedule.target_temp_c
+            target_temp = adjusted_temp_c
             if ha_temp_unit == "\u00b0F":
-                target_temp = round(target_temp * 9 / 5 + 32, 1)
+                target_temp = round(adjusted_temp_c * 9 / 5 + 32, 1)
 
             await _ha_client.set_temperature(climate_entity, target_temp)
 
+            # Display uses the original desired temp, not the adjusted one
+            display_temp_val = active_schedule.target_temp_c
+            if ha_temp_unit == "\u00b0F":
+                display_temp_val = round(active_schedule.target_temp_c * 9 / 5 + 32, 1)
             temp_display = (
-                f"{target_temp:.0f}\u00b0F"
+                f"{display_temp_val:.0f}\u00b0F"
                 if ha_temp_unit == "\u00b0F"
-                else f"{target_temp:.1f}\u00b0C"
+                else f"{display_temp_val:.1f}\u00b0C"
             )
             _logger.info(
                 "Resumed schedule '%s' — set %s to %s",
@@ -525,14 +544,25 @@ async def execute_quick_action(
                 climate_entity,
                 temp_display,
             )
+
+            detail_dict: dict[str, Any] = {
+                "schedule_name": active_schedule.name,
+                "target_temp": display_temp_val,
+            }
+            if offset_c and abs(offset_c) > 0.1:
+                offset_f = round(offset_c * 9 / 5, 1)
+                detail_dict["offset_f"] = offset_f
+                detail_dict["adjusted_for_zone"] = priority_zone_name
+                _logger.info(
+                    "Resume offset compensation: +%.1f F for zone '%s'",
+                    offset_f, priority_zone_name or "unknown",
+                )
+
             return QuickActionResponse(
                 success=True,
                 message=f"Resumed '{active_schedule.name}' ({temp_display})",
                 action=action,
-                detail={
-                    "schedule_name": active_schedule.name,
-                    "target_temp": target_temp,
-                },
+                detail=detail_dict,
             )
 
         else:
@@ -1352,12 +1382,35 @@ async def get_override_status(
             and preset_mode.strip()
         )
 
+        # Compute offset compensation info for display
+        offset_info: dict[str, Any] = {}
+        try:
+            from backend.core.temp_compensation import (
+                get_priority_zone_temp_c,
+                get_thermostat_reading_c,
+            )
+
+            zone_temp_c, zone_name, _zpri = await get_priority_zone_temp_c(db)
+            thermostat_c = await get_thermostat_reading_c(_ha_client, climate_entity)
+            if zone_temp_c is not None and thermostat_c is not None:
+                raw_offset_c = thermostat_c - zone_temp_c
+                offset_info = {
+                    "priority_zone": zone_name,
+                    "priority_zone_temp_c": round(zone_temp_c, 1),
+                    "thermostat_reading_c": round(thermostat_c, 1),
+                    "offset_c": round(raw_offset_c, 1),
+                    "offset_f": round(raw_offset_c * 9 / 5, 1),
+                }
+        except Exception as _oi_err:
+            _logger.debug("Offset info computation (non-critical): %s", _oi_err)
+
         return {
             "current_temp": display_current_temp,
             "target_temp": display_target_temp,
             "hvac_mode": hvac_mode,
             "preset_mode": preset_mode,
             "is_override_active": is_override,
+            "offset_info": offset_info,
         }
 
     except Exception as exc:
@@ -1368,6 +1421,7 @@ async def get_override_status(
             "hvac_mode": None,
             "preset_mode": None,
             "is_override_active": False,
+            "offset_info": {},
         }
 
 

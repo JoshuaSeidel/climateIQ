@@ -49,6 +49,7 @@ _KV_DEFAULTS: dict[str, Any] = {
     "climate_entities": "",
     "sensor_entities": "",
     "energy_entity": "",
+    "max_temp_offset_f": 8.0,  # Maximum temperature offset in Fahrenheit
 }
 
 # ---------------------------------------------------------------------------
@@ -71,6 +72,7 @@ class SystemSettingsResponse(BaseModel):
     climate_entities: str = ""
     sensor_entities: str = ""
     energy_entity: str = ""
+    max_temp_offset_f: float = 8.0
     home_assistant_url: str = ""
     home_assistant_token: str = ""
     llm_settings: dict[str, Any] = {}
@@ -92,6 +94,7 @@ class SystemSettingsUpdate(BaseModel):
     climate_entities: str | None = None
     sensor_entities: str | None = None
     energy_entity: str | None = None
+    max_temp_offset_f: float | None = None
 
 
 class HAEntityInfo(BaseModel):

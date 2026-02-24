@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.8.16
+
+### Added
+
+- **Temperature offset compensation** -- ClimateIQ now adjusts the
+  target temperature sent to the thermostat to compensate for the
+  difference between the thermostat's built-in sensor (e.g. hallway)
+  and the priority zone's actual temperature (from Zigbee sensors).
+  If the hallway reads 73 F but the bedroom reads 66 F and you want
+  69 F in the bedroom, ClimateIQ tells the thermostat to target 76 F.
+  Integrated into schedule execution, Follow-Me mode, and Resume
+  Schedule.
+
+- **Zone priority (1-10)** -- each zone now has a configurable
+  priority.  The highest-priority zone with a recent sensor reading
+  is used for offset compensation.  Default is 5.  Editable in the
+  Zones page.
+
+- **Max temperature offset setting** -- configurable in Settings
+  (default 8 F / 4.4 C).  Caps how much ClimateIQ will adjust the
+  thermostat target.  Set to 0 to disable offset compensation.
+
+- **Offset info on Dashboard** -- the Manual Override card now shows
+  which zone ClimateIQ is targeting and the current offset when
+  compensation is active.
+
 ## 0.8.15
 
 ### Fixed

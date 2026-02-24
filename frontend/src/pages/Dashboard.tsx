@@ -549,6 +549,16 @@ export const Dashboard = () => {
                 Preset: <span className="font-bold capitalize text-foreground">{overrideStatus.preset_mode}</span>
               </span>
             )}
+            {overrideStatus?.offset_info?.priority_zone && overrideStatus.offset_info.offset_f != null && Math.abs(overrideStatus.offset_info.offset_f) > 0.5 && (
+              <span className="text-xs text-muted-foreground">
+                Targeting <span className="font-bold text-foreground">{overrideStatus.offset_info.priority_zone}</span>
+                {' '}(offset: <span className="font-bold text-foreground">
+                  {overrideStatus.offset_info.offset_f > 0 ? '+' : ''}{unitKey === 'f'
+                    ? `${overrideStatus.offset_info.offset_f.toFixed(1)}${tempUnitLabel('f')}`
+                    : `${overrideStatus.offset_info.offset_c?.toFixed(1) ?? '0'}${tempUnitLabel('c')}`}
+                </span>)
+              </span>
+            )}
           </div>
         </CardContent>
       </Card>

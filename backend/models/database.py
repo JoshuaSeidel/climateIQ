@@ -70,6 +70,7 @@ class Zone(Base):
     )
     floor: Mapped[int | None] = mapped_column(Integer())
     is_active: Mapped[bool] = mapped_column(Boolean(), default=True)
+    priority: Mapped[int] = mapped_column(Integer(), default=5)  # 1-10, higher = more important
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow

@@ -156,6 +156,11 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
   const rawMin = settings?.default_comfort_temp_min ?? 20
   const rawMax = settings?.default_comfort_temp_max ?? 24
 
+  // max_temp_offset_f is stored in Fahrenheit in the backend.
+  // Display it in the user's preferred unit.
+  const rawOffset = settings?.max_temp_offset_f ?? 8.0
+  const initOffsetDisplay = initUnit === 'F' ? rawOffset : Number((rawOffset * 5 / 9).toFixed(1))
+
   const [form, setForm] = useState({
     system_name: settings?.system_name ?? 'ClimateIQ',
     timezone: settings?.timezone ?? 'UTC',
@@ -166,6 +171,7 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
     default_humidity_max: String(settings?.default_humidity_max ?? 60),
     energy_cost_per_kwh: String(settings?.energy_cost_per_kwh ?? 0.12),
     currency: settings?.currency ?? 'USD',
+    max_temp_offset: String(initOffsetDisplay),
   })
 
   // Derived: current display unit key
@@ -179,11 +185,16 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
     // Convert current display values back to Celsius, then to the new unit
     const minC = toStorageCelsius(Number(form.default_comfort_temp_min), oldKey)
     const maxC = toStorageCelsius(Number(form.default_comfort_temp_max), oldKey)
+    // Convert offset: old display -> F -> new display
+    const currentOffsetVal = Number(form.max_temp_offset)
+    const offsetF = oldKey === 'f' ? currentOffsetVal : currentOffsetVal * 9 / 5
+    const newOffsetDisplay = newKey === 'f' ? offsetF : Number((offsetF * 5 / 9).toFixed(1))
     setForm((f) => ({
       ...f,
       temperature_unit: newUnit,
       default_comfort_temp_min: String(Number(toDisplayTemp(minC, newKey).toFixed(1))),
       default_comfort_temp_max: String(Number(toDisplayTemp(maxC, newKey).toFixed(1))),
+      max_temp_offset: String(Number(newOffsetDisplay.toFixed(1))),
     }))
   }
 
@@ -213,6 +224,9 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
     // Convert display temps back to Celsius for backend storage
     const minC = toStorageCelsius(Number(form.default_comfort_temp_min), unitKey)
     const maxC = toStorageCelsius(Number(form.default_comfort_temp_max), unitKey)
+    // Convert offset display value back to Fahrenheit for storage
+    const offsetDisplayVal = Number(form.max_temp_offset)
+    const offsetF = unitKey === 'f' ? offsetDisplayVal : offsetDisplayVal * 9 / 5
     updateSettings.mutate({
       system_name: form.system_name,
       timezone: form.timezone,
@@ -223,6 +237,7 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
       default_humidity_max: Number(form.default_humidity_max),
       energy_cost_per_kwh: Number(form.energy_cost_per_kwh),
       currency: form.currency,
+      max_temp_offset_f: Number(offsetF.toFixed(1)),
     })
   }
 
@@ -340,6 +355,23 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
                 onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value }))}
               />
             </div>
+          </div>
+          <div>
+            <label className="text-sm font-medium">
+              Max Temperature Offset ({tempUnitLabel(unitKey)})
+            </label>
+            <Input
+              type="number"
+              step="0.5"
+              min="0"
+              max={unitKey === 'f' ? '15' : '8'}
+              value={form.max_temp_offset}
+              onChange={(e) => setForm((f) => ({ ...f, max_temp_offset: e.target.value }))}
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Maximum temperature adjustment ClimateIQ will apply to compensate for
+              thermostat sensor location. Set to 0 to disable offset compensation.
+            </p>
           </div>
         </CardContent>
       </Card>
