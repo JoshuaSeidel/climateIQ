@@ -1,15 +1,18 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Activity, Droplets, Users } from 'lucide-react'
 import type { Zone } from '@/types'
-import { cn, formatHumidity, formatTemperature } from '@/lib/utils'
+import { cn, formatHumidity, formatTemperature, tempUnitLabel } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settingsStore'
 
 type ZoneCardProps = {
   zone: Zone
+  /** Schedule target temp already in the user's display unit (°F or °C).
+   *  When provided, shown as the zone's target instead of the thermostat setpoint. */
+  scheduleTargetTemp?: number | null
   onClick?: () => void
 }
 
-export const ZoneCard = ({ zone, onClick }: ZoneCardProps) => {
+export const ZoneCard = ({ zone, scheduleTargetTemp, onClick }: ZoneCardProps) => {
   const { temperatureUnit } = useSettingsStore()
   const unitKey = temperatureUnit === 'celsius' ? 'c' as const : 'f' as const
 
@@ -55,7 +58,12 @@ export const ZoneCard = ({ zone, onClick }: ZoneCardProps) => {
               {zone.temperature != null ? formatTemperature(zone.temperature, unitKey) : '--'}
             </span>
             <span className="text-sm text-muted-foreground">
-              Target {zone.targetTemperature != null ? formatTemperature(zone.targetTemperature, unitKey) : '--'}
+              {/* scheduleTargetTemp is already in display unit — don't pass through formatTemperature */}
+              Target {scheduleTargetTemp != null
+                ? `${Math.round(scheduleTargetTemp)}${tempUnitLabel(unitKey)}`
+                : zone.targetTemperature != null
+                  ? formatTemperature(zone.targetTemperature, unitKey)
+                  : '--'}
             </span>
           </div>
 

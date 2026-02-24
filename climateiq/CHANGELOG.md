@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.40] - 2026-02-24
+
+### Fixed
+- **Dashboard Avg Temp card**: Was showing the average across all zones regardless of which schedule is active. Now prefers `schedule_avg_temp` (the avg of only the schedule's targeted zones) when a schedule is active. For example, when "Oliver's Bed" activates with only Oliver's room targeted, the card now shows Oliver's room temp instead of the whole-house average.
+- **Zone card Target temp**: Was showing the thermostat's hardware setpoint (offset-adjusted) as the "Target" label on every zone card. Now shows the active schedule's desired temperature for zones that are part of the current schedule — the value the system is actually trying to achieve in that room.
+
 ## [0.8.39] - 2026-02-24
 
 ### Fixed

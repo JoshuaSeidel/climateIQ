@@ -371,7 +371,11 @@ export const Dashboard = () => {
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Avg Temp</p>
               <p className="text-3xl font-black text-foreground">
-                {stats.avgTemp > 0 ? formatTemperature(stats.avgTemp, unitKey) : '--'}
+                {/* Prefer schedule-zone avg when a schedule is active — avoids
+                    showing the all-rooms average when only one zone is targeted */}
+                {overrideStatus?.schedule_avg_temp != null
+                  ? `${overrideStatus.schedule_avg_temp}${tempUnitLabel(unitKey)}`
+                  : stats.avgTemp > 0 ? formatTemperature(stats.avgTemp, unitKey) : '--'}
               </p>
               {overrideStatus?.schedule_target_temp != null && (
                 <p className="text-xs text-muted-foreground">
@@ -615,9 +619,19 @@ export const Dashboard = () => {
             </div>
           ) : zones.length ? (
             <div className="grid gap-4 md:grid-cols-2">
-              {zones.map((zone) => (
+              {zones.map((zone) => {
+                // Determine whether this zone is targeted by the active schedule.
+                // zone_ids empty means ALL zones are targeted; otherwise check membership.
+                const activeZoneIds = activeSchedule?.schedule?.zone_ids ?? []
+                const inActiveSchedule =
+                  activeSchedule?.active === true &&
+                  (activeZoneIds.length === 0 || activeZoneIds.includes(zone.id))
+                // scheduleTargetTemp is already in the user's display unit (from overrideStatus)
+                const scheduleTargetTemp =
+                  inActiveSchedule ? (overrideStatus?.schedule_target_temp ?? null) : null
+                return (
                 <div key={zone.id} className="relative">
-                  <ZoneCard zone={zone} onClick={() => navigate({ to: '/zones', search: { zone: zone.id } })} />
+                  <ZoneCard zone={zone} scheduleTargetTemp={scheduleTargetTemp} onClick={() => navigate({ to: '/zones', search: { zone: zone.id } })} />
                   {/* Temperature Override Button */}
                   <div className="absolute right-2 top-2 flex gap-1">
                     {tempOverride?.zoneId === zone.id ? (
@@ -691,7 +705,8 @@ export const Dashboard = () => {
                     )}
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
           ) : (
             <Card className="border-dashed bg-card/20 p-8 text-center text-muted-foreground">
