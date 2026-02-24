@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.21
+
+### Improved
+
+- **Balance temperature across same-priority zones** -- when multiple
+  zones in the active schedule share the same highest priority,
+  their temperatures are now averaged for offset compensation instead
+  of arbitrarily picking one.  For example, if a nighttime schedule
+  targets two bedrooms at priority 5, the offset is calculated from
+  the average of both rooms so the system heats to balance between
+  them.  The Dashboard shows both zone names (e.g. "Targeting Master
+  Bedroom, Guest Bedroom").
+
 ## 0.8.20
 
 ### Fixed

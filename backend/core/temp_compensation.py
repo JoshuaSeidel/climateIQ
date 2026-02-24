@@ -21,7 +21,11 @@ async def get_priority_zone_temp_c(
     db: Any,
     zone_ids: list[str] | None = None,
 ) -> tuple[float | None, str | None, int]:
-    """Get the current temperature of the highest-priority zone.
+    """Get the current temperature for offset compensation.
+
+    When multiple zones share the highest priority and have recent
+    readings, their temperatures are **averaged** so the system
+    balances between them rather than picking an arbitrary winner.
 
     Args:
         db: AsyncSession
@@ -30,7 +34,8 @@ async def get_priority_zone_temp_c(
 
     Returns:
         (temperature_c, zone_name, zone_priority) or (None, None, 0)
-        if no zone has a recent reading.
+        if no zone has a recent reading.  ``zone_name`` is a
+        comma-separated string when multiple zones are averaged.
     """
     from sqlalchemy import select as sa_select
     from sqlalchemy.orm import selectinload
@@ -55,10 +60,20 @@ async def get_priority_zone_temp_c(
     # Sort by priority descending (highest priority first)
     zones.sort(key=lambda z: getattr(z, "priority", 5), reverse=True)
 
-    # Find the highest-priority zone that has a recent temperature reading
+    # Collect recent temperature readings for each zone, grouped by priority
     cutoff = datetime.now(UTC) - timedelta(minutes=30)
 
+    # First pass: find the highest priority level that has at least one reading
+    top_priority: int | None = None
+    zone_readings: list[tuple[str, float]] = []  # (zone_name, temp_c)
+
     for zone in zones:
+        zone_priority = getattr(zone, "priority", 5)
+
+        # If we already found readings at a higher priority, skip lower ones
+        if top_priority is not None and zone_priority < top_priority:
+            break
+
         if not zone.sensors:
             continue
         sensor_ids = [s.id for s in zone.sensors]
@@ -74,9 +89,25 @@ async def get_priority_zone_temp_c(
         )
         reading = reading_result.scalar_one_or_none()
         if reading and reading.temperature_c is not None:
-            return reading.temperature_c, zone.name, getattr(zone, "priority", 5)
+            if top_priority is None:
+                top_priority = zone_priority
+            zone_readings.append((zone.name, reading.temperature_c))
 
-    return None, None, 0
+    if not zone_readings:
+        return None, None, 0
+
+    # Average the temperatures across all zones at the top priority
+    avg_temp = sum(t for _, t in zone_readings) / len(zone_readings)
+    zone_names = ", ".join(name for name, _ in zone_readings)
+
+    if len(zone_readings) > 1:
+        temps_str = ", ".join(f"{name}={t:.1f}C" for name, t in zone_readings)
+        logger.debug(
+            "Averaging %d zones at priority %d: %s -> %.1f C",
+            len(zone_readings), top_priority, temps_str, avg_temp,
+        )
+
+    return avg_temp, zone_names, top_priority or 0
 
 
 async def compute_adjusted_setpoint(
