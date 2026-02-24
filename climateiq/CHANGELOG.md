@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.32
+
+### Fixed
+
+- **Offset applied in whole-degree increments (°F).** Ecobee thermostats
+  move their setpoint in 1°F steps and round at 0.5°F, so a fractional
+  offset (e.g. +0.3°F) has no effect — the thermostat sees the same
+  setpoint and doesn't turn the heat back on. The zone error is now
+  rounded to the nearest whole °F before being applied, guaranteeing
+  every non-zero offset actually crosses the thermostat's rounding
+  threshold.
+
 ## 0.8.31
 
 ### Fixed

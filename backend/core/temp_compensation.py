@@ -281,6 +281,11 @@ async def compute_adjusted_setpoint(
         offset      = clamp(zone_error, ±max)
         adjusted    = desired + offset
 
+    Ecobee (and most thermostats) move in 1°F increments and round at 0.5,
+    so a sub-degree offset has no effect.  The offset is therefore rounded
+    to the nearest whole °F *before* converting back to °C so every
+    adjustment is guaranteed to cross the thermostat's rounding boundary.
+
     The thermostat_reading is retained as a parameter for logging / future
     use (e.g. safety checks) but is no longer the primary driver of the
     offset so the system doesn't oscillate when the thermostat location
@@ -301,23 +306,24 @@ async def compute_adjusted_setpoint(
     # Negative = zones are above target (need more cooling / less heating)
     zone_error_c = desired_temp_c - priority_zone_temp_c
 
-    # Convert max offset from F to C for clamping
-    max_offset_c = max_offset_f * 5.0 / 9.0
-
-    # Clamp the offset
-    clamped_offset_c = max(min(zone_error_c, max_offset_c), -max_offset_c)
+    # Work in °F so we can round to whole-degree increments that the
+    # thermostat will actually act on (Ecobee rounds at 0.5°F).
+    zone_error_f = zone_error_c * 9.0 / 5.0
+    rounded_offset_f = round(zone_error_f)  # nearest whole °F
+    clamped_offset_f = max(min(rounded_offset_f, max_offset_f), -max_offset_f)
+    clamped_offset_c = clamped_offset_f * 5.0 / 9.0
 
     adjusted_temp_c = desired_temp_c + clamped_offset_c
 
-    if abs(clamped_offset_c) > 0.1:
+    if abs(clamped_offset_f) >= 1:
         logger.info(
             "Offset compensation: desired=%.1f C, thermostat=%.1f C, "
-            "zone=%.1f C, zone_error=%.1f C, clamped=%.1f C, adjusted=%.1f C",
+            "zone=%.1f C, zone_error=%.1f F, rounded_offset=%+d F, adjusted=%.1f C",
             desired_temp_c,
             thermostat_reading_c,
             priority_zone_temp_c,
-            zone_error_c,
-            clamped_offset_c,
+            zone_error_f,
+            int(clamped_offset_f),
             adjusted_temp_c,
         )
 
