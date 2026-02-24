@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.11
+
+### Fixed
+
+- **Timezone lookup was importing nonexistent function** --
+  ``_get_user_tz()`` tried ``from backend.integrations import
+  get_ha_client`` which doesn't exist (``get_ha_client`` is in
+  ``backend.api.dependencies``). This ``ImportError`` was silently
+  caught, causing the HA config timezone fallback to never execute,
+  so the system always fell back to UTC. Fixed to import
+  ``_ha_client`` from ``backend.api.dependencies`` directly. This
+  was the root cause of all schedule time display issues -- schedule
+  times were being treated as UTC instead of the user's local
+  timezone.
+
+- **Active schedule still appearing in upcoming list** -- the dedup
+  filter only removed the first occurrence of the active schedule
+  from the upcoming list, but a second occurrence (next day) remained.
+  Now filters out ALL occurrences of the active schedule ID.
+
 ## 0.8.10
 
 ### Fixed

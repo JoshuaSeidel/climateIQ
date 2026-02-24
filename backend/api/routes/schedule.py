@@ -219,13 +219,12 @@ async def _get_user_tz(db: AsyncSession) -> ZoneInfo:
     except Exception as exc:
         _log.debug("_get_user_tz: DB lookup failed: %s", exc)
 
-    # 2. HA config time_zone (via the global HA client)
+    # 2. HA config time_zone (via the global HA client singleton)
     try:
-        from backend.integrations import get_ha_client
+        from backend.api.dependencies import _ha_client
 
-        ha = get_ha_client()
-        if ha:
-            config = await ha.get_config()
+        if _ha_client is not None:
+            config = await _ha_client.get_config()
             ha_tz = config.get("time_zone", "")
             if ha_tz:
                 tz = ZoneInfo(ha_tz)

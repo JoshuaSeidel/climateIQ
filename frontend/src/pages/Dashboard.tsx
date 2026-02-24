@@ -815,16 +815,11 @@ export const Dashboard = () => {
                 </div>
               )}
               {(() => {
-                // Filter out the currently active schedule's next occurrence
-                // to avoid showing it twice (once in the active badge, once here)
+                // Filter out ALL occurrences of the active schedule
+                // since it's already shown in the "Now Active" badge above
                 const activeId = activeSchedule?.active ? activeSchedule.schedule?.schedule_id : null
-                const filtered = (schedules ?? []).filter((s, i) => {
-                  // Remove the first occurrence of the active schedule
-                  if (activeId && s.schedule_id === activeId) {
-                    // Only remove the first match (closest upcoming)
-                    const firstIdx = (schedules ?? []).findIndex(x => x.schedule_id === activeId)
-                    return i !== firstIdx
-                  }
+                const filtered = (schedules ?? []).filter((s) => {
+                  if (activeId && s.schedule_id === activeId) return false
                   return true
                 })
                 return filtered.length > 0 ? (
