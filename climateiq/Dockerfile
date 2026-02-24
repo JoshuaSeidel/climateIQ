@@ -47,6 +47,6 @@ LABEL \
     io.hass.description="AI-Powered Intelligent Climate Management" \
     io.hass.arch="amd64|aarch64" \
     io.hass.type="addon" \
-    io.hass.version="0.8.13"
+    io.hass.version="0.8.14"
 
 ENTRYPOINT ["/run.sh"]

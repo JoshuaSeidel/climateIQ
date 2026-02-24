@@ -365,13 +365,15 @@ class HAClient:
     async def set_temperature(self, entity_id: str, temperature: float) -> Any:
         """Set the target temperature on a climate entity.
 
+        ClimateIQ is the control system -- the thermostat is just an
+        actuator.  If the thermostat has an active preset (sleep, away,
+        etc.) that would block the temperature change, this method
+        clears it first.
+
         The HA ``climate.set_temperature`` service uses:
         - ``temperature`` for single-setpoint modes (heat, cool, etc.)
         - ``target_temp_low`` + ``target_temp_high`` for dual-setpoint
           modes (heat_cool / auto)
-
-        This method detects the current HVAC mode and sends the correct
-        parameters.
 
         Args:
             entity_id: Fully qualified entity id (e.g. ``climate.thermostat``).
@@ -387,6 +389,37 @@ class HAClient:
             if state:
                 hvac_mode = state.state
                 attrs = state.attributes or {}
+
+                # Clear any active preset that would block the temp change.
+                # Presets like "sleep", "away", "home" hold the thermostat
+                # to a comfort profile and reject set_temperature calls.
+                current_preset = (attrs.get("preset_mode") or "").lower()
+                if current_preset and current_preset not in ("none", ""):
+                    logger.info(
+                        "Clearing preset '%s' on %s before setting temperature",
+                        current_preset, entity_id,
+                    )
+                    # Try ecobee.resume_program first (cleanest way to
+                    # cancel holds), fall back to generic preset clear
+                    try:
+                        await self.call_service(
+                            "ecobee", "resume_program",
+                            data={"entity_id": entity_id, "resume_all": True},
+                        )
+                        logger.info("Cleared Ecobee program hold on %s", entity_id)
+                    except Exception:
+                        try:
+                            await self.call_service(
+                                "climate", "set_preset_mode",
+                                data={"preset_mode": "none"},
+                                target={"entity_id": entity_id},
+                            )
+                            logger.info("Cleared preset to 'none' on %s", entity_id)
+                        except Exception as preset_err:
+                            logger.debug(
+                                "Could not clear preset on %s: %s",
+                                entity_id, preset_err,
+                            )
 
                 if hvac_mode in ("heat_cool", "auto"):
                     # Dual-setpoint mode: must send both low and high

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.14
+
+### Fixed
+
+- **Clear thermostat presets before setting temperature** -- when the
+  thermostat has an active preset (sleep, away, home, etc.) that holds
+  it to a comfort profile, `set_temperature` calls are rejected with
+  400. ClimateIQ now detects active presets and clears them
+  transparently before sending the temperature command. Tries
+  `ecobee.resume_program` first, falls back to setting preset to
+  "none".
+
 ## 0.8.13
 
 ### Changed
