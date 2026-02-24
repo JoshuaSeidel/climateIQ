@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.29
+
+### Fixed
+
+- **"Avg Temp" card now shows schedule target temp**, not the thermostat's
+  offset-adjusted setpoint. The "Set:" label reflects what ClimateIQ wants
+  the rooms to be, not what it sends to the Ecobee hardware.
+
+- **"Current Temp" and "All Zones" status bar values no longer show `--`**.
+  Zone sensors (Zigbee multisensors, etc.) that lack a `device_class` attribute
+  in HA but have a temperature unit of measurement are now accepted when
+  computing live zone averages.
+
 ## 0.8.28
 
 ### Fixed

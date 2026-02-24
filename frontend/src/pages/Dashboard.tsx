@@ -373,9 +373,9 @@ export const Dashboard = () => {
               <p className="text-3xl font-black text-foreground">
                 {stats.avgTemp > 0 ? formatTemperature(stats.avgTemp, unitKey) : '--'}
               </p>
-              {stats.avgTargetTemp > 0 && (
+              {overrideStatus?.schedule_target_temp != null && (
                 <p className="text-xs text-muted-foreground">
-                  Set: {formatTemperature(stats.avgTargetTemp, unitKey)}
+                  Set: {formatTemperature(overrideStatus.schedule_target_temp, unitKey)}
                 </p>
               )}
             </div>

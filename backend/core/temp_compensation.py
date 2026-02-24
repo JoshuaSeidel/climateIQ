@@ -52,11 +52,18 @@ async def _get_live_zone_temp_c(
                 continue
             attrs = state.attributes or {}
             device_class = attrs.get("device_class", "")
-            if device_class != "temperature":
+            uom = str(attrs.get("unit_of_measurement", ""))
+            # Accept if device_class is "temperature", OR if the unit is a
+            # temperature unit (°F / °C / K) and device_class is unset.
+            # This handles multisensors whose top-level entity has no device_class.
+            is_temp_entity = device_class == "temperature" or (
+                not device_class and uom and any(u in uom for u in ("°F", "°C", "°K", "F", "C", "K"))
+            )
+            if not is_temp_entity:
                 continue
             raw = float(state.state)
-            uom = str(attrs.get("unit_of_measurement", ha_temp_unit))
-            if "F" in uom.upper():
+            effective_uom = uom if uom else ha_temp_unit
+            if "F" in effective_uom.upper():
                 raw = (raw - 32) * 5 / 9
             # Sanity check: reject impossible Celsius values
             if -40 <= raw <= 60:
