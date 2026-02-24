@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.8
+
+### Changed
+
+- **Resume Schedule re-applies ClimateIQ schedule** -- the "Resume
+  Schedule" button now finds the currently active ClimateIQ schedule
+  and re-applies its target temperature to the thermostat, instead of
+  trying to resume the Ecobee's own program. ClimateIQ is the control
+  system; the thermostat is just an actuator. If no ClimateIQ schedule
+  is currently active, the button reports that there is nothing to
+  resume. All thermostat-specific hold management (Ecobee vacation
+  holds, preset modes) remains an internal implementation detail of
+  the temperature-setting methods.
+
 ## 0.8.7
 
 ### Fixed

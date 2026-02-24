@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -454,68 +454,86 @@ async def execute_quick_action(
             )
 
         elif action == "resume":
-            # Try multiple approaches to resume the thermostat's
-            # normal program.  Track what worked for the response.
-            methods_tried: list[str] = []
-            method_succeeded: str | None = None
+            # "Resume" means: find the currently active ClimateIQ
+            # schedule and re-apply its target temperature.  All
+            # thermostat-specific hold management is handled
+            # internally by set_temperature / set_temperature_with_hold.
+            from backend.api.routes.schedule import (  # noqa: I001
+                _get_user_tz as _sched_get_user_tz,
+                parse_time as _sched_parse_time,
+            )
+            from backend.models.database import Schedule as _Schedule
 
-            # 1. Ecobee resume_program service
-            try:
-                await _ha_client.resume_ecobee_program(climate_entity)
-                method_succeeded = "ecobee.resume_program"
-                _logger.info("Resume: ecobee.resume_program succeeded")
-            except Exception as e:
-                methods_tried.append(f"ecobee.resume_program: {e}")
-                _logger.debug("Resume: ecobee.resume_program failed: %s", e)
+            user_tz = await _sched_get_user_tz(db)
+            now_local = datetime.now(user_tz)
+            current_weekday = now_local.weekday()
+            current_time = now_local.time()
 
-            # 2. Delete ClimateIQ vacation hold (always try, even if
-            #    resume_program succeeded — belt and suspenders)
-            try:
-                await _ha_client.delete_ecobee_vacation(
-                    climate_entity, "ClimateIQ_Control",
+            # Find all enabled schedules active right now
+            sched_result = await db.execute(
+                select(_Schedule).where(_Schedule.is_enabled.is_(True))
+            )
+            all_schedules = list(sched_result.scalars().all())
+
+            active_schedule: _Schedule | None = None
+            best_priority = -1
+
+            for sched in all_schedules:
+                if current_weekday not in (sched.days_of_week or []):
+                    continue
+                start_t = _sched_parse_time(sched.start_time)
+                end_t = (
+                    _sched_parse_time(sched.end_time)
+                    if sched.end_time
+                    else time(23, 59)
                 )
-                _logger.info("Resume: deleted ClimateIQ_Control vacation hold")
-                if not method_succeeded:
-                    method_succeeded = "delete_vacation"
-            except Exception as e:
-                methods_tried.append(f"delete_vacation: {e}")
-                _logger.debug("Resume: delete vacation failed: %s", e)
+                if end_t < start_t:
+                    in_window = current_time >= start_t or current_time <= end_t
+                else:
+                    in_window = start_t <= current_time <= end_t
 
-            # 3. Set preset to "home" (Ecobee's default occupied preset)
-            if not method_succeeded:
-                preset_modes = attrs.get("preset_modes", [])
-                for preset_name in ("home", "Home"):
-                    if preset_name in preset_modes:
-                        try:
-                            await _ha_client.call_service(
-                                "climate", "set_preset_mode",
-                                data={"preset_mode": preset_name},
-                                target={"entity_id": climate_entity},
-                            )
-                            method_succeeded = f"set_preset_mode({preset_name})"
-                            _logger.info("Resume: set preset to '%s'", preset_name)
-                            break
-                        except Exception as e:
-                            methods_tried.append(f"set_preset({preset_name}): {e}")
+                if in_window and sched.priority > best_priority:
+                    active_schedule = sched
+                    best_priority = sched.priority
 
-            if method_succeeded:
-                return QuickActionResponse(
-                    success=True,
-                    message="Resumed normal schedule",
-                    action=action,
-                    detail={"method": method_succeeded},
-                )
-            else:
-                _logger.warning(
-                    "Resume: all methods failed: %s", "; ".join(methods_tried),
-                )
+            if active_schedule is None:
                 return QuickActionResponse(
                     success=False,
-                    message="Could not resume schedule. Tried: "
-                    + ", ".join(m.split(":")[0] for m in methods_tried),
+                    message="No active schedule right now. Nothing to resume.",
                     action=action,
-                    detail={"methods_tried": methods_tried},
                 )
+
+            # Convert target temp from Celsius to HA unit if needed
+            ha_config = await _ha_client.get_config()
+            ha_temp_unit = (
+                ha_config.get("unit_system", {}).get("temperature", "\u00b0C")
+            )
+            target_temp = active_schedule.target_temp_c
+            if ha_temp_unit == "\u00b0F":
+                target_temp = round(target_temp * 9 / 5 + 32, 1)
+
+            await _ha_client.set_temperature(climate_entity, target_temp)
+
+            temp_display = (
+                f"{target_temp:.0f}\u00b0F"
+                if ha_temp_unit == "\u00b0F"
+                else f"{target_temp:.1f}\u00b0C"
+            )
+            _logger.info(
+                "Resumed schedule '%s' — set %s to %s",
+                active_schedule.name,
+                climate_entity,
+                temp_display,
+            )
+            return QuickActionResponse(
+                success=True,
+                message=f"Resumed '{active_schedule.name}' ({temp_display})",
+                action=action,
+                detail={
+                    "schedule_name": active_schedule.name,
+                    "target_temp": target_temp,
+                },
+            )
 
         else:
             return QuickActionResponse(
