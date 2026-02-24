@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.12
+
+### Fixed
+
+- **set_temperature 400 error -- wrong service parameters** -- the HA
+  ``climate.set_temperature`` service uses ``temperature`` for
+  single-setpoint modes (heat, cool) and ``target_temp_low`` +
+  ``target_temp_high`` only for dual-setpoint modes (heat_cool, auto).
+  The v0.8.5 fix incorrectly sent ``target_temp_low`` for heat mode
+  and ``target_temp_high`` for cool mode, which HA rejects with 400.
+  Now uses ``{"temperature": 69.0}`` for heat/cool/off and only
+  switches to the low/high pair for heat_cool/auto. Simplified the
+  method to default to ``temperature`` and only override for
+  dual-setpoint modes.
+
 ## 0.8.11
 
 ### Fixed
