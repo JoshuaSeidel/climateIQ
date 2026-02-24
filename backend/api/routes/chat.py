@@ -645,11 +645,22 @@ async def get_zone_context(db: AsyncSession, temperature_unit: str) -> str:
                 try:
                     state = await ha_client.get_state(sensor.ha_entity_id)
                     if state and state.state not in ("unavailable", "unknown", None):
+                        attrs = state.attributes or {}
+                        device_class = attrs.get("device_class", "")
+                        uom = str(attrs.get("unit_of_measurement", ""))
+                        # Only treat as temperature if device_class says so, OR if
+                        # the UOM is a temperature unit with no device_class (handles
+                        # Zigbee multisensors that lack device_class per CLAUDE.md).
+                        # Without this check, battery%, lux, humidity% would all be
+                        # misread as °C zone temperatures.
+                        is_temp = device_class == "temperature" or (
+                            not device_class and uom in ("°F", "°C")
+                        )
+                        if not is_temp:
+                            continue
                         try:
                             raw = float(state.state)
-                            # HA may report in F — check unit_of_measurement
-                            uom = (state.attributes or {}).get("unit_of_measurement", "")
-                            if "F" in str(uom).upper():
+                            if "F" in uom.upper():
                                 raw = (raw - 32) * 5 / 9
                             temp_c = _validate_temp_c(raw)
                             if temp_c is not None:

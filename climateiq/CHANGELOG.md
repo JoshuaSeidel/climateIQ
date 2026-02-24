@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.8.39] - 2026-02-24
+
+### Fixed
+- **Chat zone temperature fallback**: The HA live-sensor fallback in `get_zone_context` was calling `float(state.state)` on any non-unavailable sensor entity without checking `device_class`. Zigbee multisensors expose multiple entities (lux, battery%, humidity, etc.) — these numeric values were silently treated as °C zone temperatures, causing the LLM to report impossible readings like 93.2°F or 134.6°F. The fallback now only accepts entities with `device_class == "temperature"` or `unit_of_measurement` of `°F`/`°C` with no device_class (matching the pattern used elsewhere for multisensors).
+
 ## [0.8.38] - 2026-02-24
 
 ### Fixed
