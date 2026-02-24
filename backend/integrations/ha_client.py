@@ -297,7 +297,10 @@ class HAClient:
         """
         payload: dict[str, Any] = dict(data or {})
         if target:
-            payload["target"] = target
+            # Flatten target into the top-level payload.  The HA REST
+            # API expects entity_id (and other target keys) at the root
+            # of the JSON body, NOT nested under a "target" key.
+            payload.update(target)
 
         path = f"/api/services/{domain}/{service}"
         logger.info("Calling service %s.%s → %s", domain, service, target or "no target")
@@ -372,12 +375,14 @@ class HAClient:
         """
         logger.info("Setting temperature on %s to %.1f", entity_id, temperature)
 
-        # Determine which service data keys to use based on HVAC mode
+        # Determine which service data keys to use based on current HVAC mode
         data: dict[str, Any] = {}
         try:
             state = await self.get_state(entity_id)
             hvac_mode = state.state if state else ""
             attrs = state.attributes if state else {}
+
+            data["_hvac_mode"] = hvac_mode
 
             if hvac_mode == "heat":
                 data["target_temp_low"] = temperature
@@ -415,6 +420,14 @@ class HAClient:
                 entity_id,
             )
             data["temperature"] = temperature
+
+        logger.info(
+            "set_temperature payload for %s (mode=%s): %s",
+            entity_id,
+            data.get("_hvac_mode", "unknown"),
+            {k: v for k, v in data.items() if k != "_hvac_mode"},
+        )
+        data.pop("_hvac_mode", None)
 
         return await self.call_service(
             "climate",

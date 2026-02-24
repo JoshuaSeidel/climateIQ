@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.9
+
+### Fixed
+
+- **All HA service calls: entity_id was nested under "target"** --
+  ``HAClient.call_service()`` was sending
+  ``{"target": {"entity_id": "..."}, ...}`` but the HA REST API
+  expects ``entity_id`` at the top level of the JSON body. The
+  ``target`` nesting is a WebSocket API convention, not REST. This
+  caused 400 Bad Request errors on ``climate.set_temperature`` and
+  other service calls. Fixed by flattening the target dict into the
+  top-level payload. Added diagnostic logging to ``set_temperature``
+  showing the exact payload and detected HVAC mode.
+
 ## 0.8.8
 
 ### Changed
