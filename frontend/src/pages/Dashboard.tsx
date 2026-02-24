@@ -375,7 +375,7 @@ export const Dashboard = () => {
               </p>
               {overrideStatus?.schedule_target_temp != null && (
                 <p className="text-xs text-muted-foreground">
-                  Set: {formatTemperature(overrideStatus.schedule_target_temp, unitKey)}
+                  Set: {Math.round(overrideStatus.schedule_target_temp)}{tempUnitLabel(unitKey)}
                 </p>
               )}
             </div>
