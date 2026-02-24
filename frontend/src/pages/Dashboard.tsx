@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useCallback, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -8,8 +8,8 @@ import { ZoneCard } from '@/components/zones/ZoneCard'
 import { api, BASE_PATH } from '@/lib/api'
 import { ReconnectingWebSocket } from '@/lib/websocket'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { formatTemperature, toDisplayTemp, toStorageCelsius } from '@/lib/utils'
-import type { Zone, ZonesResponse, SystemSettings, UpcomingSchedule } from '@/types'
+import { formatTemperature, toDisplayTemp, toStorageCelsius, tempUnitLabel } from '@/lib/utils'
+import type { Zone, ZonesResponse, SystemSettings, UpcomingSchedule, OverrideStatus } from '@/types'
 import {
   Activity,
   Droplets,
@@ -28,6 +28,9 @@ import {
   ChevronUp,
   ChevronDown,
   X,
+  Minus,
+  Plus,
+  RotateCcw,
 } from 'lucide-react'
 
 interface WeatherPayload {
@@ -80,6 +83,7 @@ export const Dashboard = () => {
   const [tempOverride, setTempOverride] = useState<{ zoneId: string; temp: string } | null>(null)
   const [overrideSubmitting, setOverrideSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [manualTemp, setManualTemp] = useState<number | null>(null)
 
   // Fetch zones
   const {
@@ -191,6 +195,38 @@ export const Dashboard = () => {
     },
     staleTime: 120_000,
     retry: false,
+  })
+
+  // Fetch thermostat override status
+  const { data: overrideStatus, refetch: refetchOverride } = useQuery<OverrideStatus>({
+    queryKey: ['override-status'],
+    queryFn: () => api.get<OverrideStatus>('/system/override'),
+    refetchInterval: 15_000,
+  })
+
+  // Initialize manualTemp from override status when it loads
+  useEffect(() => {
+    if (overrideStatus?.target_temp != null && manualTemp === null) {
+      setManualTemp(Math.round(overrideStatus.target_temp))
+    }
+  }, [overrideStatus, manualTemp])
+
+  // Mutation for setting manual override
+  const overrideMutation = useMutation({
+    mutationFn: (temperature: number) =>
+      api.post<{ success: boolean; message: string }>('/system/override', { temperature }),
+    onSuccess: (result) => {
+      if (result.success) {
+        setError(null)
+        refetchOverride()
+        refetchZones()
+      } else {
+        setError(result.message || 'Override failed.')
+      }
+    },
+    onError: () => {
+      setError('Failed to set temperature override. Please try again.')
+    },
   })
 
   // WebSocket for real-time updates (exponential backoff reconnect)
@@ -378,6 +414,126 @@ export const Dashboard = () => {
           </Card>
         )}
       </div>
+
+      {/* Manual Override */}
+      <Card className="overflow-hidden dark:bg-[rgba(10,12,16,0.85)] dark:backdrop-blur-xl dark:border-[rgba(148,163,184,0.12)]">
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2">
+            <Thermometer className="h-4 w-4 text-orange-500 dark:drop-shadow-[0_0_6px_rgba(249,115,22,0.4)]" />
+            <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Manual Override</span>
+            {overrideStatus?.is_override_active && (
+              <span className="ml-auto rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.15em] text-orange-500 border border-orange-500/30">
+                Override Active
+              </span>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-6">
+            {/* Temperature display and controls */}
+            <div className="flex items-center gap-3">
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-10 w-10 rounded-full border-[rgba(148,163,184,0.2)] dark:bg-[rgba(2,6,23,0.45)] dark:hover:bg-[rgba(2,6,23,0.7)]"
+                onClick={() => {
+                  const min = unitKey === 'f' ? 50 : 10
+                  setManualTemp((prev) => Math.max(min, (prev ?? (unitKey === 'f' ? 72 : 22)) - 1))
+                }}
+              >
+                <Minus className="h-4 w-4" />
+              </Button>
+              <div className="flex flex-col items-center">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Target Temperature</p>
+                <p className="text-5xl font-black tabular-nums text-foreground dark:drop-shadow-[0_0_20px_rgba(249,115,22,0.2)]">
+                  {manualTemp ?? (overrideStatus?.target_temp != null ? Math.round(overrideStatus.target_temp) : '--')}
+                  <span className="text-2xl font-bold text-muted-foreground">{tempUnitLabel(unitKey)}</span>
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-10 w-10 rounded-full border-[rgba(148,163,184,0.2)] dark:bg-[rgba(2,6,23,0.45)] dark:hover:bg-[rgba(2,6,23,0.7)]"
+                onClick={() => {
+                  const max = unitKey === 'f' ? 95 : 35
+                  setManualTemp((prev) => Math.min(max, (prev ?? (unitKey === 'f' ? 72 : 22)) + 1))
+                }}
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
+
+            {/* Slider */}
+            <div className="flex-1">
+              <input
+                type="range"
+                min={unitKey === 'f' ? 50 : 10}
+                max={unitKey === 'f' ? 95 : 35}
+                value={manualTemp ?? (overrideStatus?.target_temp != null ? Math.round(overrideStatus.target_temp) : (unitKey === 'f' ? 72 : 22))}
+                onChange={(e) => setManualTemp(Number(e.target.value))}
+                className="w-full accent-orange-500"
+              />
+              <div className="mt-1 flex justify-between text-[10px] font-bold uppercase tracking-[0.15em] text-muted-foreground">
+                <span>{unitKey === 'f' ? '50' : '10'}{tempUnitLabel(unitKey)}</span>
+                <span>{unitKey === 'f' ? '95' : '35'}{tempUnitLabel(unitKey)}</span>
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex gap-2 sm:flex-col">
+              <Button
+                size="sm"
+                className="flex-1 bg-orange-500 text-white hover:bg-orange-600 dark:shadow-[0_0_12px_rgba(249,115,22,0.25)]"
+                disabled={overrideMutation.isPending || manualTemp === null}
+                onClick={() => {
+                  if (manualTemp !== null) {
+                    overrideMutation.mutate(manualTemp)
+                  }
+                }}
+              >
+                {overrideMutation.isPending ? (
+                  <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                ) : (
+                  <Thermometer className="mr-2 h-3 w-3" />
+                )}
+                Set Override
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-1"
+                onClick={() => {
+                  handleQuickAction('resume')
+                  refetchOverride()
+                }}
+              >
+                <RotateCcw className="mr-2 h-3 w-3" />
+                Resume Schedule
+              </Button>
+            </div>
+          </div>
+
+          {/* Status bar */}
+          <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/40 pt-3 dark:border-[rgba(148,163,184,0.12)]">
+            <span className="text-xs text-muted-foreground">
+              Current: <span className="font-bold text-foreground">{overrideStatus?.current_temp != null ? `${overrideStatus.current_temp}${tempUnitLabel(unitKey)}` : '--'}</span>
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Mode: <span className="font-bold capitalize text-foreground">{overrideStatus?.hvac_mode ?? '--'}</span>
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Status: <span className={`font-bold ${overrideStatus?.is_override_active ? 'text-orange-500' : 'text-green-500'}`}>
+                {overrideStatus?.is_override_active ? 'Override Active' : 'Following Schedule'}
+              </span>
+            </span>
+            {overrideStatus?.preset_mode && overrideStatus.preset_mode.toLowerCase() !== 'none' && (
+              <span className="text-xs text-muted-foreground">
+                Preset: <span className="font-bold capitalize text-foreground">{overrideStatus.preset_mode}</span>
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* LLM Summary */}
       <Card>

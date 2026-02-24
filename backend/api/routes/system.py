@@ -47,6 +47,13 @@ async def update_mode(
     payload: dict[str, Any],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> SystemConfigResponse:
+    import logging as _logging
+
+    from backend.config import SETTINGS
+    from backend.models.database import SystemSetting
+
+    _logger = _logging.getLogger(__name__)
+
     raw_mode = payload.get("mode")
     if not raw_mode:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="mode_required")
@@ -61,6 +68,86 @@ async def update_mode(
     config.last_synced_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(config)
+
+    # ------------------------------------------------------------------
+    # Ecobee hold management: prevent/restore the Ecobee's internal
+    # schedule depending on the new mode.
+    # ------------------------------------------------------------------
+    try:
+        import backend.api.dependencies as _deps
+
+        ha_client = _deps._ha_client
+        if ha_client is not None:
+            # Resolve the climate entity
+            climate_entity: str | None = None
+            result = await db.execute(
+                select(SystemSetting).where(SystemSetting.key == "climate_entities")
+            )
+            row = result.scalar_one_or_none()
+            if row and row.value:
+                raw_val = row.value.get("value", "")
+                if raw_val:
+                    climate_entity = raw_val.split(",")[0].strip()
+
+            if not climate_entity and SETTINGS.climate_entities:
+                climate_entity = SETTINGS.climate_entities.split(",")[0].strip()
+
+            if climate_entity:
+                if new_mode in (
+                    SystemMode.scheduled,
+                    SystemMode.active,
+                    SystemMode.follow_me,
+                ):
+                    # Disable Ecobee's own occupancy features so
+                    # ClimateIQ has sole control.
+                    try:
+                        await ha_client.set_ecobee_occupancy_modes(
+                            climate_entity, auto_away=False, follow_me=False,
+                        )
+                        _logger.info(
+                            "Ecobee schedule override active: disabled Smart "
+                            "Home/Away and Follow Me for mode '%s'",
+                            new_mode,
+                        )
+                    except Exception as eco_err:
+                        _logger.debug(
+                            "Ecobee occupancy mode update (non-critical): %s",
+                            eco_err,
+                        )
+
+                elif new_mode == SystemMode.learn:
+                    # Restore Ecobee's own schedule and occupancy features.
+                    try:
+                        await ha_client.delete_ecobee_vacation(
+                            climate_entity, "ClimateIQ_Control",
+                        )
+                    except Exception:  # noqa: S110
+                        pass  # May not exist
+
+                    try:
+                        await ha_client.resume_ecobee_program(climate_entity)
+                    except Exception as resume_err:
+                        _logger.debug(
+                            "Ecobee resume program (non-critical): %s",
+                            resume_err,
+                        )
+
+                    try:
+                        await ha_client.set_ecobee_occupancy_modes(
+                            climate_entity, auto_away=True, follow_me=True,
+                        )
+                    except Exception as occ_err:
+                        _logger.debug(
+                            "Ecobee occupancy mode restore (non-critical): %s",
+                            occ_err,
+                        )
+
+                    _logger.info(
+                        "Ecobee schedule control restored for learn mode",
+                    )
+    except Exception as ecobee_err:
+        _logger.debug("Ecobee hold management (non-critical): %s", ecobee_err)
+
     return SystemConfigResponse.model_validate(config)
 
 
@@ -948,6 +1035,261 @@ async def get_diagnostics(
         version=_VERSION,
         components=components,
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /system/override — manual temperature override
+# ---------------------------------------------------------------------------
+
+
+@router.post("/override")
+async def set_manual_override(
+    payload: dict[str, Any],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Set a manual temperature override on the global thermostat."""
+    import logging as _logging
+
+    from backend.api.dependencies import _ha_client
+    from backend.config import SETTINGS
+    from backend.integrations.ha_client import HAClientError
+    from backend.models.database import Device, DeviceAction, SystemSetting
+    from backend.models.enums import ActionType, TriggerType
+
+    _logger = _logging.getLogger(__name__)
+
+    # 1. Validate required payload fields
+    temperature = payload.get("temperature")
+    if temperature is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="temperature is required",
+        )
+    display_temp = float(temperature)
+
+    # Accept optional fields (not used yet, but accepted for future use)
+    _duration_hours = payload.get("duration_hours")
+    _zone_id = payload.get("zone_id")
+
+    if _ha_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Home Assistant client not connected",
+        )
+
+    # 2. Get the user's preferred temperature unit from system_settings
+    result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "temperature_unit")
+    )
+    row = result.scalar_one_or_none()
+    user_unit: str = "C"
+    if row and row.value:
+        raw_unit = row.value.get("value", "C")
+        if raw_unit:
+            user_unit = str(raw_unit).upper()
+
+    # 3. Get the HA temperature unit from HA config
+    ha_config = await _ha_client.get_config()
+    ha_temp_unit = ha_config.get("unit_system", {}).get("temperature", "\u00b0C")
+
+    # 4. Convert display temp to HA unit
+    temp_for_ha = display_temp
+    if user_unit == "F" and ha_temp_unit == "\u00b0C":
+        # User sends Fahrenheit, HA expects Celsius
+        temp_for_ha = (display_temp - 32) * 5 / 9
+    elif user_unit == "C" and ha_temp_unit == "\u00b0F":
+        # User sends Celsius, HA expects Fahrenheit
+        temp_for_ha = display_temp * 9 / 5 + 32
+
+    # 5. Resolve the climate entity
+    climate_entity: str | None = None
+    result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "climate_entities")
+    )
+    row = result.scalar_one_or_none()
+    if row and row.value:
+        raw_val = row.value.get("value", "")
+        if raw_val:
+            climate_entity = raw_val.split(",")[0].strip()
+
+    if not climate_entity and SETTINGS.climate_entities:
+        climate_entity = SETTINGS.climate_entities.split(",")[0].strip()
+
+    if not climate_entity:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No climate entity configured. Set climate_entities in add-on settings.",
+        )
+
+    # 6. Send the temperature command to HA
+    try:
+        try:
+            await _ha_client.set_temperature_with_hold(climate_entity, temp_for_ha)
+        except Exception:
+            _logger.debug(
+                "set_temperature_with_hold failed, falling back to set_temperature"
+            )
+            await _ha_client.set_temperature(climate_entity, temp_for_ha)
+    except HAClientError as exc:
+        _logger.error("Manual override failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to set temperature: {exc}",
+        ) from exc
+
+    # 7. Record audit trail (best-effort, do not fail the request)
+    try:
+        dev_result = await db.execute(
+            select(Device).where(Device.ha_entity_id == climate_entity)
+        )
+        device = dev_result.scalar_one_or_none()
+        if device:
+            action = DeviceAction(
+                device_id=device.id,
+                triggered_by=TriggerType.user_override,
+                action_type=ActionType.set_temperature,
+                parameters={"temperature": display_temp, "unit": user_unit},
+            )
+            db.add(action)
+            await db.commit()
+    except Exception as audit_err:
+        _logger.debug("Audit trail recording (non-critical): %s", audit_err)
+
+    unit_symbol = "\u00b0F" if user_unit == "F" else "\u00b0C"
+    return {
+        "success": True,
+        "message": f"Temperature set to {display_temp}{unit_symbol}",
+        "temperature": display_temp,
+        "unit": user_unit,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /system/override — current override status
+# ---------------------------------------------------------------------------
+
+
+@router.get("/override")
+async def get_override_status(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Return the current thermostat override status."""
+    import logging as _logging
+
+    from backend.api.dependencies import _ha_client
+    from backend.config import SETTINGS
+    from backend.models.database import SystemSetting
+
+    _logger = _logging.getLogger(__name__)
+
+    if _ha_client is None:
+        return {
+            "current_temp": None,
+            "target_temp": None,
+            "hvac_mode": None,
+            "preset_mode": None,
+            "is_override_active": False,
+        }
+
+    # Resolve the climate entity
+    climate_entity: str | None = None
+    result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "climate_entities")
+    )
+    row = result.scalar_one_or_none()
+    if row and row.value:
+        raw_val = row.value.get("value", "")
+        if raw_val:
+            climate_entity = raw_val.split(",")[0].strip()
+
+    if not climate_entity and SETTINGS.climate_entities:
+        climate_entity = SETTINGS.climate_entities.split(",")[0].strip()
+
+    if not climate_entity:
+        return {
+            "current_temp": None,
+            "target_temp": None,
+            "hvac_mode": None,
+            "preset_mode": None,
+            "is_override_active": False,
+        }
+
+    try:
+        state = await _ha_client.get_state(climate_entity)
+        attrs = state.attributes
+
+        current_temp_raw = attrs.get("current_temperature")
+        target_temp_raw = attrs.get("temperature")
+        hvac_mode = state.state if hasattr(state, "state") else None
+        preset_mode = attrs.get("preset_mode")
+
+        # Get the HA temperature unit
+        ha_config = await _ha_client.get_config()
+        ha_temp_unit = ha_config.get("unit_system", {}).get("temperature", "\u00b0C")
+
+        # Convert HA temps to Celsius first
+        current_temp_c: float | None = None
+        target_temp_c: float | None = None
+
+        if current_temp_raw is not None:
+            current_temp_c = float(current_temp_raw)
+            if ha_temp_unit == "\u00b0F":
+                current_temp_c = (current_temp_c - 32) * 5 / 9
+
+        if target_temp_raw is not None:
+            target_temp_c = float(target_temp_raw)
+            if ha_temp_unit == "\u00b0F":
+                target_temp_c = (target_temp_c - 32) * 5 / 9
+
+        # Get the user's preferred display unit
+        result = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "temperature_unit")
+        )
+        row = result.scalar_one_or_none()
+        user_unit: str = "C"
+        if row and row.value:
+            raw_unit = row.value.get("value", "C")
+            if raw_unit:
+                user_unit = str(raw_unit).upper()
+
+        # Convert from Celsius to user's display unit
+        display_current_temp: float | None = None
+        display_target_temp: float | None = None
+
+        if current_temp_c is not None:
+            if user_unit == "F":
+                display_current_temp = round(current_temp_c * 9 / 5 + 32, 1)
+            else:
+                display_current_temp = round(current_temp_c, 1)
+
+        if target_temp_c is not None:
+            if user_unit == "F":
+                display_target_temp = round(target_temp_c * 9 / 5 + 32, 1)
+            else:
+                display_target_temp = round(target_temp_c, 1)
+
+        # Determine if override is active
+        is_override = bool(
+            preset_mode and preset_mode.lower() != "none" and preset_mode.strip()
+        )
+
+        return {
+            "current_temp": display_current_temp,
+            "target_temp": display_target_temp,
+            "hvac_mode": hvac_mode,
+            "preset_mode": preset_mode,
+            "is_override_active": is_override,
+        }
+
+    except Exception as exc:
+        _logger.error("Failed to get override status: %s", exc)
+        return {
+            "current_temp": None,
+            "target_temp": None,
+            "hvac_mode": None,
+            "preset_mode": None,
+            "is_override_active": False,
+        }
 
 
 async def _get_or_create_system_config(session: AsyncSession) -> SystemConfig:

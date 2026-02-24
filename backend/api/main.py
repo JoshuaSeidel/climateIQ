@@ -549,7 +549,12 @@ async def execute_schedules() -> None:
 
                 # Fire the schedule
                 try:
-                    await ha_client.set_temperature(climate_entity, target_temp)
+                    try:
+                        await ha_client.set_temperature_with_hold(climate_entity, target_temp)
+                    except Exception as hold_err:
+                        logger.debug("Ecobee hold update (non-critical): %s", hold_err)
+                        # Fall back to plain set_temperature if hold fails
+                        await ha_client.set_temperature(climate_entity, target_temp)
                     _last_executed_schedules.add(exec_key)
 
                     # Determine zone names for logging/notification
@@ -847,7 +852,11 @@ async def execute_follow_me_mode() -> None:
             if temp_unit == "F":
                 target_for_ha = round(target_temp_c * 9 / 5 + 32, 1)
 
-            await ha_client.set_temperature(climate_entity, target_for_ha)
+            try:
+                await ha_client.set_temperature_with_hold(climate_entity, target_for_ha)
+            except Exception as hold_err:
+                logger.debug("Ecobee hold update (non-critical): %s", hold_err)
+                await ha_client.set_temperature(climate_entity, target_for_ha)
 
             temp_display = f"{target_for_ha:.1f}°{'F' if temp_unit == 'F' else 'C'}"
             logger.info(
@@ -1229,7 +1238,11 @@ async def execute_active_mode() -> None:
             if temp_unit == "F":
                 target_for_ha = round(recommended_temp_c * 9 / 5 + 32, 1)
 
-            await ha_client.set_temperature(climate_entity, target_for_ha)
+            try:
+                await ha_client.set_temperature_with_hold(climate_entity, target_for_ha)
+            except Exception as hold_err:
+                logger.debug("Ecobee hold update (non-critical): %s", hold_err)
+                await ha_client.set_temperature(climate_entity, target_for_ha)
 
             temp_display = f"{target_for_ha:.1f}°{'F' if temp_unit == 'F' else 'C'}"
             logger.info(

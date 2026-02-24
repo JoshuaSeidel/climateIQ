@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.8.3
+
+### Added
+
+- **Ecobee schedule override** -- when ClimateIQ enters scheduled,
+  active, or follow-me mode it now creates an Ecobee "vacation" hold
+  (`ClimateIQ_Control`) to prevent the thermostat's internal schedule
+  from reverting setpoints. Smart Home/Away and Follow Me are disabled
+  so ClimateIQ has sole occupancy control. Switching back to learn mode
+  deletes the hold and restores Ecobee's normal program.
+
+- **Manual temperature override** -- new `POST /api/v1/system/override`
+  endpoint for direct thermostat control with Ecobee hold management,
+  plus `GET /api/v1/system/override` for current thermostat state.
+
+- **Dashboard override UI** -- prominent manual override card on the
+  dashboard with large +/- buttons, range slider, "Set Override" and
+  "Resume Schedule" controls, and live thermostat status display.
+
+- **ClimateIQ Lovelace card** -- HACS-compatible custom Lovelace card
+  (`climateiq-card`) with dark glassmorphism theme. Displays current
+  thermostat state, zone summary, quick actions, and manual override.
+  Communicates with the add-on via HA ingress. Separate repo at
+  `climateIQ-lovelace-card/`.
+
+### Changed
+
+- `ha_client.set_temperature_with_hold()` replaces plain
+  `set_temperature()` in all mode executors (schedules, follow-me,
+  active) to maintain Ecobee vacation holds automatically.
+
 ## 0.8.2
 
 ### Fixed

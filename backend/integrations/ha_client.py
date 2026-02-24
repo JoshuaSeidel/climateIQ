@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -373,6 +374,45 @@ class HAClient:
     # Alias used by DecisionEngine (``set_climate_temperature``).
     set_climate_temperature = set_temperature
 
+    async def set_temperature_with_hold(self, entity_id: str, temperature: float) -> Any:
+        """Set the target temperature with a hold to prevent schedule override.
+
+        This first sets the temperature, then attempts to set a 'temp' or 'hold'
+        preset mode to prevent the thermostat's built-in schedule from reverting
+        the change. If the hold preset is not supported, the temperature is still
+        set but may be overridden by the thermostat's own schedule.
+        """
+        result = await self.set_temperature(entity_id, temperature)
+
+        for preset in ("temp", "hold"):
+            try:
+                await self.call_service(
+                    "climate",
+                    "set_preset_mode",
+                    data={"preset_mode": preset},
+                    target={"entity_id": entity_id},
+                )
+                logger.info(
+                    "Hold preset '%s' set on %s after temperature change",
+                    preset,
+                    entity_id,
+                )
+                return result
+            except Exception:
+                logger.debug(
+                    "Preset '%s' not supported on %s, trying next",
+                    preset,
+                    entity_id,
+                )
+
+        logger.warning(
+            "Could not set a hold preset on %s; temperature was set to %.1f "
+            "but may be overridden by the thermostat schedule",
+            entity_id,
+            temperature,
+        )
+        return result
+
     async def set_hvac_mode(self, entity_id: str, mode: str) -> Any:
         """Set the HVAC mode on a climate entity.
 
@@ -444,6 +484,128 @@ class HAClient:
             "fan",
             "set_percentage",
             data={"percentage": percentage},
+            target={"entity_id": entity_id},
+        )
+
+    # -- ecobee helpers -------------------------------------------------------
+
+    async def create_ecobee_vacation(
+        self,
+        entity_id: str,
+        name: str,
+        cool_temp: float,
+        heat_temp: float,
+        start_date: str | None = None,
+        start_time: str | None = None,
+        end_date: str | None = None,
+        end_time: str | None = None,
+    ) -> Any:
+        """Create an Ecobee vacation hold to override the internal schedule.
+
+        Vacation holds are the highest-priority hold type on Ecobee
+        thermostats, preventing the internal schedule from reverting
+        the setpoint.
+
+        Args:
+            entity_id: Climate entity id (e.g. ``climate.ecobee``).
+            name: Vacation name (used as identifier for later deletion).
+            cool_temp: Cooling setpoint in the HA unit system.
+            heat_temp: Heating setpoint in the HA unit system.
+            start_date: ISO date string (defaults to today).
+            start_time: Time string ``HH:MM:SS`` (defaults to ``00:00:00``).
+            end_date: ISO date string (defaults to 1 year from now).
+            end_time: Time string ``HH:MM:SS`` (defaults to ``00:00:00``).
+        """
+        now = datetime.now(UTC)
+        if start_date is None:
+            start_date = now.strftime("%Y-%m-%d")
+        if start_time is None:
+            start_time = "00:00:00"
+        if end_date is None:
+            end_date = (now + timedelta(days=365)).strftime("%Y-%m-%d")
+        if end_time is None:
+            end_time = "00:00:00"
+
+        data = {
+            "entity_id": entity_id,
+            "vacation_name": name,
+            "cool_temp": cool_temp,
+            "heat_temp": heat_temp,
+            "start_date": start_date,
+            "start_time": start_time,
+            "end_date": end_date,
+            "end_time": end_time,
+        }
+        logger.info(
+            "Creating Ecobee vacation '%s' on %s (heat=%.1f, cool=%.1f)",
+            name, entity_id, heat_temp, cool_temp,
+        )
+        return await self.call_service("ecobee", "create_vacation", data=data)
+
+    async def delete_ecobee_vacation(self, entity_id: str, name: str) -> Any:
+        """Delete an Ecobee vacation hold.
+
+        Args:
+            entity_id: Climate entity id.
+            name: Vacation name to delete.
+        """
+        data = {"entity_id": entity_id, "vacation_name": name}
+        logger.info("Deleting Ecobee vacation '%s' on %s", name, entity_id)
+        return await self.call_service("ecobee", "delete_vacation", data=data)
+
+    async def set_ecobee_occupancy_modes(
+        self,
+        entity_id: str,
+        auto_away: bool = False,
+        follow_me: bool = False,
+    ) -> Any:
+        """Enable or disable Ecobee Smart Home/Away and Follow Me features.
+
+        ClimateIQ handles occupancy detection itself, so these Ecobee
+        features should be disabled when ClimateIQ is actively controlling
+        the thermostat.
+
+        Args:
+            entity_id: Climate entity id.
+            auto_away: Enable Smart Home/Away.
+            follow_me: Enable Follow Me.
+        """
+        data = {
+            "entity_id": entity_id,
+            "auto_away": auto_away,
+            "follow_me": follow_me,
+        }
+        logger.info(
+            "Setting Ecobee occupancy modes on %s: auto_away=%s, follow_me=%s",
+            entity_id, auto_away, follow_me,
+        )
+        return await self.call_service("ecobee", "set_occupancy_modes", data=data)
+
+    async def resume_ecobee_program(
+        self, entity_id: str, resume_all: bool = True,
+    ) -> Any:
+        """Resume the Ecobee's normal program, cancelling all holds.
+
+        Args:
+            entity_id: Climate entity id.
+            resume_all: If ``True``, cancel all holds (not just the most recent).
+        """
+        data = {"entity_id": entity_id, "resume_all": resume_all}
+        logger.info("Resuming Ecobee program on %s (resume_all=%s)", entity_id, resume_all)
+        return await self.call_service("ecobee", "resume_program", data=data)
+
+    async def set_preset_mode(self, entity_id: str, preset_mode: str) -> Any:
+        """Set a climate preset mode (e.g. ``home``, ``away``, ``sleep``).
+
+        Args:
+            entity_id: Climate entity id.
+            preset_mode: Preset mode name.
+        """
+        logger.info("Setting preset mode on %s to '%s'", entity_id, preset_mode)
+        return await self.call_service(
+            "climate",
+            "set_preset_mode",
+            data={"preset_mode": preset_mode},
             target={"entity_id": entity_id},
         )
 

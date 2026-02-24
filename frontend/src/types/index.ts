@@ -396,3 +396,14 @@ export type UpcomingSchedule = {
   target_temp_c: number
   hvac_mode: string
 }
+
+// ============================================================================
+// Override Types
+// ============================================================================
+export type OverrideStatus = {
+  current_temp: number | null
+  target_temp: number | null
+  hvac_mode: string | null
+  preset_mode: string | null
+  is_override_active: boolean
+}
