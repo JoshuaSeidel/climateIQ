@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.6
+
+### Fixed
+
+- **Resume Schedule quick action 400 error** -- the "Resume Schedule"
+  button sent ``set_preset_mode`` with ``"none"`` which Ecobee rejects.
+  Now tries ``ecobee.resume_program`` first (cancels all holds and
+  restores the Ecobee's own schedule), then falls back to the generic
+  preset clear for non-Ecobee thermostats, and finally tries deleting
+  the ``ClimateIQ_Control`` vacation hold as a last resort.
+
 ## 0.8.5
 
 ### Fixed

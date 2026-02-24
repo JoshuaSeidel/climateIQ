@@ -454,11 +454,33 @@ async def execute_quick_action(
             )
 
         elif action == "resume":
-            await _ha_client.call_service(
-                "climate", "set_preset_mode",
-                data={"preset_mode": "none"},
-                target={"entity_id": climate_entity},
-            )
+            # Try Ecobee-specific resume first (cancels all holds),
+            # then fall back to generic preset clear for other thermostats.
+            resumed = False
+            try:
+                await _ha_client.resume_ecobee_program(climate_entity)
+                resumed = True
+            except Exception:
+                _logger.debug("ecobee.resume_program not available, trying preset clear")
+
+            if not resumed:
+                # Try clearing preset — some thermostats accept "none",
+                # others need the service call without a preset value.
+                try:
+                    await _ha_client.call_service(
+                        "climate", "set_preset_mode",
+                        data={"preset_mode": "none"},
+                        target={"entity_id": climate_entity},
+                    )
+                except Exception:
+                    # Last resort: just delete the ClimateIQ vacation hold
+                    try:
+                        await _ha_client.delete_ecobee_vacation(
+                            climate_entity, "ClimateIQ_Control",
+                        )
+                    except Exception:
+                        _logger.debug("No vacation hold to delete")
+
             return QuickActionResponse(
                 success=True, message="Resumed normal schedule", action=action,
             )
