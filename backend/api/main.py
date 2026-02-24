@@ -882,10 +882,16 @@ async def maintain_climate_offset() -> None:
             if active_schedule is None:
                 # No active schedule -- nothing to maintain
                 _last_offset_temp.clear()
+                logger.debug("Climate maintenance: no active schedule found")
                 return
 
             desired_temp_c = active_schedule.target_temp_c
             zone_ids = active_schedule.zone_ids or None
+            logger.debug(
+                "Climate maintenance: active schedule '%s', "
+                "desired=%.1f C, zone_ids=%s",
+                active_schedule.name, desired_temp_c, zone_ids,
+            )
 
             # ── Apply offset compensation ───────────────────────────────
             from backend.core.temp_compensation import apply_offset_compensation
@@ -896,11 +902,22 @@ async def maintain_climate_offset() -> None:
                 zone_ids=zone_ids,
             )
 
+            logger.debug(
+                "Climate maintenance: offset result adjusted=%.1f C, "
+                "offset=%.1f C, zone='%s'",
+                adjusted_temp_c, offset_c, priority_zone_name,
+            )
+
             # ── Only update if the adjusted temp has drifted meaningfully
             sched_key = str(active_schedule.id)
             prev_temp = _last_offset_temp.get(sched_key)
             if prev_temp is not None and abs(adjusted_temp_c - prev_temp) <= 0.5:
-                return  # No meaningful change
+                logger.debug(
+                    "Climate maintenance: no change needed "
+                    "(adjusted=%.1f C, prev=%.1f C, delta=%.2f C)",
+                    adjusted_temp_c, prev_temp, abs(adjusted_temp_c - prev_temp),
+                )
+                return
 
             # ── Convert and send ────────────────────────────────────────
             target_for_ha = adjusted_temp_c
