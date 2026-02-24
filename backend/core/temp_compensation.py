@@ -428,4 +428,39 @@ async def apply_offset_compensation(
         desired_temp_c, thermostat_c, avg_temp_c, max_offset_f
     )
 
+    # 5. Safety clamp: the thermostat setpoint must never cross the schedule
+    #    target in the wrong direction.
+    #
+    #    Heat mode  → floor at desired_temp_c.
+    #      If the zone is already above target (zone_error < 0) the formula
+    #      produces adjusted < desired, which would push the thermostat BELOW
+    #      the schedule target.  In heat mode that means the HVAC won't restart
+    #      until the thermostat location drops below that lower setpoint — far
+    #      too late.  Instead, just hold at the target; the thermostat won't
+    #      fire because the room temp already exceeds its setpoint.
+    #
+    #    Cool mode  → ceiling at desired_temp_c (symmetric rule).
+    hvac_mode = ""
+    try:
+        _state = await ha_client.get_state(climate_entity)
+        if _state:
+            hvac_mode = (_state.state or "").lower()
+    except Exception:
+        pass
+
+    if "heat" in hvac_mode and adjusted_c < desired_temp_c:
+        logger.info(
+            "Offset clamp (heat): adjusted %.1f C below desired %.1f C — holding at desired",
+            adjusted_c, desired_temp_c,
+        )
+        adjusted_c = desired_temp_c
+        offset_c = 0.0
+    elif hvac_mode == "cool" and adjusted_c > desired_temp_c:
+        logger.info(
+            "Offset clamp (cool): adjusted %.1f C above desired %.1f C — holding at desired",
+            adjusted_c, desired_temp_c,
+        )
+        adjusted_c = desired_temp_c
+        offset_c = 0.0
+
     return adjusted_c, offset_c, zone_names

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.8.41] - 2026-02-24
+
+### Fixed
+- **Offset compensation clamp**: When a zone is already above the schedule target in heat mode, the offset formula was computing a setpoint *below* the schedule target (e.g. 66°F when the target is 69°F and Oliver's room reads 72°F). This caused the thermostat to sit too low — the HVAC would only restart once the thermostat location dropped below that under-target setpoint, risking under-heating. The adjusted setpoint is now floored at the schedule target in heat/heat_cool mode and ceilinged at the target in cool mode. The thermostat correctly holds at 69°F and does not heat (room temp already exceeds setpoint), then resumes heating naturally once the room cools below target.
+
 ## [0.8.40] - 2026-02-24
 
 ### Fixed
