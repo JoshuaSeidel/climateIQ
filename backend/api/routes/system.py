@@ -1382,15 +1382,75 @@ async def get_override_status(
             and preset_mode.strip()
         )
 
-        # Compute offset compensation info for display
+        # Compute offset compensation info for display.
+        # Scope to the active schedule's zones so we don't show offset
+        # for a zone that isn't part of the current schedule.
         offset_info: dict[str, Any] = {}
         try:
             from backend.core.temp_compensation import (
                 get_priority_zone_temp_c,
                 get_thermostat_reading_c,
             )
+            from backend.models.database import Schedule
 
-            zone_temp_c, zone_name, _zpri = await get_priority_zone_temp_c(db)
+            # Find the currently-active schedule to scope zone_ids
+            active_zone_ids: list[str] | None = None
+            try:
+                from zoneinfo import ZoneInfo as _ZI
+
+                _user_tz = _ZI("UTC")
+                _tz_r = await db.execute(
+                    select(SystemSetting).where(SystemSetting.key == "timezone")
+                )
+                _tz_row = _tz_r.scalar_one_or_none()
+                if _tz_row and _tz_row.value:
+                    _tz_val = _tz_row.value.get("value", "") if isinstance(_tz_row.value, dict) else str(_tz_row.value)
+                    if _tz_val:
+                        _user_tz = _ZI(_tz_val)
+                if str(_user_tz) == "UTC":
+                    _ha_tz = ha_config.get("time_zone", "")
+                    if _ha_tz:
+                        _user_tz = _ZI(_ha_tz)
+
+                _now_local = datetime.now(_user_tz)
+                _cur_dow = _now_local.weekday()
+                _cur_t = _now_local.time()
+
+                _sched_r = await db.execute(
+                    select(Schedule).where(Schedule.is_enabled.is_(True))
+                )
+                _best: Schedule | None = None
+                for _s in _sched_r.scalars().all():
+                    if _cur_dow not in (_s.days_of_week or []):
+                        continue
+                    try:
+                        _sh, _sm = map(int, _s.start_time.split(":"))
+                        _st = time(_sh, _sm)
+                    except (ValueError, AttributeError):
+                        continue
+                    _et = time(23, 59)
+                    if _s.end_time:
+                        try:
+                            _eh, _em = map(int, _s.end_time.split(":"))
+                            _et = time(_eh, _em)
+                        except (ValueError, AttributeError):
+                            pass
+                    if _et < _st:
+                        _in_window = _cur_t >= _st or _cur_t <= _et
+                    else:
+                        _in_window = _st <= _cur_t <= _et
+                    if _in_window:
+                        if _best is None or _s.priority > _best.priority:
+                            _best = _s
+
+                if _best and _best.zone_ids:
+                    active_zone_ids = _best.zone_ids
+            except Exception:  # noqa: S110
+                pass  # Fall back to all zones if schedule lookup fails
+
+            zone_temp_c, zone_name, _zpri = await get_priority_zone_temp_c(
+                db, zone_ids=active_zone_ids
+            )
             thermostat_c = await get_thermostat_reading_c(_ha_client, climate_entity)
             if zone_temp_c is not None and thermostat_c is not None:
                 raw_offset_c = thermostat_c - zone_temp_c

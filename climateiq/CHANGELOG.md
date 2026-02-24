@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.20
+
+### Fixed
+
+- **Offset compensation now scoped to active schedule's zones** -- the
+  Dashboard override status and the climate maintenance loop were
+  picking the highest-priority zone globally (e.g. Master Bedroom)
+  even when that zone was not part of the currently-active schedule.
+  Now both `get_override_status()` and `maintain_climate_offset()` find
+  the active schedule and only consider its assigned zones for offset
+  compensation.
+
 ## 0.8.19
 
 ### Added
