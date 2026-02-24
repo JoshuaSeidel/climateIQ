@@ -431,19 +431,28 @@ class HAClient:
                             )
 
                 if hvac_mode in ("heat_cool", "auto"):
-                    # Dual-setpoint mode: must send both low and high
-                    existing_low = attrs.get("target_temp_low")
+                    # Dual-setpoint mode: must send both low (heat) and high
+                    # (cool) setpoints together.
+                    #
+                    # ``temperature`` here is ClimateIQ's *heating* target —
+                    # it should become target_temp_low directly.  Keep the
+                    # existing cooling setpoint (target_temp_high) unchanged
+                    # so we don't accidentally alter the cooling schedule.
+                    # Only raise the cooling setpoint if the heat setpoint
+                    # would come within 2° of it (HA/Ecobee minimum spread).
                     existing_high = attrs.get("target_temp_high")
-                    if existing_low is not None and existing_high is not None:
-                        spread = max(float(existing_high) - float(existing_low), 2)
+                    if existing_high is not None:
+                        high = float(existing_high)
+                        # Ensure minimum 2° spread required by Ecobee
+                        high = max(high, temperature + 2)
                         data = {
-                            "target_temp_low": temperature - spread / 2,
-                            "target_temp_high": temperature + spread / 2,
+                            "target_temp_low": temperature,
+                            "target_temp_high": high,
                         }
                     else:
                         data = {
-                            "target_temp_low": temperature - 1,
-                            "target_temp_high": temperature + 1,
+                            "target_temp_low": temperature,
+                            "target_temp_high": temperature + 4,
                         }
                 # For heat, cool, and all other modes: use "temperature"
                 # (already set as the default above)

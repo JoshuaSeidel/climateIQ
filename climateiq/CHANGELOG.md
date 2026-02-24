@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.35
+
+### Fixed
+
+- **Thermostat set to wrong temperature in heat_cool/auto mode**: In dual-setpoint
+  mode (Ecobee "auto"), the old code treated the adjusted setpoint as the
+  *midpoint* of the heat/cool spread and subtracted half the spread to get the
+  heat setpoint — e.g. target 69°F with a 10°F spread → heat setpoint 64°F.
+  The fix: the adjusted setpoint is the heating target and is sent directly as
+  `target_temp_low`. The existing cooling setpoint (`target_temp_high`) is kept
+  unchanged (only raised if it would fall within 2°F of the heat setpoint to
+  satisfy Ecobee's minimum spread requirement).
+
 ## 0.8.34
 
 ### Fixed
