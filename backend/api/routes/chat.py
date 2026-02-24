@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _validate_temp_c(value: float | None) -> float | None:
+    """Return None if the temperature is outside plausible Celsius range."""
+    if value is not None and (value < -40 or value > 60):
+        return None
+    return value
+
+
 # ============================================================================
 # Pydantic Models
 # ============================================================================
@@ -619,10 +626,10 @@ async def get_zone_context(db: AsyncSession, temperature_unit: str) -> str:
                 .limit(10)
             )
             readings = reading_result.scalars().all()
-            temp_c = next(
+            temp_c = _validate_temp_c(next(
                 (r.temperature_c for r in readings if r.temperature_c is not None),
                 None,
-            )
+            ))
 
         # 2) Fallback: try live HA sensor entities
         if temp_c is None and ha_client and zone.sensors:
@@ -638,8 +645,9 @@ async def get_zone_context(db: AsyncSession, temperature_unit: str) -> str:
                             uom = (state.attributes or {}).get("unit_of_measurement", "")
                             if "F" in str(uom).upper():
                                 raw = (raw - 32) * 5 / 9
-                            temp_c = raw
-                            break
+                            temp_c = _validate_temp_c(raw)
+                            if temp_c is not None:
+                                break
                         except (ValueError, TypeError):
                             pass
                 except Exception:  # noqa: S110
@@ -705,9 +713,11 @@ async def get_conditions_context(db: AsyncSession, temperature_unit: str) -> str
             current_presence: bool | None = None
             for reading in readings:
                 if current_temp is None and reading.temperature_c is not None:
-                    current_temp = reading.temperature_c
+                    current_temp = _validate_temp_c(reading.temperature_c)
                 if current_humidity is None and reading.humidity is not None:
                     current_humidity = reading.humidity
+                    if current_humidity is not None and (current_humidity < 0 or current_humidity > 100):
+                        current_humidity = None
                 if current_presence is None and reading.presence is not None:
                     current_presence = reading.presence
                 if (
@@ -734,13 +744,15 @@ async def get_conditions_context(db: AsyncSession, temperature_unit: str) -> str
                                     raw = float(state.state)
                                     if "F" in uom.upper():
                                         raw = (raw - 32) * 5 / 9
-                                    current_temp = raw
+                                    current_temp = _validate_temp_c(raw)
                                 except (ValueError, TypeError):
                                     pass
 
                             if current_humidity is None and device_class == "humidity":
                                 try:
-                                    current_humidity = float(state.state)
+                                    raw_humidity = float(state.state)
+                                    if 0 <= raw_humidity <= 100:
+                                        current_humidity = raw_humidity
                                 except (ValueError, TypeError):
                                     pass
                     except Exception:  # noqa: S110

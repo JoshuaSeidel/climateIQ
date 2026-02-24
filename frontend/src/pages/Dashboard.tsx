@@ -9,7 +9,7 @@ import { api, BASE_PATH } from '@/lib/api'
 import { ReconnectingWebSocket } from '@/lib/websocket'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { formatTemperature, toDisplayTemp, toStorageCelsius, tempUnitLabel } from '@/lib/utils'
-import type { Zone, ZonesResponse, SystemSettings, UpcomingSchedule, OverrideStatus } from '@/types'
+import type { Zone, ZonesResponse, SystemSettings, UpcomingSchedule, ActiveScheduleResponse, OverrideStatus } from '@/types'
 import {
   Activity,
   Droplets,
@@ -67,6 +67,13 @@ interface SystemStats {
   avgTargetTemp: number
 }
 
+/** Return null if temperature (Celsius) is outside plausible range */
+function validateTempC(value: number | null | undefined): number | null {
+  if (value == null || !Number.isFinite(value)) return null
+  if (value < -40 || value > 60) return null
+  return value
+}
+
 const getWeatherIcon = (state: string | undefined) => {
   const lower = (state ?? '').toLowerCase()
   if (lower.includes('sun') || lower.includes('clear')) return Sun
@@ -106,7 +113,7 @@ export const Dashboard = () => {
         type: z.type as string | undefined,
         floor: z.floor as number | undefined,
         is_active: z.is_active as boolean,
-        temperature: (z.current_temp as number | null) ?? null,
+        temperature: validateTempC(z.current_temp as number | null | undefined),
         humidity: (z.current_humidity as number | null) ?? null,
         lux: (z.current_lux as number | null) ?? null,
         occupancy: z.is_occupied === true ? 'occupied' : z.is_occupied === false ? 'vacant' : null,
@@ -155,6 +162,17 @@ export const Dashboard = () => {
       if (!response.ok) throw new Error(`Failed to fetch schedules: ${response.status}`)
       return response.json()
     },
+  })
+
+  // Fetch currently active schedule
+  const { data: activeSchedule } = useQuery<ActiveScheduleResponse>({
+    queryKey: ['active-schedule'],
+    queryFn: async () => {
+      const response = await fetch(`${BASE_PATH}/api/v1/schedules/active`)
+      if (!response.ok) return { active: false, schedule: null }
+      return response.json()
+    },
+    refetchInterval: 60_000, // check every minute
   })
 
   // Fetch live energy data from HA entity (only shows if energy_entity is configured)
@@ -259,7 +277,7 @@ export const Dashboard = () => {
       }
     }
 
-    const temps = zones.map((z) => z.temperature).filter((t): t is number => t != null && Number.isFinite(t))
+    const temps = zones.map((z) => z.temperature).filter((t): t is number => t != null && Number.isFinite(t) && t >= -40 && t <= 60)
     const humidities = zones.map((z) => z.humidity).filter((h): h is number => h != null && Number.isFinite(h))
     const targets = zones.map((z) => z.targetTemperature).filter((t): t is number => t != null && Number.isFinite(t))
 
@@ -393,6 +411,55 @@ export const Dashboard = () => {
             </div>
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-500/10 dark:bg-green-500/15 dark:shadow-[0_0_12px_rgba(34,197,94,0.15)]">
               <Users className="h-6 w-6 text-green-500" />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Set Temp — compact thermostat set-point card */}
+        <Card>
+          <CardContent className="flex items-center justify-between p-4">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Set Temp</p>
+              <p className="text-3xl font-black text-foreground">
+                {overrideStatus?.target_temp != null
+                  ? `${Math.round(overrideStatus.target_temp)}${tempUnitLabel(unitKey)}`
+                  : '--'}
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="flex flex-col gap-1">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-6 w-6 rounded-full border-[rgba(148,163,184,0.2)] dark:bg-[rgba(2,6,23,0.45)] dark:hover:bg-[rgba(2,6,23,0.7)]"
+                  disabled={overrideMutation.isPending}
+                  onClick={() => {
+                    const current = overrideStatus?.target_temp != null ? Math.round(overrideStatus.target_temp) : (unitKey === 'f' ? 72 : 22)
+                    const max = unitKey === 'f' ? 95 : 35
+                    const next = Math.min(max, current + 1)
+                    overrideMutation.mutate(next)
+                  }}
+                >
+                  <Plus className="h-3 w-3" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-6 w-6 rounded-full border-[rgba(148,163,184,0.2)] dark:bg-[rgba(2,6,23,0.45)] dark:hover:bg-[rgba(2,6,23,0.7)]"
+                  disabled={overrideMutation.isPending}
+                  onClick={() => {
+                    const current = overrideStatus?.target_temp != null ? Math.round(overrideStatus.target_temp) : (unitKey === 'f' ? 72 : 22)
+                    const min = unitKey === 'f' ? 50 : 10
+                    const next = Math.max(min, current - 1)
+                    overrideMutation.mutate(next)
+                  }}
+                >
+                  <Minus className="h-3 w-3" />
+                </Button>
+              </div>
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-purple-500/10 dark:bg-purple-500/15 dark:shadow-[0_0_12px_rgba(168,85,247,0.15)]">
+                <Thermometer className="h-6 w-6 text-purple-500" />
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -764,6 +831,38 @@ export const Dashboard = () => {
               </CardTitle>
             </CardHeader>
             <CardContent>
+              {/* Active schedule indicator */}
+              {activeSchedule?.active && activeSchedule.schedule && (
+                <div className="mb-3 flex items-center justify-between rounded-lg border border-green-500/30 bg-green-500/5 p-2 dark:bg-green-500/10 dark:border-green-500/20">
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="relative flex h-2 w-2">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+                        <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
+                      </span>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-green-600 dark:text-green-400">Now Active</p>
+                    </div>
+                    <p className="text-sm font-bold">{activeSchedule.schedule.schedule_name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {activeSchedule.schedule.zone_names?.length
+                        ? activeSchedule.schedule.zone_names.join(', ')
+                        : 'All zones'}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold">{formatTemperature(activeSchedule.schedule.target_temp_c, unitKey)}</p>
+                    {activeSchedule.schedule.end_time && (
+                      <p className="text-xs text-muted-foreground">
+                        until {new Date(activeSchedule.schedule.end_time).toLocaleTimeString([], {
+                          hour: 'numeric',
+                          minute: '2-digit',
+                          hour12: true,
+                        })}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
               {schedules && schedules.length > 0 ? (
                 <div className="space-y-3">
                   {schedules.slice(0, 4).map((schedule) => (
@@ -784,8 +883,9 @@ export const Dashboard = () => {
                         <p className="flex items-center gap-1 text-xs text-muted-foreground">
                           <Clock className="h-3 w-3" />
                           {new Date(schedule.start_time).toLocaleTimeString([], {
-                            hour: '2-digit',
+                            hour: 'numeric',
                             minute: '2-digit',
+                            hour12: true,
                           })}
                         </p>
                       </div>

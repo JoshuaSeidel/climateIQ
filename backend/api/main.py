@@ -433,9 +433,33 @@ async def execute_schedules() -> None:
             if not schedules:
                 return
 
-            now_utc = datetime.now(UTC)
-            current_dow = now_utc.weekday()  # 0=Monday … 6=Sunday
-            current_time_str = now_utc.strftime("%H:%M")
+            # Get user timezone — schedule times are stored as local HH:MM
+            user_tz_str = settings_instance.timezone or "UTC"
+            try:
+                from zoneinfo import ZoneInfo
+
+                user_tz = ZoneInfo(user_tz_str)
+            except Exception:
+                from zoneinfo import ZoneInfo
+
+                user_tz = ZoneInfo("UTC")
+
+            # Also try DB setting (takes precedence)
+            try:
+                tz_result = await db.execute(
+                    sa_select(SystemSetting).where(SystemSetting.key == "timezone")
+                )
+                tz_row = tz_result.scalar_one_or_none()
+                if tz_row and tz_row.value:
+                    tz_val = tz_row.value.get("value", "") if isinstance(tz_row.value, dict) else str(tz_row.value)
+                    if tz_val:
+                        user_tz = ZoneInfo(tz_val)
+            except Exception:  # noqa: S110
+                pass
+
+            now_local = datetime.now(user_tz)
+            current_dow = now_local.weekday()  # 0=Monday ... 6=Sunday
+            current_time_str = now_local.strftime("%H:%M")
 
             # Determine the climate entity to target
             climate_entity: str | None = None
@@ -479,10 +503,10 @@ async def execute_schedules() -> None:
                 if current_dow not in (schedule.days_of_week or []):
                     continue
 
-                # Parse schedule start time
+                # Parse schedule start time (in user's local timezone)
                 try:
                     sched_hour, sched_min = map(int, schedule.start_time.split(":"))
-                    sched_dt = now_utc.replace(
+                    sched_dt = now_local.replace(
                         hour=sched_hour, minute=sched_min, second=0, microsecond=0
                     )
                 except (ValueError, AttributeError):
@@ -490,8 +514,8 @@ async def execute_schedules() -> None:
                     continue
 
                 # ── Preconditioning: start HVAC early if needed ─────────
-                precondition_key = f"precondition:{schedule.id}:{now_utc.strftime('%Y-%m-%d')}"
-                seconds_until_start = (sched_dt - now_utc).total_seconds()
+                precondition_key = f"precondition:{schedule.id}:{now_local.strftime('%Y-%m-%d')}"
+                seconds_until_start = (sched_dt - now_local).total_seconds()
                 if (
                     seconds_until_start > 120
                     and precondition_key not in _last_executed_schedules
@@ -533,12 +557,12 @@ async def execute_schedules() -> None:
                             break  # Only precondition once per schedule
 
                 # Check time window (within 2 minutes of start_time)
-                delta = abs((now_utc - sched_dt).total_seconds())
+                delta = abs((now_local - sched_dt).total_seconds())
                 if delta > 120:  # 2-minute window
                     continue
 
                 # Dedup: don't re-execute within the same occurrence window
-                exec_key = f"{schedule.id}:{schedule.start_time}:{now_utc.strftime('%Y-%m-%d')}"
+                exec_key = f"{schedule.id}:{schedule.start_time}:{now_local.strftime('%Y-%m-%d')}"
                 if exec_key in _last_executed_schedules:
                     continue
 
@@ -680,8 +704,8 @@ async def execute_schedules() -> None:
                         exec_err,
                     )
 
-        # Prune old dedup keys (keep only today's)
-        today_prefix = now_utc.strftime("%Y-%m-%d")
+        # Prune old dedup keys (keep only today's in local time)
+        today_prefix = now_local.strftime("%Y-%m-%d")
         _last_executed_schedules = {
             k for k in _last_executed_schedules if k.endswith(today_prefix)
         }

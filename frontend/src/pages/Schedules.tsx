@@ -69,6 +69,14 @@ type ConflictWarning = {
   description: string
 }
 
+/** Format "HH:MM" (24hr) to "h:MM AM/PM" (12hr) */
+function formatTime12h(time24: string): string {
+  const [h, m] = time24.split(':').map(Number)
+  const period = h >= 12 ? 'PM' : 'AM'
+  const hour12 = h === 0 ? 12 : h > 12 ? h - 12 : h
+  return `${hour12}:${String(m).padStart(2, '0')} ${period}`
+}
+
 const defaultForm: ScheduleFormData = {
   name: '',
   zone_ids: [],
@@ -675,8 +683,8 @@ export const Schedules = () => {
                   <div className="flex items-center gap-1.5 text-sm">
                     <Clock className="h-3.5 w-3.5 text-muted-foreground" />
                     <span>
-                      {schedule.start_time}
-                      {schedule.end_time ? ` - ${schedule.end_time}` : ''}
+                      {formatTime12h(schedule.start_time)}
+                      {schedule.end_time ? ` - ${formatTime12h(schedule.end_time)}` : ''}
                     </span>
                   </div>
 

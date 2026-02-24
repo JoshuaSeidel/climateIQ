@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.8.4
+
+### Fixed
+
+- **Schedule timezone handling** -- schedule times are stored as local
+  HH:MM strings but `execute_schedules()` was comparing them against
+  UTC time, causing schedules to fire at the wrong hour. Both the
+  schedule executor in `main.py` and `get_next_occurrence()` in
+  `schedule.py` now resolve the user's timezone from the
+  `system_settings` table and work in local time.
+
+- **Impossible temperature readings in chat/LLM context** -- the live
+  HA fallback paths in `chat.py` (`get_zone_context` and
+  `get_conditions_context`) had no validation, so a sensor reporting
+  Fahrenheit without proper `unit_of_measurement` could pass through
+  as raw Celsius (e.g., 68 degrees F stored as 68 degrees C). Added
+  `_validate_temp_c()` helper that returns `None` for temps outside
+  -40 to 60 degrees C. Applied to all DB read and HA fallback paths.
+  Dashboard also validates zone temperatures before averaging.
+
+- **Schedule time display** -- schedules page showed raw 24-hour
+  format ("14:00") instead of 12-hour format ("2:00 PM"). Added
+  `formatTime12h()` helper. Dashboard upcoming schedules also use
+  `hour12: true` in `toLocaleTimeString`.
+
+### Added
+
+- **Active schedule indicator** -- new `GET /api/v1/schedules/active`
+  endpoint that determines which schedule is currently running based
+  on the user's timezone, day of week, and time window. Returns the
+  highest-priority active schedule. The dashboard displays a green
+  "Now Active" badge with a pulsing dot above the upcoming schedules
+  list, showing the schedule name, target temperature, zones, and
+  end time.
+
+- **Compact thermostat set-temp card** -- new stat card in the
+  dashboard stats grid (next to "Occupied") showing the current
+  thermostat set-point with inline +/- buttons for quick adjustments.
+  Uses a purple icon to differentiate from the orange average temp
+  card. Clicking +/- immediately sends the override to the backend.
+
 ## 0.8.3
 
 ### Added

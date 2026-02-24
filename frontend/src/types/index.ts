@@ -397,6 +397,11 @@ export type UpcomingSchedule = {
   hvac_mode: string
 }
 
+export type ActiveScheduleResponse = {
+  active: boolean
+  schedule: UpcomingSchedule | null
+}
+
 // ============================================================================
 // Override Types
 // ============================================================================

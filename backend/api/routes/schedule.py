@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, time, timedelta
 from typing import Annotated, Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
@@ -116,6 +117,13 @@ class ScheduleConflict(BaseModel):
     conflicting_schedule_name: str
 
 
+class ActiveScheduleResponse(BaseModel):
+    """Response for the active schedule endpoint."""
+
+    active: bool
+    schedule: UpcomingSchedule | None = None
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -182,6 +190,32 @@ def _build_schedule_response(
     )
 
 
+async def _get_user_tz(db: AsyncSession) -> ZoneInfo:
+    """Get the user's configured timezone, defaulting to UTC."""
+    try:
+        from backend.models.database import SystemSetting
+
+        result = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "timezone")
+        )
+        row = result.scalar_one_or_none()
+        if row and row.value:
+            tz_str = row.value.get("value", "") if isinstance(row.value, dict) else str(row.value)
+            if tz_str:
+                return ZoneInfo(tz_str)
+    except Exception:  # noqa: S110
+        pass
+    try:
+        from backend.config import get_settings
+
+        s = get_settings()
+        if s.timezone:
+            return ZoneInfo(s.timezone)
+    except Exception:  # noqa: S110
+        pass
+    return ZoneInfo("UTC")
+
+
 def parse_time(time_str: str) -> time:
     """Parse HH:MM string to time object."""
     hours, minutes = map(int, time_str.split(":"))
@@ -192,14 +226,21 @@ def get_next_occurrence(
     days_of_week: list[int],
     start_time: str,
     from_time: datetime | None = None,
+    tz: ZoneInfo | None = None,
 ) -> datetime:
-    """Calculate the next occurrence of a schedule."""
+    """Calculate the next occurrence of a schedule in the given timezone."""
+    if tz is None:
+        tz = ZoneInfo("UTC")
+
+    # Work in local time
     if from_time is None:
-        from_time = datetime.now(UTC)
+        now_local = datetime.now(tz)
+    else:
+        now_local = from_time.astimezone(tz)
 
     target_time = parse_time(start_time)
-    current_weekday = from_time.weekday()
-    current_time = from_time.time()
+    current_weekday = now_local.weekday()
+    current_time = now_local.time()
 
     # Check each day starting from today
     for days_ahead in range(8):
@@ -209,23 +250,25 @@ def get_next_occurrence(
             # If it's today, check if the time hasn't passed
             if days_ahead == 0:
                 if current_time < target_time:
-                    return from_time.replace(
+                    local_dt = now_local.replace(
                         hour=target_time.hour,
                         minute=target_time.minute,
                         second=0,
                         microsecond=0,
                     )
+                    return local_dt.astimezone(UTC)  # Return as UTC for consistency
             else:
-                next_date = from_time + timedelta(days=days_ahead)
-                return next_date.replace(
+                next_date = now_local + timedelta(days=days_ahead)
+                local_dt = next_date.replace(
                     hour=target_time.hour,
                     minute=target_time.minute,
                     second=0,
                     microsecond=0,
                 )
+                return local_dt.astimezone(UTC)  # Return as UTC for consistency
 
     # Shouldn't happen if days_of_week is valid
-    return from_time
+    return from_time if from_time else datetime.now(UTC)
 
 
 def check_schedule_overlap(
@@ -340,6 +383,8 @@ async def get_upcoming_schedules(
     all_zone_uuids = await _collect_all_zone_uuids(schedules)
     zone_map = await _build_zone_map(db, all_zone_uuids)
 
+    user_tz = await _get_user_tz(db)
+
     upcoming: list[UpcomingSchedule] = []
 
     for schedule in schedules:
@@ -354,6 +399,7 @@ async def get_upcoming_schedules(
                 schedule.days_of_week,
                 schedule.start_time,
                 current_check,
+                tz=user_tz,
             )
 
             if next_start >= end_window:
@@ -436,6 +482,93 @@ async def check_conflicts(
                 )
 
     return conflicts
+
+
+@router.get("/active", response_model=ActiveScheduleResponse)
+async def get_active_schedule(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ActiveScheduleResponse:
+    """
+    Get the currently active schedule, if any.
+
+    A schedule is considered active when it is enabled, today's weekday
+    is in its ``days_of_week``, and the current local time falls between
+    its ``start_time`` and ``end_time``.  When ``end_time`` is ``None``
+    the schedule is treated as active from ``start_time`` until 23:59.
+
+    If multiple schedules are active simultaneously the one with the
+    highest priority is returned.
+    """
+    user_tz = await _get_user_tz(db)
+    now_local = datetime.now(user_tz)
+    current_weekday = now_local.weekday()  # 0=Mon .. 6=Sun
+    current_time = now_local.time()
+
+    # Fetch all enabled schedules
+    stmt = select(Schedule).where(Schedule.is_enabled.is_(True))
+    result = await db.execute(stmt)
+    schedules = list(result.scalars().all())
+
+    candidates: list[Schedule] = []
+
+    for schedule in schedules:
+        # Must include today's weekday
+        if current_weekday not in (schedule.days_of_week or []):
+            continue
+
+        start_t = parse_time(schedule.start_time)
+        end_t = parse_time(schedule.end_time) if schedule.end_time else time(23, 59)
+
+        if end_t < start_t:
+            # Wraps past midnight: active if current >= start OR current <= end
+            is_in_window = current_time >= start_t or current_time <= end_t
+        else:
+            # Normal window: active if start <= current <= end
+            is_in_window = start_t <= current_time <= end_t
+
+        if is_in_window:
+            candidates.append(schedule)
+
+    if not candidates:
+        return ActiveScheduleResponse(active=False, schedule=None)
+
+    # Highest priority wins
+    best = max(candidates, key=lambda s: s.priority)
+
+    zone_uuids = _parse_zone_ids(best)
+    zone_map = await _build_zone_map(db, zone_uuids)
+    zone_names = [zone_map[zid] for zid in zone_uuids if zid in zone_map]
+
+    # Build start/end as full datetimes in UTC for the UpcomingSchedule model
+    start_t = parse_time(best.start_time)
+    start_dt = now_local.replace(
+        hour=start_t.hour, minute=start_t.minute, second=0, microsecond=0
+    ).astimezone(UTC)
+
+    end_dt = None
+    if best.end_time:
+        end_t = parse_time(best.end_time)
+        end_dt = now_local.replace(
+            hour=end_t.hour, minute=end_t.minute, second=0, microsecond=0
+        )
+        # If end < start, the end is on the next day
+        if end_t < start_t:
+            end_dt += timedelta(days=1)
+        end_dt = end_dt.astimezone(UTC)
+
+    return ActiveScheduleResponse(
+        active=True,
+        schedule=UpcomingSchedule(
+            schedule_id=best.id,
+            schedule_name=best.name,
+            zone_ids=zone_uuids,
+            zone_names=zone_names,
+            start_time=start_dt,
+            end_time=end_dt,
+            target_temp_c=best.target_temp_c,
+            hvac_mode=best.hvac_mode,
+        ),
+    )
 
 
 @router.get("/{schedule_id}", response_model=ScheduleResponse)
