@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": "filepath=\"$CLAUDE_FILE_PATH\"; if [[ \"$filepath\" == */frontend/* && (\"$filepath\" == *.ts || \"$filepath\" == *.tsx) ]]; then npx --prefix frontend eslint --fix \"$filepath\" 2>/dev/null; fi",
+        "timeout": 10000
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": "filepath=\"$CLAUDE_FILE_PATH\"; if [[ \"$filepath\" == *.env* || \"$filepath\" == *lock* || \"$filepath\" == *docker-compose.yml ]]; then echo 'BLOCKED: Sensitive file — confirm manually'; exit 2; fi"
+      }
+    ]
+  }
+}
