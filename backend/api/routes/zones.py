@@ -165,9 +165,18 @@ async def delete_zone(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
     """Delete a zone and all associated sensors/devices via cascade."""
+    from sqlalchemy.exc import IntegrityError
+
     zone = await _fetch_zone(db, zone_id)
-    await db.delete(zone)
-    await db.commit()
+    try:
+        await db.delete(zone)
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete zone: it is referenced by existing data. Remove references first.",
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

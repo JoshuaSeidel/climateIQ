@@ -446,6 +446,11 @@ async def apply_offset_compensation(
         If compensation cannot be computed (missing data), returns
         (desired_temp_c, 0.0, None) -- i.e. no adjustment.
     """
+    # Guard: if desired_temp_c is None (e.g. schedule has no target set), skip compensation.
+    if desired_temp_c is None:
+        logger.debug("desired_temp_c is None, skipping offset compensation")
+        return desired_temp_c, 0.0, None
+
     # 1. Get the average temperature across ALL schedule zones (live from HA)
     avg_temp_c, zone_names = await get_avg_zone_temp_c(db, zone_ids, ha_client=ha_client)
     if avg_temp_c is None:

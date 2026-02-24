@@ -2941,6 +2941,11 @@ else:
     if settings.api_key:
         logger.info("API key authentication enabled for standalone mode")
         app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
+    else:
+        logger.warning(
+            "SECURITY WARNING: Running in standalone mode with no API key configured. "
+            "All endpoints are publicly accessible. Set CLIMATEIQ_API_KEY to require authentication."
+        )
 
 
 @app.middleware("http")
@@ -2951,7 +2956,9 @@ async def request_logging_middleware(
     """Log all requests with timing and correlation IDs."""
     import time
 
-    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    _raw_request_id = request.headers.get("X-Request-ID", "")
+    import re as _re
+    request_id = _raw_request_id if _re.match(r'^[a-zA-Z0-9\-_]{1,64}$', _raw_request_id) else str(uuid.uuid4())
     start_time = time.perf_counter()
 
     request.state.request_id = request_id
@@ -2990,6 +2997,12 @@ app.include_router(api_router)
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """General WebSocket endpoint for real-time updates."""
+    if settings.api_key:
+        ws_key = websocket.query_params.get("api_key", "")
+        if ws_key != settings.api_key:
+            await websocket.close(code=4001, reason="Unauthorized")
+            return
+
     channel = websocket.query_params.get("channel", "general")
 
     await app_state.ws_manager.connect(websocket, channel)
@@ -3038,6 +3051,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 @app.websocket("/ws/zones")
 async def websocket_zones(websocket: WebSocket) -> None:
     """Dedicated WebSocket for zone updates."""
+    if settings.api_key:
+        ws_key = websocket.query_params.get("api_key", "")
+        if ws_key != settings.api_key:
+            await websocket.close(code=4001, reason="Unauthorized")
+            return
+
     await app_state.ws_manager.connect(websocket, "zones")
 
     try:

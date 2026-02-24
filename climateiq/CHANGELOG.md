@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.9.0] - 2026-02-24
+
+### Security
+- **Prompt injection hardening** (CRITICAL): LLM-extracted user directives are now capped at 200 characters and XML-escaped before being inserted into the system prompt. The directive block is wrapped in `<user_directives>` tags with an explicit data-only comment so the model treats it as preferences rather than instructions.
+- **Backup file size limit** (CRITICAL): `POST /backup/import` now rejects files larger than 50 MB with a 413 response before parsing JSON, preventing unbounded memory allocation.
+- **Generic LLM error messages** (HIGH): Raw exception details (which can contain API key fragments and internal URLs) are no longer returned to chat clients. Errors are logged server-side and a generic retry message is shown to the user.
+- **WebSocket authentication** (HIGH): `/ws` and `/ws/zones` now check the `api_key` query parameter when an API key is configured, closing unauthenticated connections with code 4001 before accepting them.
+- **Backup ID validated as UUID** (HIGH): `DELETE /backup/{backup_id}` now accepts only valid UUID values — FastAPI rejects non-UUID inputs with 422 before the handler runs.
+- **X-Request-ID sanitization** (HIGH): Client-supplied `X-Request-ID` headers are validated against a safe alphanumeric pattern before being echoed in responses and logs. Malformed values are replaced with a fresh UUID.
+- **API keys removed from config property** (HIGH): `Settings.llm_provider_config` no longer includes `api_key` fields, preventing accidental serialisation of credentials if the property is ever returned from a route.
+- **Standalone mode authentication warning** (MEDIUM): Starting the server in non-add-on mode without an `api_key` configured now logs a prominent `WARNING` explaining all endpoints are publicly accessible.
+- **HA service call payloads downgraded to DEBUG** (MEDIUM): `ha_client.call_service` previously logged full entity ID + temperature payloads at INFO level. Downgraded to DEBUG to reduce operational data in production logs.
+
+### Fixed
+- **None guard in offset compensation**: `apply_offset_compensation` now returns immediately if `desired_temp_c` is `None` rather than crashing with a `TypeError` deep in the formula.
+- **Zone delete FK conflict** (MEDIUM): `DELETE /zones/{id}` now returns HTTP 409 Conflict with an actionable message instead of a 500 Internal Server Error when the zone is still referenced by foreign-key constrained rows.
+- **Redis fallback connection leak**: The per-request Redis client created in the `get_redis` fallback path is now properly closed in a `finally` block, preventing connection pool exhaustion when the shared client is not initialised.
+
+### Dependencies (security updates)
+- `aiohttp>=3.11` → `>=3.13.3` — patches 5 CVEs including path traversal (CVE-2025-69226), DoS (CVE-2025-69228), zip bomb (CVE-2025-69223), and HTTP request smuggling (CVE-2025-53643).
+- `litellm>=1.42` → `>=1.66` — clears CVE-2025-45809 (SQL injection) and CVE-2025-0330 (Langfuse API key leak).
+- `google-generativeai` → `google-genai>=1.0` — Google terminated support for `google-generativeai` on 2025-11-30; migrated to the current GA SDK.
+- `openai>=1.58` → `>=2.0` — aligns with the current major SDK version; v1 receives only maintenance updates.
+- `fastapi>=0.111` → `>=0.115`, `uvicorn>=0.30` → `>=0.34`, `alembic>=1.13` → `>=1.15` — floor bumps for quality and bug-fix coverage.
+- `ruff>=0.5` → `>=0.15` (dev) — formatter style guide changed significantly at 0.15.
+
 ## [0.8.42] - 2026-02-24
 
 ### Fixed

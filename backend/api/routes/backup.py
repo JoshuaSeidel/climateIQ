@@ -6,6 +6,8 @@ import json
 import logging
 from typing import Annotated, Any
 
+import uuid as _uuid_mod
+
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -88,8 +90,15 @@ async def import_backup(
             detail="Uploaded file must be a .json backup file",
         )
 
+    _MAX_BACKUP_SIZE = 50 * 1024 * 1024  # 50 MB
+
     try:
-        raw = await file.read()
+        raw = await file.read(_MAX_BACKUP_SIZE + 1)
+        if len(raw) > _MAX_BACKUP_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Backup file exceeds the 50 MB limit",
+            )
         backup_payload: dict[str, Any] = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise HTTPException(
@@ -156,10 +165,10 @@ async def list_backups() -> list[BackupInfoResponse]:
 
 
 @router.delete("/{backup_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_backup(backup_id: str) -> None:
+async def delete_backup(backup_id: _uuid_mod.UUID) -> None:
     """Delete a backup by ID."""
     try:
-        await _backup_service.delete_backup(backup_id)
+        await _backup_service.delete_backup(str(backup_id))
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

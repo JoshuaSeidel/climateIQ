@@ -111,19 +111,15 @@ class Settings(BaseSettings):
 
         return {
             "anthropic": {
-                "api_key": self.anthropic_api_key,
                 "configured": bool(self.anthropic_api_key),
             },
             "openai": {
-                "api_key": self.openai_api_key,
                 "configured": bool(self.openai_api_key),
             },
             "gemini": {
-                "api_key": self.gemini_api_key,
                 "configured": bool(self.gemini_api_key),
             },
             "grok": {
-                "api_key": self.grok_api_key,
                 "configured": bool(self.grok_api_key),
             },
             "ollama": {

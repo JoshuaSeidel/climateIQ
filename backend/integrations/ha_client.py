@@ -303,7 +303,7 @@ class HAClient:
             payload.update(target)
 
         path = f"/api/services/{domain}/{service}"
-        logger.info(
+        logger.debug(
             "Calling service %s.%s | payload=%s",
             domain, service, payload,
         )

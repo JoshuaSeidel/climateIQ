@@ -63,7 +63,10 @@ async def get_redis() -> AsyncGenerator[redis.Redis]:
             decode_responses=True,
             health_check_interval=30,
         )
-        yield client
+        try:
+            yield client
+        finally:
+            await client.aclose()
 
 
 type RedisDep = Annotated[redis.Redis, Depends(get_redis)]
