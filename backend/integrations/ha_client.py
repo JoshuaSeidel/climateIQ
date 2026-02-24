@@ -233,7 +233,7 @@ class HAClient:
             raise HANotFoundError(msg)
         if 400 <= status < 500:
             msg = f"{prefix}Client error {status}: {detail}"
-            logger.error(msg)
+            logger.error("%s | response body: %s", msg, response.text[:500])
             raise HAServiceError(msg)
         # 5xx
         msg = f"{prefix}Server error {status}: {detail}"
@@ -303,7 +303,10 @@ class HAClient:
             payload.update(target)
 
         path = f"/api/services/{domain}/{service}"
-        logger.info("Calling service %s.%s → %s", domain, service, target or "no target")
+        logger.info(
+            "Calling service %s.%s | payload=%s",
+            domain, service, payload,
+        )
 
         response = await self._request(
             "POST", path, json=payload, context=f"service:{domain}.{service}"

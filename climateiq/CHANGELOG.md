@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.13
+
+### Changed
+
+- **Enhanced error logging for HA service calls** -- 400/4xx errors
+  now log the full response body from HA (up to 500 chars) so we can
+  see the exact rejection reason. ``call_service`` also logs the
+  complete JSON payload being sent. This will reveal why
+  ``set_temperature`` is being rejected.
+
 ## 0.8.12
 
 ### Fixed
