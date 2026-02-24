@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.26
+
+### Fixed
+
+- **Suppressed third-party DEBUG logs at INFO level** -- websockets
+  and uvicorn loggers were dumping verbose DEBUG output (connection
+  headers, ping/pong, WebSocket frames) even when log level was set
+  to `info`.  These loggers are now set to WARNING when not in debug
+  mode.
+
+- **Removed preset_mode calls from set_temperature_with_hold** --
+  Ecobee automatically creates a temperature hold when
+  `set_temperature` is called.  The explicit `set_preset_mode` calls
+  with `temp`/`hold` were unnecessary and caused 500 errors.
+  `set_temperature_with_hold` now just calls `set_temperature`.
+
 ## 0.8.25
 
 ### Fixed

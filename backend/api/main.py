@@ -53,6 +53,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress noisy third-party DEBUG logs when not in debug mode
+if not settings_instance.debug:
+    for _noisy in ("websockets", "uvicorn", "uvicorn.error", "uvicorn.access"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 
 # ============================================================================
 # Application State
