@@ -454,36 +454,68 @@ async def execute_quick_action(
             )
 
         elif action == "resume":
-            # Try Ecobee-specific resume first (cancels all holds),
-            # then fall back to generic preset clear for other thermostats.
-            resumed = False
+            # Try multiple approaches to resume the thermostat's
+            # normal program.  Track what worked for the response.
+            methods_tried: list[str] = []
+            method_succeeded: str | None = None
+
+            # 1. Ecobee resume_program service
             try:
                 await _ha_client.resume_ecobee_program(climate_entity)
-                resumed = True
-            except Exception:
-                _logger.debug("ecobee.resume_program not available, trying preset clear")
+                method_succeeded = "ecobee.resume_program"
+                _logger.info("Resume: ecobee.resume_program succeeded")
+            except Exception as e:
+                methods_tried.append(f"ecobee.resume_program: {e}")
+                _logger.debug("Resume: ecobee.resume_program failed: %s", e)
 
-            if not resumed:
-                # Try clearing preset — some thermostats accept "none",
-                # others need the service call without a preset value.
-                try:
-                    await _ha_client.call_service(
-                        "climate", "set_preset_mode",
-                        data={"preset_mode": "none"},
-                        target={"entity_id": climate_entity},
-                    )
-                except Exception:
-                    # Last resort: just delete the ClimateIQ vacation hold
-                    try:
-                        await _ha_client.delete_ecobee_vacation(
-                            climate_entity, "ClimateIQ_Control",
-                        )
-                    except Exception:
-                        _logger.debug("No vacation hold to delete")
+            # 2. Delete ClimateIQ vacation hold (always try, even if
+            #    resume_program succeeded — belt and suspenders)
+            try:
+                await _ha_client.delete_ecobee_vacation(
+                    climate_entity, "ClimateIQ_Control",
+                )
+                _logger.info("Resume: deleted ClimateIQ_Control vacation hold")
+                if not method_succeeded:
+                    method_succeeded = "delete_vacation"
+            except Exception as e:
+                methods_tried.append(f"delete_vacation: {e}")
+                _logger.debug("Resume: delete vacation failed: %s", e)
 
-            return QuickActionResponse(
-                success=True, message="Resumed normal schedule", action=action,
-            )
+            # 3. Set preset to "home" (Ecobee's default occupied preset)
+            if not method_succeeded:
+                preset_modes = attrs.get("preset_modes", [])
+                for preset_name in ("home", "Home"):
+                    if preset_name in preset_modes:
+                        try:
+                            await _ha_client.call_service(
+                                "climate", "set_preset_mode",
+                                data={"preset_mode": preset_name},
+                                target={"entity_id": climate_entity},
+                            )
+                            method_succeeded = f"set_preset_mode({preset_name})"
+                            _logger.info("Resume: set preset to '%s'", preset_name)
+                            break
+                        except Exception as e:
+                            methods_tried.append(f"set_preset({preset_name}): {e}")
+
+            if method_succeeded:
+                return QuickActionResponse(
+                    success=True,
+                    message="Resumed normal schedule",
+                    action=action,
+                    detail={"method": method_succeeded},
+                )
+            else:
+                _logger.warning(
+                    "Resume: all methods failed: %s", "; ".join(methods_tried),
+                )
+                return QuickActionResponse(
+                    success=False,
+                    message="Could not resume schedule. Tried: "
+                    + ", ".join(m.split(":")[0] for m in methods_tried),
+                    action=action,
+                    detail={"methods_tried": methods_tried},
+                )
 
         else:
             return QuickActionResponse(

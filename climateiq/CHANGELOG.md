@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.8.7
+
+### Fixed
+
+- **Upcoming schedule times wrong on dashboard** -- the upcoming
+  schedules endpoint mixed UTC and local time when computing
+  occurrences, causing wrong times and duplicate entries. Rewrote
+  the logic to work entirely in local time: walks each calendar day
+  in the window, checks if the schedule fires on that weekday, builds
+  local datetimes from the schedule's HH:MM strings, then converts to
+  UTC only at the end for the API response. End times are also built
+  in local time before conversion, fixing the midnight-wrap case.
+
+- **Resume Schedule button not working** -- the resume quick action
+  silently returned success even when all three fallback methods
+  failed. Now properly logs each attempt, tries
+  ``ecobee.resume_program``, always attempts to delete the
+  ``ClimateIQ_Control`` vacation hold, and falls back to setting the
+  ``home`` preset. Returns ``success: false`` with details if all
+  methods fail. Frontend also now awaits the async action before
+  refetching override status.
+
+### Removed
+
+- **Set Temp stat card** -- removed the compact thermostat set-point
+  card from the stats grid since the full Manual Override card below
+  already provides the same functionality with more control.
+
 ## 0.8.6
 
 ### Fixed

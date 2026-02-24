@@ -415,55 +415,6 @@ export const Dashboard = () => {
           </CardContent>
         </Card>
 
-        {/* Set Temp — compact thermostat set-point card */}
-        <Card>
-          <CardContent className="flex items-center justify-between p-4">
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Set Temp</p>
-              <p className="text-3xl font-black text-foreground">
-                {overrideStatus?.target_temp != null
-                  ? `${Math.round(overrideStatus.target_temp)}${tempUnitLabel(unitKey)}`
-                  : '--'}
-              </p>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="flex flex-col gap-1">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-6 w-6 rounded-full border-[rgba(148,163,184,0.2)] dark:bg-[rgba(2,6,23,0.45)] dark:hover:bg-[rgba(2,6,23,0.7)]"
-                  disabled={overrideMutation.isPending}
-                  onClick={() => {
-                    const current = overrideStatus?.target_temp != null ? Math.round(overrideStatus.target_temp) : (unitKey === 'f' ? 72 : 22)
-                    const max = unitKey === 'f' ? 95 : 35
-                    const next = Math.min(max, current + 1)
-                    overrideMutation.mutate(next)
-                  }}
-                >
-                  <Plus className="h-3 w-3" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-6 w-6 rounded-full border-[rgba(148,163,184,0.2)] dark:bg-[rgba(2,6,23,0.45)] dark:hover:bg-[rgba(2,6,23,0.7)]"
-                  disabled={overrideMutation.isPending}
-                  onClick={() => {
-                    const current = overrideStatus?.target_temp != null ? Math.round(overrideStatus.target_temp) : (unitKey === 'f' ? 72 : 22)
-                    const min = unitKey === 'f' ? 50 : 10
-                    const next = Math.max(min, current - 1)
-                    overrideMutation.mutate(next)
-                  }}
-                >
-                  <Minus className="h-3 w-3" />
-                </Button>
-              </div>
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-purple-500/10 dark:bg-purple-500/15 dark:shadow-[0_0_12px_rgba(168,85,247,0.15)]">
-                <Thermometer className="h-6 w-6 text-purple-500" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
         {/* Energy — only shown when an HA energy entity is configured */}
         {energyData?.configured && (
           <Card>
@@ -569,8 +520,8 @@ export const Dashboard = () => {
                 variant="outline"
                 size="sm"
                 className="flex-1"
-                onClick={() => {
-                  handleQuickAction('resume')
+                onClick={async () => {
+                  await handleQuickAction('resume')
                   refetchOverride()
                 }}
               >

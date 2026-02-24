@@ -387,47 +387,59 @@ async def get_upcoming_schedules(
 
     upcoming: list[UpcomingSchedule] = []
 
+    # Work entirely in local time to avoid UTC conversion confusion
+    now_local = now.astimezone(user_tz)
+    end_local = end_window.astimezone(user_tz)
+
     for schedule in schedules:
         zone_uuids = _parse_zone_ids(schedule)
         zone_names = [zone_map[zid] for zid in zone_uuids if zid in zone_map]
 
-        # Calculate occurrences within the window
-        current_check = now
+        start_t = parse_time(schedule.start_time)
 
-        while current_check < end_window:
-            next_start = get_next_occurrence(
-                schedule.days_of_week,
-                schedule.start_time,
-                current_check,
-                tz=user_tz,
-            )
+        # Walk each day in the window and check if this schedule fires
+        check_date = now_local.date()
+        end_date = end_local.date()
 
-            if next_start >= end_window:
-                break
+        while check_date <= end_date:
+            weekday = check_date.weekday()  # 0=Mon .. 6=Sun
 
-            # Calculate end time
-            end_dt = None
-            if schedule.end_time:
-                end_t = parse_time(schedule.end_time)
-                end_dt = next_start.replace(hour=end_t.hour, minute=end_t.minute)
-                if end_dt <= next_start:
-                    end_dt += timedelta(days=1)
-
-            upcoming.append(
-                UpcomingSchedule(
-                    schedule_id=schedule.id,
-                    schedule_name=schedule.name,
-                    zone_ids=zone_uuids,
-                    zone_names=zone_names,
-                    start_time=next_start,
-                    end_time=end_dt,
-                    target_temp_c=schedule.target_temp_c,
-                    hvac_mode=schedule.hvac_mode,
+            if weekday in (schedule.days_of_week or []):
+                # Build the local start datetime for this day
+                start_local = datetime.combine(
+                    check_date, start_t, tzinfo=user_tz,
                 )
-            )
 
-            # Move to next day to find next occurrence
-            current_check = next_start + timedelta(days=1)
+                # Only include if it's in the future and within the window
+                if start_local > now_local and start_local <= end_local:
+                    start_utc = start_local.astimezone(UTC)
+
+                    # Build end time in local, then convert to UTC
+                    end_utc = None
+                    if schedule.end_time:
+                        end_t = parse_time(schedule.end_time)
+                        end_local_dt = datetime.combine(
+                            check_date, end_t, tzinfo=user_tz,
+                        )
+                        # If end < start, it wraps to the next day
+                        if end_t <= start_t:
+                            end_local_dt += timedelta(days=1)
+                        end_utc = end_local_dt.astimezone(UTC)
+
+                    upcoming.append(
+                        UpcomingSchedule(
+                            schedule_id=schedule.id,
+                            schedule_name=schedule.name,
+                            zone_ids=zone_uuids,
+                            zone_names=zone_names,
+                            start_time=start_utc,
+                            end_time=end_utc,
+                            target_temp_c=schedule.target_temp_c,
+                            hvac_mode=schedule.hvac_mode,
+                        )
+                    )
+
+            check_date += timedelta(days=1)
 
     # Sort by start time
     upcoming.sort(key=lambda x: x.start_time)
