@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.18
+
+### Fixed
+
+- **Continuous offset re-evaluation for active schedules** -- offset
+  compensation was only applied at the moment a schedule fired (within
+  a 2-minute window of start_time).  After that, the thermostat held a
+  stale setpoint even as zone and hallway temperatures drifted.  Now,
+  while a schedule is active (between start_time and end_time), the
+  offset is re-evaluated every 60 seconds and the thermostat is updated
+  whenever the adjusted setpoint changes by more than 0.5 C.
+
 ## 0.8.17
 
 ### Fixed
