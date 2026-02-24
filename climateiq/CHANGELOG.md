@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.8.42] - 2026-02-24
+
+### Fixed
+- **Zone temperature always resolves for avg/offset**: `get_avg_zone_temp_c` and `get_priority_zone_temp_c` previously only read from HA live sensors. If a sensor entity was unavailable or hadn't been polled yet, the zone was excluded from the average — causing `schedule_avg_temp` to return null and the dashboard to fall back to the all-zones average. Both functions now fall back to the most-recent DB sensor reading (same source as the zone cards), ensuring the schedule-zone avg and offset compensation always have data when sensor readings exist in the database.
+
 ## [0.8.41] - 2026-02-24
 
 ### Fixed

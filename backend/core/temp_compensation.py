@@ -123,6 +123,36 @@ async def _get_live_zone_temp_c(
     return None
 
 
+async def _get_db_zone_temp_c(db: Any, zone: Any) -> float | None:
+    """Return the most-recent valid temperature from DB sensor readings for a zone.
+
+    Used as a fallback when the HA live sensor read returns None (sensor
+    unavailable, entity not yet polled, etc.).  Mirrors the same query used
+    by the zones API ``_enrich_zone_response``.
+    """
+    if not zone.sensors:
+        return None
+
+    from sqlalchemy import select as sa_select
+
+    from backend.models.database import SensorReading
+
+    sensor_ids = [s.id for s in zone.sensors]
+    result = await db.execute(
+        sa_select(SensorReading.temperature_c)
+        .where(
+            SensorReading.sensor_id.in_(sensor_ids),
+            SensorReading.temperature_c.is_not(None),
+        )
+        .order_by(SensorReading.recorded_at.desc())
+        .limit(10)
+    )
+    for temp_c in result.scalars().all():
+        if -40 <= temp_c <= 60:
+            return temp_c
+    return None
+
+
 async def _fetch_zones(db: Any, zone_ids: list[str] | None = None) -> list[Any]:
     """Fetch active zones (with sensors eagerly loaded) from the DB."""
     from sqlalchemy import select as sa_select
@@ -190,6 +220,10 @@ async def get_priority_zone_temp_c(
         temp_c: float | None = None
         if ha_client:
             temp_c = await _get_live_zone_temp_c(ha_client, zone, ha_temp_unit)
+        # Fallback to DB readings so compensation still works when HA is
+        # temporarily unavailable or the sensor entity hasn't been polled yet.
+        if temp_c is None:
+            temp_c = await _get_db_zone_temp_c(db, zone)
 
         if temp_c is not None:
             if top_priority is None:
@@ -247,6 +281,10 @@ async def get_avg_zone_temp_c(
         temp_c: float | None = None
         if ha_client:
             temp_c = await _get_live_zone_temp_c(ha_client, zone, ha_temp_unit)
+        # Fallback to DB readings so the avg is always available even when HA
+        # returns unavailable for the sensor entity.
+        if temp_c is None:
+            temp_c = await _get_db_zone_temp_c(db, zone)
 
         if temp_c is not None:
             readings.append((zone.name, temp_c))
