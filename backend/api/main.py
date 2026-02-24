@@ -434,15 +434,9 @@ async def execute_schedules() -> None:
                 return
 
             # Get user timezone — schedule times are stored as local HH:MM
-            user_tz_str = settings_instance.timezone or "UTC"
-            try:
-                from zoneinfo import ZoneInfo
+            from zoneinfo import ZoneInfo
 
-                user_tz = ZoneInfo(user_tz_str)
-            except Exception:
-                from zoneinfo import ZoneInfo
-
-                user_tz = ZoneInfo("UTC")
+            user_tz = ZoneInfo("UTC")
 
             # Also try DB setting (takes precedence)
             try:

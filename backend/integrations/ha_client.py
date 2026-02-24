@@ -359,15 +359,67 @@ class HAClient:
     async def set_temperature(self, entity_id: str, temperature: float) -> Any:
         """Set the target temperature on a climate entity.
 
+        Ecobee (and some other thermostats) reject the generic
+        ``temperature`` parameter when in ``heat`` or ``cool`` mode.
+        They require ``target_temp_low`` (heat) or ``target_temp_high``
+        (cool) instead.  In ``heat_cool`` / ``auto`` mode both low and
+        high must be provided.  This method reads the entity's current
+        HVAC mode and sends the correct parameter(s).
+
         Args:
-            entity_id: Fully qualified entity id (e.g. ``climate.living_room``).
-            temperature: Desired target temperature.
+            entity_id: Fully qualified entity id (e.g. ``climate.thermostat``).
+            temperature: Desired target temperature in the HA unit system.
         """
         logger.info("Setting temperature on %s to %.1f", entity_id, temperature)
+
+        # Determine which service data keys to use based on HVAC mode
+        data: dict[str, Any] = {}
+        try:
+            state = await self.get_state(entity_id)
+            hvac_mode = state.state if state else ""
+            attrs = state.attributes if state else {}
+
+            if hvac_mode == "heat":
+                data["target_temp_low"] = temperature
+                # Preserve existing high if in auto-capable thermostat
+                existing_high = attrs.get("target_temp_high")
+                if existing_high is not None:
+                    data["target_temp_high"] = existing_high
+            elif hvac_mode == "cool":
+                data["target_temp_high"] = temperature
+                # Preserve existing low if in auto-capable thermostat
+                existing_low = attrs.get("target_temp_low")
+                if existing_low is not None:
+                    data["target_temp_low"] = existing_low
+            elif hvac_mode in ("heat_cool", "auto"):
+                # For auto/heat_cool, set both bounds centered around target
+                # with a 2-degree spread (in whatever unit HA uses)
+                existing_low = attrs.get("target_temp_low")
+                existing_high = attrs.get("target_temp_high")
+                if existing_low is not None and existing_high is not None:
+                    # Shift both bounds so the midpoint matches the target
+                    spread = float(existing_high) - float(existing_low)
+                    if spread < 2:
+                        spread = 2
+                    data["target_temp_low"] = temperature - spread / 2
+                    data["target_temp_high"] = temperature + spread / 2
+                else:
+                    data["target_temp_low"] = temperature - 1
+                    data["target_temp_high"] = temperature + 1
+            else:
+                # Fallback: use generic temperature parameter
+                data["temperature"] = temperature
+        except Exception:
+            logger.debug(
+                "Could not determine HVAC mode for %s, using generic temperature param",
+                entity_id,
+            )
+            data["temperature"] = temperature
+
         return await self.call_service(
             "climate",
             "set_temperature",
-            data={"temperature": temperature},
+            data=data,
             target={"entity_id": entity_id},
         )
 

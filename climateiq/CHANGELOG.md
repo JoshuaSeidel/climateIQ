@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.5
+
+### Fixed
+
+- **Manual override / set_temperature 400 error** -- Ecobee thermostats
+  in ``heat`` mode reject the generic ``temperature`` parameter in the
+  HA ``climate.set_temperature`` service call, requiring
+  ``target_temp_low`` instead (and ``target_temp_high`` for cool mode).
+  ``HAClient.set_temperature()`` now reads the entity's current HVAC
+  mode and sends the correct parameter: ``target_temp_low`` for heat,
+  ``target_temp_high`` for cool, both for auto/heat_cool, or the
+  generic ``temperature`` for other modes. This fixes the 400 Bad
+  Request errors on manual override, schedule execution, follow-me,
+  and active mode temperature changes.
+
+- **Schedule execution crash** -- ``execute_schedules()`` referenced
+  ``settings_instance.timezone`` which does not exist on the
+  ``Settings`` class, causing an ``AttributeError`` on every schedule
+  tick. Fixed to default to UTC and let the DB ``system_settings``
+  timezone value take precedence (which was already the next step in
+  the code).
+
 ## 0.8.4
 
 ### Fixed
