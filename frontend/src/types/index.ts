@@ -422,4 +422,6 @@ export type OverrideStatus = {
   preset_mode: string | null
   is_override_active: boolean
   offset_info?: OffsetInfo
+  schedule_avg_temp: number | null
+  all_zones_avg_temp: number | null
 }

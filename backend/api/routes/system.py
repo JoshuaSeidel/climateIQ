@@ -1388,6 +1388,7 @@ async def get_override_status(
         offset_info: dict[str, Any] = {}
         try:
             from backend.core.temp_compensation import (
+                get_avg_zone_temp_c,
                 get_priority_zone_temp_c,
                 get_thermostat_reading_c,
             )
@@ -1448,9 +1449,16 @@ async def get_override_status(
             except Exception:  # noqa: S110
                 pass  # Fall back to all zones if schedule lookup fails
 
+            # Priority zone temp (for offset calculation, scoped to schedule)
             zone_temp_c, zone_name, _zpri = await get_priority_zone_temp_c(
                 db, zone_ids=active_zone_ids
             )
+
+            # Schedule zones average -- avg across ALL zones in the schedule
+            schedule_avg_c = await get_avg_zone_temp_c(db, zone_ids=active_zone_ids)
+            # All active zones average -- avg across every active zone
+            all_zones_avg_c = await get_avg_zone_temp_c(db)
+
             thermostat_c = await get_thermostat_reading_c(_ha_client, climate_entity)
             if zone_temp_c is not None and thermostat_c is not None:
                 raw_offset_c = thermostat_c - zone_temp_c
@@ -1461,8 +1469,24 @@ async def get_override_status(
                     "offset_c": round(raw_offset_c, 1),
                     "offset_f": round(raw_offset_c * 9 / 5, 1),
                 }
+
+            # Convert averages to user display unit
+            schedule_avg_temp: float | None = None
+            all_zones_avg_temp: float | None = None
+            if schedule_avg_c is not None:
+                schedule_avg_temp = (
+                    round(schedule_avg_c * 9 / 5 + 32, 1) if user_unit == "F"
+                    else round(schedule_avg_c, 1)
+                )
+            if all_zones_avg_c is not None:
+                all_zones_avg_temp = (
+                    round(all_zones_avg_c * 9 / 5 + 32, 1) if user_unit == "F"
+                    else round(all_zones_avg_c, 1)
+                )
         except Exception as _oi_err:
             _logger.debug("Offset info computation (non-critical): %s", _oi_err)
+            schedule_avg_temp = None
+            all_zones_avg_temp = None
 
         return {
             "current_temp": display_current_temp,
@@ -1471,6 +1495,8 @@ async def get_override_status(
             "preset_mode": preset_mode,
             "is_override_active": is_override,
             "offset_info": offset_info,
+            "schedule_avg_temp": schedule_avg_temp,
+            "all_zones_avg_temp": all_zones_avg_temp,
         }
 
     except Exception as exc:
@@ -1482,6 +1508,8 @@ async def get_override_status(
             "preset_mode": None,
             "is_override_active": False,
             "offset_info": {},
+            "schedule_avg_temp": None,
+            "all_zones_avg_temp": None,
         }
 
 

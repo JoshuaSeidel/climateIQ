@@ -534,7 +534,13 @@ export const Dashboard = () => {
           {/* Status bar */}
           <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/40 pt-3 dark:border-[rgba(148,163,184,0.12)]">
             <span className="text-xs text-muted-foreground">
-              Current: <span className="font-bold text-foreground">{overrideStatus?.current_temp != null ? `${overrideStatus.current_temp}${tempUnitLabel(unitKey)}` : '--'}</span>
+              Thermostat: <span className="font-bold text-foreground">{overrideStatus?.current_temp != null ? `${overrideStatus.current_temp}${tempUnitLabel(unitKey)}` : '--'}</span>
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Current Temp: <span className="font-bold text-foreground">{overrideStatus?.schedule_avg_temp != null ? `${overrideStatus.schedule_avg_temp}${tempUnitLabel(unitKey)}` : '--'}</span>
+            </span>
+            <span className="text-xs text-muted-foreground">
+              All Zones: <span className="font-bold text-foreground">{overrideStatus?.all_zones_avg_temp != null ? `${overrideStatus.all_zones_avg_temp}${tempUnitLabel(unitKey)}` : '--'}</span>
             </span>
             <span className="text-xs text-muted-foreground">
               Mode: <span className="font-bold capitalize text-foreground">{overrideStatus?.hvac_mode ?? '--'}</span>

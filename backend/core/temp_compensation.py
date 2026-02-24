@@ -110,6 +110,70 @@ async def get_priority_zone_temp_c(
     return avg_temp, zone_names, top_priority or 0
 
 
+async def get_avg_zone_temp_c(
+    db: Any,
+    zone_ids: list[str] | None = None,
+) -> float | None:
+    """Get the average temperature across zones (ignoring priority).
+
+    Unlike ``get_priority_zone_temp_c`` which only averages zones at
+    the highest priority tier, this function averages ALL zones that
+    have a recent reading.
+
+    Args:
+        db: AsyncSession
+        zone_ids: Optional list of zone UUID strings to consider.
+                  If empty/None, considers ALL active zones.
+
+    Returns:
+        Average temperature in Celsius, or None if no readings.
+    """
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.orm import selectinload
+
+    from backend.models.database import SensorReading, Zone
+
+    stmt = sa_select(Zone).options(selectinload(Zone.sensors)).where(Zone.is_active.is_(True))
+    if zone_ids:
+        try:
+            uuids = [uuid.UUID(str(zid)) for zid in zone_ids]
+            stmt = stmt.where(Zone.id.in_(uuids))
+        except (ValueError, AttributeError):
+            pass
+
+    result = await db.execute(stmt)
+    zones = list(result.scalars().unique().all())
+
+    if not zones:
+        return None
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=30)
+    temps: list[float] = []
+
+    for zone in zones:
+        if not zone.sensors:
+            continue
+        sensor_ids = [s.id for s in zone.sensors]
+        reading_result = await db.execute(
+            sa_select(SensorReading)
+            .where(
+                SensorReading.sensor_id.in_(sensor_ids),
+                SensorReading.recorded_at >= cutoff,
+                SensorReading.temperature_c.isnot(None),
+            )
+            .order_by(SensorReading.recorded_at.desc())
+            .limit(1)
+        )
+        reading = reading_result.scalar_one_or_none()
+        if reading and reading.temperature_c is not None:
+            temps.append(reading.temperature_c)
+
+    if not temps:
+        return None
+
+    return sum(temps) / len(temps)
+
+
 async def compute_adjusted_setpoint(
     desired_temp_c: float,
     thermostat_reading_c: float,

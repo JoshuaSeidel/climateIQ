@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.22
+
+### Added
+
+- **Schedule and all-zones average temperatures on Dashboard** -- the
+  Manual Override status bar now shows three temperature readings:
+  "Thermostat" (Ecobee hallway sensor), "Current Temp" (average of
+  zones in the active schedule), and "All Zones" (average across
+  every active zone).  Backend returns `schedule_avg_temp` and
+  `all_zones_avg_temp` from the override status endpoint.
+
+- **`get_avg_zone_temp_c()` helper** -- new function in
+  `temp_compensation.py` that averages temperatures across all
+  matching zones regardless of priority (unlike the existing
+  priority-based function used for offset calculation).
+
 ## 0.8.21
 
 ### Improved
