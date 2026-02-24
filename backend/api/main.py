@@ -2350,6 +2350,99 @@ async def _handle_ha_state_change(change: object) -> None:
 
 
 # ============================================================================
+# Thermostat Drift Detection
+# ============================================================================
+
+# Debounce: don't pile up concurrent correction runs triggered by rapid
+# thermostat events (e.g. Ecobee sends several state_changed in a row
+# when transitioning modes).  We allow at most one correction task at a time.
+_climate_correction_task: asyncio.Task[None] | None = None
+
+
+async def _handle_climate_state_change(change: object) -> None:
+    """React immediately when the thermostat setpoint is changed externally.
+
+    The Ecobee can override ClimateIQ's setpoint at any time — e.g. when the
+    thermostat's own schedule activates an "away" comfort profile that sets
+    the heat setpoint to 64°F.  Without this callback the correction would
+    only happen after the next maintain_climate_offset tick (up to 60s later).
+
+    This callback fires for every climate state_changed event, compares the
+    thermostat's current heat setpoint against what ClimateIQ last wrote, and
+    immediately triggers maintain_climate_offset when there's a meaningful
+    drift (> 1°F — one Ecobee step).
+    """
+    global _climate_correction_task
+
+    from backend.integrations.ha_websocket import HAStateChange
+
+    if not isinstance(change, HAStateChange) or change.domain != "climate":
+        return
+
+    # Only watch the configured climate entity
+    try:
+        from backend.config import SETTINGS as _cfg
+        climate_entities_raw = _cfg.climate_entities or ""
+        primary_entity = climate_entities_raw.split(",")[0].strip()
+    except Exception:
+        return
+
+    if change.entity_id != primary_entity:
+        return
+
+    # Extract the current heat setpoint from the state change attributes.
+    # Ecobee reports target_temp_low (heat) and target_temp_high (cool) in
+    # heat_cool/auto mode; falls back to "temperature" for single-setpoint.
+    attrs = change.attributes
+    ha_unit = attrs.get("temperature_unit", "") or attrs.get("unit_of_measurement", "") or "°C"
+
+    raw_setpoint = attrs.get("target_temp_low") or attrs.get("temperature")
+    if raw_setpoint is None:
+        return
+
+    try:
+        setpoint_raw = float(raw_setpoint)
+    except (TypeError, ValueError):
+        return
+
+    # Convert to Celsius for comparison against _last_offset_temp (always °C)
+    setpoint_c = (setpoint_raw - 32) * 5 / 9 if "F" in str(ha_unit).upper() else setpoint_raw
+
+    # Find what ClimateIQ last set — use any value in the dict (single thermostat)
+    if not _last_offset_temp:
+        return  # ClimateIQ hasn't set anything yet this session
+
+    last_c = next(iter(_last_offset_temp.values()))
+    drift_f = abs((setpoint_c - last_c) * 9 / 5)
+
+    if drift_f <= 1.0:
+        # Within one Ecobee step — no correction needed
+        return
+
+    logger.info(
+        "Thermostat drift detected on %s: current heat setpoint=%.1f°C, "
+        "ClimateIQ last set=%.1f°C (drift=%.1f°F) — triggering immediate correction",
+        change.entity_id,
+        setpoint_c,
+        last_c,
+        drift_f,
+    )
+
+    # Debounce: cancel any pending correction before scheduling a new one
+    if _climate_correction_task and not _climate_correction_task.done():
+        _climate_correction_task.cancel()
+
+    async def _delayed_correction() -> None:
+        # Small delay so rapid thermostat transitions settle before we correct
+        await asyncio.sleep(3)
+        await maintain_climate_offset()
+
+    _climate_correction_task = asyncio.create_task(
+        _delayed_correction(), name="climate-drift-correction"
+    )
+
+
+# ============================================================================
 # Lifecycle Management
 # ============================================================================
 
@@ -2661,6 +2754,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     entity_filter=entity_filter,
                 )
                 ha_ws.add_callback(_handle_ha_state_change)
+                ha_ws.add_callback(_handle_climate_state_change)
                 await ha_ws.connect()
                 app_state.ha_ws = ha_ws
             except Exception as e:

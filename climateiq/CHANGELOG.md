@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.36
+
+### Fixed
+
+- **Immediate thermostat drift correction**: ClimateIQ now reacts in real time
+  when the thermostat setpoint is changed externally (e.g. Ecobee away mode
+  resetting the heat setpoint to 64°F). A new `_handle_climate_state_change`
+  callback is registered on the existing HA WebSocket and fires within 3 seconds
+  of any `state_changed` event on the climate entity. If the thermostat's
+  current heat setpoint differs from what ClimateIQ last set by more than 1°F
+  (one Ecobee step), `maintain_climate_offset` is triggered immediately rather
+  than waiting up to 60 seconds for the next scheduled tick. Rapid thermostat
+  transitions are debounced so only one correction runs at a time.
+
 ## 0.8.35
 
 ### Fixed
