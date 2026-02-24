@@ -535,6 +535,9 @@ export const Dashboard = () => {
           <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/40 pt-3 dark:border-[rgba(148,163,184,0.12)]">
             <span className="text-xs text-muted-foreground">
               Thermostat: <span className="font-bold text-foreground">{overrideStatus?.current_temp != null ? `${overrideStatus.current_temp}${tempUnitLabel(unitKey)}` : '--'}</span>
+              {overrideStatus?.target_temp != null && (
+                <> → <span className="font-bold text-foreground">{overrideStatus.target_temp}{tempUnitLabel(unitKey)}</span></>
+              )}
             </span>
             <span className="text-xs text-muted-foreground">
               Current Temp: <span className="font-bold text-foreground">{overrideStatus?.schedule_avg_temp != null ? `${overrideStatus.schedule_avg_temp}${tempUnitLabel(unitKey)}` : '--'}</span>
