@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.19
+
+### Added
+
+- **Dedicated climate offset maintenance loop** -- new
+  `maintain_climate_offset()` background task runs every 60 seconds,
+  independent of schedule firing.  Finds the currently-active schedule,
+  re-evaluates offset compensation using live sensor and thermostat
+  readings, and updates the thermostat whenever the adjusted setpoint
+  drifts by more than 0.5 C.  Skips Follow-Me and Active modes (they
+  handle offset in their own loops).  Replaces the v0.8.18
+  schedule-window-bound re-eval with a proper continuous control loop.
+
 ## 0.8.18
 
 ### Fixed

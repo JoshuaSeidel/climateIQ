@@ -750,102 +750,6 @@ async def execute_schedules() -> None:
                         exec_err,
                     )
 
-        # ── Continuous offset re-evaluation for active schedules ────────
-        # The initial fire only happens once (deduped).  While a schedule
-        # is active (between start_time and end_time), re-evaluate offset
-        # compensation every 60 s and update the thermostat if the
-        # adjusted setpoint has drifted by more than 0.5 °C.
-        from datetime import time as _time
-
-        for schedule in schedules:
-            if current_dow not in (schedule.days_of_week or []):
-                continue
-
-            try:
-                s_hour, s_min = map(int, schedule.start_time.split(":"))
-                start_t = _time(s_hour, s_min)
-            except (ValueError, AttributeError):
-                continue
-
-            end_t = _time(23, 59)
-            if schedule.end_time:
-                try:
-                    e_hour, e_min = map(int, schedule.end_time.split(":"))
-                    end_t = _time(e_hour, e_min)
-                except (ValueError, AttributeError):
-                    pass
-
-            cur_t = now_local.time()
-
-            # Determine if we're inside the active window
-            if end_t < start_t:
-                is_active = cur_t >= start_t or cur_t <= end_t
-            else:
-                is_active = start_t <= cur_t <= end_t
-
-            if not is_active:
-                # Clean up stale tracking for this schedule
-                _last_offset_temp.pop(str(schedule.id), None)
-                continue
-
-            # Skip the first 2 minutes (the initial fire handles that)
-            sched_dt = now_local.replace(
-                hour=s_hour, minute=s_min, second=0, microsecond=0
-            )
-            if abs((now_local - sched_dt).total_seconds()) <= 120:
-                continue
-
-            # Re-evaluate offset compensation
-            try:
-                from backend.core.temp_compensation import apply_offset_compensation
-
-                adjusted_temp_c, offset_c, priority_zone_name = await apply_offset_compensation(
-                    db, ha_client, climate_entity,
-                    schedule.target_temp_c,
-                    zone_ids=schedule.zone_ids or None,
-                )
-
-                # Only update if the adjusted temp differs meaningfully
-                # from what we last sent for this schedule
-                sched_key = str(schedule.id)
-                prev_temp = _last_offset_temp.get(sched_key)
-                if prev_temp is not None and abs(adjusted_temp_c - prev_temp) <= 0.5:
-                    continue  # No meaningful change
-
-                # Convert and send
-                target_for_ha = adjusted_temp_c
-                if temp_unit == "F":
-                    target_for_ha = round(adjusted_temp_c * 9 / 5 + 32, 1)
-
-                try:
-                    await ha_client.set_temperature_with_hold(climate_entity, target_for_ha)
-                except Exception:
-                    await ha_client.set_temperature(climate_entity, target_for_ha)
-
-                _last_offset_temp[sched_key] = adjusted_temp_c
-
-                if abs(offset_c) > 0.1:
-                    offset_f = round(offset_c * 9 / 5, 1)
-                    logger.info(
-                        "Offset re-eval for '%s': adjusted to %.1f°%s "
-                        "(offset %+.1f°F for zone '%s')",
-                        schedule.name,
-                        target_for_ha,
-                        "F" if temp_unit == "F" else "C",
-                        offset_f,
-                        priority_zone_name or "unknown",
-                    )
-                else:
-                    logger.info(
-                        "Offset re-eval for '%s': set to %.1f°%s (no offset needed)",
-                        schedule.name,
-                        target_for_ha,
-                        "F" if temp_unit == "F" else "C",
-                    )
-
-            except Exception as reeval_err:
-                logger.debug("Offset re-eval for '%s' failed: %s", schedule.name, reeval_err)
-
         # Prune old dedup keys (keep only today's in local time)
         today_prefix = now_local.strftime("%Y-%m-%d")
         _last_executed_schedules = {
@@ -854,6 +758,185 @@ async def execute_schedules() -> None:
 
     except Exception as e:
         logger.error("Error in schedule execution: %s", e)
+
+
+# ============================================================================
+# Continuous Climate Offset Maintenance
+# ============================================================================
+
+
+async def maintain_climate_offset() -> None:
+    """Continuously adjust the thermostat to compensate for sensor offset.
+
+    Runs every 60 seconds.  Determines the desired temperature from the
+    currently-active schedule (if any) and re-evaluates offset
+    compensation.  Updates the thermostat only when the adjusted
+    setpoint has drifted by more than 0.5 °C from what was last sent.
+
+    This runs independently of mode -- Follow-Me and Active modes
+    already handle offset in their own loops, so this task skips those
+    modes to avoid conflicts.
+    """
+    from datetime import time as _time
+
+    from sqlalchemy import select as sa_select
+
+    from backend.models.database import Schedule, SystemConfig, SystemSetting
+    from backend.models.enums import SystemMode
+
+    try:
+        import backend.api.dependencies as _deps
+
+        ha_client = _deps._ha_client
+        if ha_client is None:
+            return
+
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            # ── Skip if Follow-Me or Active mode (they handle offset) ───
+            cfg_result = await db.execute(sa_select(SystemConfig).limit(1))
+            config = cfg_result.scalar_one_or_none()
+            if config is not None and config.current_mode in (
+                SystemMode.follow_me,
+                SystemMode.active,
+            ):
+                return
+
+            # ── Determine climate entity ────────────────────────────────
+            climate_entity: str | None = None
+            setting_result = await db.execute(
+                sa_select(SystemSetting).where(SystemSetting.key == "climate_entities")
+            )
+            setting_row = setting_result.scalar_one_or_none()
+            if setting_row and setting_row.value:
+                val = setting_row.value.get("value", "")
+                if isinstance(val, str) and val.strip():
+                    climate_entity = val.strip().split(",")[0].strip()
+            if not climate_entity:
+                _climate_cfg = settings_instance.climate_entities.strip()
+                if _climate_cfg:
+                    climate_entity = _climate_cfg.split(",")[0].strip()
+            if not climate_entity:
+                return
+
+            # ── Temperature unit ────────────────────────────────────────
+            temp_unit = settings_instance.temperature_unit.upper()
+
+            # ── Find the currently-active schedule ──────────────────────
+            from zoneinfo import ZoneInfo
+
+            user_tz = ZoneInfo("UTC")
+            try:
+                tz_result = await db.execute(
+                    sa_select(SystemSetting).where(SystemSetting.key == "timezone")
+                )
+                tz_row = tz_result.scalar_one_or_none()
+                if tz_row and tz_row.value:
+                    tz_val = tz_row.value.get("value", "") if isinstance(tz_row.value, dict) else str(tz_row.value)
+                    if tz_val:
+                        user_tz = ZoneInfo(tz_val)
+            except Exception:  # noqa: S110
+                pass
+            if str(user_tz) == "UTC":
+                try:
+                    ha_config = await ha_client.get_config()
+                    ha_tz_str = ha_config.get("time_zone", "")
+                    if ha_tz_str:
+                        user_tz = ZoneInfo(ha_tz_str)
+                except Exception:  # noqa: S110
+                    pass
+
+            now_local = datetime.now(user_tz)
+            current_dow = now_local.weekday()
+            cur_t = now_local.time()
+
+            result = await db.execute(
+                sa_select(Schedule).where(Schedule.is_enabled.is_(True))
+            )
+            schedules = list(result.scalars().all())
+
+            active_schedule: Schedule | None = None
+            for schedule in schedules:
+                if current_dow not in (schedule.days_of_week or []):
+                    continue
+                try:
+                    s_hour, s_min = map(int, schedule.start_time.split(":"))
+                    start_t = _time(s_hour, s_min)
+                except (ValueError, AttributeError):
+                    continue
+                end_t = _time(23, 59)
+                if schedule.end_time:
+                    try:
+                        e_hour, e_min = map(int, schedule.end_time.split(":"))
+                        end_t = _time(e_hour, e_min)
+                    except (ValueError, AttributeError):
+                        pass
+                if end_t < start_t:
+                    is_in_window = cur_t >= start_t or cur_t <= end_t
+                else:
+                    is_in_window = start_t <= cur_t <= end_t
+                if is_in_window:
+                    if active_schedule is None or schedule.priority > active_schedule.priority:
+                        active_schedule = schedule
+
+            if active_schedule is None:
+                # No active schedule -- nothing to maintain
+                _last_offset_temp.clear()
+                return
+
+            desired_temp_c = active_schedule.target_temp_c
+            zone_ids = active_schedule.zone_ids or None
+
+            # ── Apply offset compensation ───────────────────────────────
+            from backend.core.temp_compensation import apply_offset_compensation
+
+            adjusted_temp_c, offset_c, priority_zone_name = await apply_offset_compensation(
+                db, ha_client, climate_entity,
+                desired_temp_c,
+                zone_ids=zone_ids,
+            )
+
+            # ── Only update if the adjusted temp has drifted meaningfully
+            sched_key = str(active_schedule.id)
+            prev_temp = _last_offset_temp.get(sched_key)
+            if prev_temp is not None and abs(adjusted_temp_c - prev_temp) <= 0.5:
+                return  # No meaningful change
+
+            # ── Convert and send ────────────────────────────────────────
+            target_for_ha = adjusted_temp_c
+            if temp_unit == "F":
+                target_for_ha = round(adjusted_temp_c * 9 / 5 + 32, 1)
+
+            try:
+                await ha_client.set_temperature_with_hold(climate_entity, target_for_ha)
+            except Exception:
+                await ha_client.set_temperature(climate_entity, target_for_ha)
+
+            _last_offset_temp[sched_key] = adjusted_temp_c
+
+            if abs(offset_c) > 0.1:
+                offset_f = round(offset_c * 9 / 5, 1)
+                logger.info(
+                    "Climate maintenance: %s -> %.1f°%s "
+                    "(offset %+.1f°F targeting '%s', desired %.1f°%s)",
+                    climate_entity,
+                    target_for_ha,
+                    "F" if temp_unit == "F" else "C",
+                    offset_f,
+                    priority_zone_name or "unknown",
+                    round(desired_temp_c * 9 / 5 + 32, 1) if temp_unit == "F" else desired_temp_c,
+                    "F" if temp_unit == "F" else "C",
+                )
+            else:
+                logger.debug(
+                    "Climate maintenance: %s -> %.1f°%s (no offset needed)",
+                    climate_entity,
+                    target_for_ha,
+                    "F" if temp_unit == "F" else "C",
+                )
+
+    except Exception as e:
+        logger.error("Error in climate offset maintenance: %s", e)
 
 
 # ============================================================================
@@ -2308,6 +2391,15 @@ def init_scheduler() -> AsyncIOScheduler:
         IntervalTrigger(seconds=60),
         id="execute_schedules",
         name="Execute Schedules",
+        replace_existing=True,
+    )
+
+    # Continuous climate offset maintenance - every 60 seconds
+    scheduler.add_job(
+        maintain_climate_offset,
+        IntervalTrigger(seconds=60),
+        id="maintain_climate_offset",
+        name="Maintain Climate Offset",
         replace_existing=True,
     )
 
