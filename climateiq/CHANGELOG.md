@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.17
+
+### Fixed
+
+- **Database migration for zones.priority column** -- v0.8.16 added a
+  `priority` column to the Zone ORM model but did not include the
+  corresponding `ALTER TABLE` migration, causing every query that
+  touches the `zones` table to fail with
+  `UndefinedColumn: column zones.priority does not exist`.  The startup
+  migration now adds the column automatically.
+
 ## 0.8.16
 
 ### Added

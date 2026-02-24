@@ -707,6 +707,15 @@ async def init_db() -> None:
         except Exception:
             _db_logger.warning("Could not add zone exclusion columns")
 
+        # --- Migration: add zone priority column if missing ------------------
+        try:
+            await conn.execute(text(
+                "ALTER TABLE zones "
+                "ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 5"
+            ))
+        except Exception:
+            _db_logger.warning("Could not add zone priority column")
+
         # --- TimescaleDB hypertables (runs inside the transaction) -----------
         await _ensure_hypertables(conn)
 
