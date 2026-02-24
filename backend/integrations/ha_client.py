@@ -409,11 +409,18 @@ class HAClient:
                         current_preset, entity_id,
                     )
                     # Try ecobee.resume_program first (cleanest way to
-                    # cancel holds), fall back to generic preset clear
+                    # cancel holds), fall back to generic preset clear.
+                    #
+                    # IMPORTANT: resume_all=False cancels only the CURRENT
+                    # hold so Ecobee moves to its next scheduled event.
+                    # resume_all=True would revert to the full schedule and
+                    # could snap the thermostat to Ecobee's "away" temp (64°F)
+                    # before our set_temperature call runs — exactly the bounce
+                    # we're trying to prevent.
                     try:
                         await self.call_service(
                             "ecobee", "resume_program",
-                            data={"entity_id": entity_id, "resume_all": True},
+                            data={"entity_id": entity_id, "resume_all": False},
                         )
                         logger.info("Cleared Ecobee program hold on %s", entity_id)
                     except Exception:

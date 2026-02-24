@@ -1267,6 +1267,171 @@ async def set_manual_override(
 
 
 # ---------------------------------------------------------------------------
+# GET /system/debug/offset-calculation — debug offset calculation
+# ---------------------------------------------------------------------------
+
+
+@router.get("/debug/offset-calculation")
+async def debug_offset_calculation(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Debug endpoint to show what ClimateIQ is calculating for offset compensation."""
+    from zoneinfo import ZoneInfo
+
+    from backend.core.temp_compensation import (
+        compute_adjusted_setpoint,
+        get_avg_zone_temp_c,
+        get_max_offset_setting,
+        get_thermostat_reading_c,
+    )
+    from backend.integrations.ha_client import HAClient
+    from backend.models.database import Schedule, SystemSetting
+
+    # Get HA client
+    ha_client: HAClient | None = None
+    try:
+        from backend.config import SETTINGS as _cfg
+
+        ha_url = _cfg.ha_url
+        ha_token = _cfg.ha_token
+        if ha_url and ha_token:
+            ha_client = HAClient(ha_url, ha_token)
+    except Exception as exc:
+        return {"error": f"Could not initialize HA client: {exc}"}
+
+    # Get climate entity
+    climate_entity: str | None = None
+    result = await db.execute(select(SystemSetting).where(SystemSetting.key == "climate_entities"))
+    row = result.scalar_one_or_none()
+    if row and row.value:
+        raw_val = row.value.get("value", "")
+        if raw_val:
+            climate_entity = raw_val.split(",")[0].strip()
+
+    if not climate_entity:
+        from backend.config import SETTINGS as _cfg
+
+        if _cfg.climate_entities:
+            climate_entity = _cfg.climate_entities.split(",")[0].strip()
+
+    if not climate_entity:
+        return {"error": "No climate entity configured"}
+
+    # Get timezone
+    user_tz = ZoneInfo("UTC")
+    try:
+        tz_result = await db.execute(select(SystemSetting).where(SystemSetting.key == "timezone"))
+        tz_row = tz_result.scalar_one_or_none()
+        if tz_row and tz_row.value:
+            tz_val = tz_row.value.get("value", "")
+            if tz_val:
+                user_tz = ZoneInfo(tz_val)
+    except Exception:
+        pass
+
+    # Find active schedule
+    now_local = datetime.now(user_tz)
+    current_dow = now_local.weekday()
+    cur_t = now_local.time()
+
+    result = await db.execute(select(Schedule).where(Schedule.is_enabled == True))  # noqa: E712
+    schedules = list(result.scalars().all())
+
+    active_schedule: Schedule | None = None
+    for schedule in schedules:
+        if current_dow not in (schedule.days_of_week or []):
+            continue
+        try:
+            s_hour, s_min = map(int, schedule.start_time.split(":"))
+            start_t = time(s_hour, s_min)
+        except (ValueError, AttributeError):
+            continue
+        end_t = time(23, 59)
+        if schedule.end_time:
+            try:
+                e_hour, e_min = map(int, schedule.end_time.split(":"))
+                end_t = time(e_hour, e_min)
+            except (ValueError, AttributeError):
+                pass
+        if end_t < start_t:
+            is_in_window = cur_t >= start_t or cur_t <= end_t
+        else:
+            is_in_window = start_t <= cur_t <= end_t
+        if is_in_window:
+            if active_schedule is None or schedule.priority > active_schedule.priority:
+                active_schedule = schedule
+
+    if not active_schedule:
+        return {"error": "No active schedule found"}
+
+    desired_temp_c = active_schedule.target_temp_c
+    desired_temp_f = round(desired_temp_c * 9 / 5 + 32, 1)
+    zone_ids = active_schedule.zone_ids or None
+
+    # Get zone temperatures
+    avg_temp_c, zone_names = await get_avg_zone_temp_c(db, zone_ids, ha_client=ha_client)
+    avg_temp_f = round(avg_temp_c * 9 / 5 + 32, 1) if avg_temp_c is not None else None
+
+    # Get thermostat reading
+    thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity)
+    thermostat_f = round(thermostat_c * 9 / 5 + 32, 1) if thermostat_c is not None else None
+
+    # Compute offset
+    if avg_temp_c is None or thermostat_c is None:
+        return {
+            "error": "Missing temperature data",
+            "schedule": {
+                "name": active_schedule.name,
+                "target_c": desired_temp_c,
+                "target_f": desired_temp_f,
+                "zone_ids": zone_ids,
+            },
+            "avg_zone_temp_c": avg_temp_c,
+            "avg_zone_temp_f": avg_temp_f,
+            "thermostat_reading_c": thermostat_c,
+            "thermostat_reading_f": thermostat_f,
+            "zone_names": zone_names,
+        }
+
+    max_offset_f = await get_max_offset_setting(db)
+    adjusted_c, offset_c = await compute_adjusted_setpoint(
+        desired_temp_c, thermostat_c, avg_temp_c, max_offset_f
+    )
+    adjusted_f = round(adjusted_c * 9 / 5 + 32, 1)
+    offset_f = round(offset_c * 9 / 5, 1)
+
+    return {
+        "schedule": {
+            "name": active_schedule.name,
+            "id": str(active_schedule.id),
+            "target_c": desired_temp_c,
+            "target_f": desired_temp_f,
+            "zone_ids": zone_ids,
+        },
+        "zone_data": {
+            "avg_temp_c": avg_temp_c,
+            "avg_temp_f": avg_temp_f,
+            "zone_names": zone_names,
+        },
+        "thermostat": {
+            "reading_c": thermostat_c,
+            "reading_f": thermostat_f,
+            "entity_id": climate_entity,
+        },
+        "offset_calculation": {
+            "zone_error_c": round(desired_temp_c - avg_temp_c, 2),
+            "zone_error_f": round((desired_temp_c - avg_temp_c) * 9 / 5, 2),
+            "offset_c": offset_c,
+            "offset_f": offset_f,
+            "adjusted_c": adjusted_c,
+            "adjusted_f": adjusted_f,
+            "max_offset_f": max_offset_f,
+        },
+        "timestamp": now_local.isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # GET /system/override — current override status
 # ---------------------------------------------------------------------------
 

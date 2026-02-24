@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.38] - 2026-02-24
+
+### Fixed
+- **Chat LLM hallucination**: The AI assistant was inventing temperature readings (e.g. 96°F) for zones that had no sensor data (shown as "awaiting sensor data" in context). Added explicit grounding rules to the system prompt: the LLM must never invent, estimate, or infer sensor values not explicitly present in the context data, and must tell the user when data is unavailable rather than fabricating it.
+
+
+## [0.8.37] - 2026-02-24
+
+### Fixed
+- **Thermostat drift detection**: Temperature unit was read from entity attributes (often absent on Ecobee climate entities), defaulting to °C and misinterpreting 64°F setpoints as 64°C — causing massive false drift and constant correction loops. Now uses `settings_instance.temperature_unit` (the system setting) for correct unit conversion.
+- **Hold preservation**: `ecobee.resume_program` was called with `resume_all=True`, which cancelled all holds including ClimateIQ's own temperature hold. Changed to `resume_all=False` to cancel only the current comfort-preset hold, preventing Ecobee from bouncing back to its away schedule (64°F) between resume and the subsequent set_temperature call.
+
 ## 0.8.36
 
 ### Fixed

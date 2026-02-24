@@ -2394,7 +2394,12 @@ async def _handle_climate_state_change(change: object) -> None:
     # Ecobee reports target_temp_low (heat) and target_temp_high (cool) in
     # heat_cool/auto mode; falls back to "temperature" for single-setpoint.
     attrs = change.attributes
-    ha_unit = attrs.get("temperature_unit", "") or attrs.get("unit_of_measurement", "") or "°C"
+
+    # Use the system temperature unit setting — DO NOT read from entity attrs.
+    # Climate entities (Ecobee) often lack temperature_unit / unit_of_measurement
+    # in their attributes, causing a false default to "°C" which would misinterpret
+    # a 64°F setpoint as 64°C (far from our ~21°C last_c), triggering false drift.
+    ha_unit = settings_instance.temperature_unit.upper()  # "F" or "C"
 
     raw_setpoint = attrs.get("target_temp_low") or attrs.get("temperature")
     if raw_setpoint is None:
@@ -2406,7 +2411,7 @@ async def _handle_climate_state_change(change: object) -> None:
         return
 
     # Convert to Celsius for comparison against _last_offset_temp (always °C)
-    setpoint_c = (setpoint_raw - 32) * 5 / 9 if "F" in str(ha_unit).upper() else setpoint_raw
+    setpoint_c = (setpoint_raw - 32) * 5 / 9 if ha_unit == "F" else setpoint_raw
 
     # Find what ClimateIQ last set — use any value in the dict (single thermostat)
     if not _last_offset_temp:
