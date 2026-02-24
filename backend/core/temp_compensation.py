@@ -267,6 +267,25 @@ async def compute_adjusted_setpoint(
 ) -> tuple[float, float]:
     """Compute the adjusted setpoint to compensate for sensor location.
 
+    Goal-driven formula: push the thermostat setpoint above the desired
+    temperature by however much the zones are *below* the target.  This
+    keeps the HVAC running until the zones actually reach the desired
+    temperature, not just until the thermostat (in a different location)
+    satisfies its own setpoint.
+
+    When the zones are already at or above the target the offset is zero
+    (or negative for cooling) so the system does not overshoot.
+
+    Formula:
+        zone_error  = desired - zone_avg          # > 0 when zones are cold
+        offset      = clamp(zone_error, ±max)
+        adjusted    = desired + offset
+
+    The thermostat_reading is retained as a parameter for logging / future
+    use (e.g. safety checks) but is no longer the primary driver of the
+    offset so the system doesn't oscillate when the thermostat location
+    is warmer than the target zones.
+
     Args:
         desired_temp_c: The temperature we want in the priority zone (Celsius).
         thermostat_reading_c: What the thermostat currently reads (Celsius).
@@ -277,27 +296,27 @@ async def compute_adjusted_setpoint(
         (adjusted_temp_c, offset_c) -- the adjusted setpoint and the
         offset that was applied (both in Celsius).
     """
-    # Offset = thermostat reading - priority zone reading
-    # If thermostat reads higher than the zone, offset is positive
-    # and we need to increase the setpoint sent to the thermostat.
-    offset_c = thermostat_reading_c - priority_zone_temp_c
+    # How far are the zones from the target?
+    # Positive = zones are below target (need more heating)
+    # Negative = zones are above target (need more cooling / less heating)
+    zone_error_c = desired_temp_c - priority_zone_temp_c
 
     # Convert max offset from F to C for clamping
     max_offset_c = max_offset_f * 5.0 / 9.0
 
     # Clamp the offset
-    clamped_offset_c = max(min(offset_c, max_offset_c), -max_offset_c)
+    clamped_offset_c = max(min(zone_error_c, max_offset_c), -max_offset_c)
 
     adjusted_temp_c = desired_temp_c + clamped_offset_c
 
     if abs(clamped_offset_c) > 0.1:
         logger.info(
             "Offset compensation: desired=%.1f C, thermostat=%.1f C, "
-            "zone=%.1f C, raw_offset=%.1f C, clamped=%.1f C, adjusted=%.1f C",
+            "zone=%.1f C, zone_error=%.1f C, clamped=%.1f C, adjusted=%.1f C",
             desired_temp_c,
             thermostat_reading_c,
             priority_zone_temp_c,
-            offset_c,
+            zone_error_c,
             clamped_offset_c,
             adjusted_temp_c,
         )

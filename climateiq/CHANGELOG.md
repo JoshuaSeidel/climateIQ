@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.31
+
+### Fixed
+
+- **Offset compensation now drives toward zone target instead of tracking
+  the thermostat-to-zone gap.** The old formula used
+  `desired + (thermostat - zone_avg)` which only compensated for the
+  current sensor location gap and would stop heating once the thermostat
+  *read* its setpoint — regardless of whether the zones were actually warm
+  enough. The new formula uses `desired + (desired - zone_avg)`: the
+  thermostat is pushed *above* the target by however much the zones are
+  *below* it, so the HVAC keeps running until the zones reach the desired
+  temperature. Once zones hit target the offset is zero; if they overshoot,
+  the offset goes negative, preventing runaway. The 8°F max-offset cap and
+  60-second maintenance loop are unchanged.
+
+- **Status bar now shows thermostat set temp** alongside the reading:
+  "Thermostat: 72°F → 73°F" makes the offset-adjusted hardware setpoint
+  visible at a glance.
+
 ## 0.8.30
 
 ### Fixed
