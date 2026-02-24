@@ -1386,33 +1386,30 @@ async def get_override_status(
         # Scope to the active schedule's zones so we don't show offset
         # for a zone that isn't part of the current schedule.
         offset_info: dict[str, Any] = {}
+        # Pre-declare so they always exist even if an exception fires mid-block.
+        schedule_avg_temp: float | None = None
+        all_zones_avg_temp: float | None = None
+        schedule_target_temp: float | None = None
+        schedule_zone_names: str | None = None
         try:
+            from backend.api.routes.schedule import (
+                _get_user_tz,
+                _parse_zone_ids,
+                parse_time,
+            )
             from backend.core.temp_compensation import (
                 get_avg_zone_temp_c,
                 get_priority_zone_temp_c,
                 get_thermostat_reading_c,
             )
-            from backend.models.database import Schedule
+            from backend.models.database import Schedule, Zone as _Zone
 
-            # Find the currently-active schedule to scope zone_ids
+            # Find the currently-active schedule using the same helpers as the
+            # schedule endpoint — avoids the duplicate/buggy inline logic.
+            _best: Schedule | None = None
             active_zone_ids: list[str] | None = None
             try:
-                from zoneinfo import ZoneInfo as _ZI
-
-                _user_tz = _ZI("UTC")
-                _tz_r = await db.execute(
-                    select(SystemSetting).where(SystemSetting.key == "timezone")
-                )
-                _tz_row = _tz_r.scalar_one_or_none()
-                if _tz_row and _tz_row.value:
-                    _tz_val = _tz_row.value.get("value", "") if isinstance(_tz_row.value, dict) else str(_tz_row.value)
-                    if _tz_val:
-                        _user_tz = _ZI(_tz_val)
-                if str(_user_tz) == "UTC":
-                    _ha_tz = ha_config.get("time_zone", "")
-                    if _ha_tz:
-                        _user_tz = _ZI(_ha_tz)
-
+                _user_tz = await _get_user_tz(db)
                 _now_local = datetime.now(_user_tz)
                 _cur_dow = _now_local.weekday()
                 _cur_t = _now_local.time()
@@ -1420,22 +1417,14 @@ async def get_override_status(
                 _sched_r = await db.execute(
                     select(Schedule).where(Schedule.is_enabled.is_(True))
                 )
-                _best: Schedule | None = None
                 for _s in _sched_r.scalars().all():
                     if _cur_dow not in (_s.days_of_week or []):
                         continue
                     try:
-                        _sh, _sm = map(int, _s.start_time.split(":"))
-                        _st = time(_sh, _sm)
+                        _st = parse_time(_s.start_time)
+                        _et = parse_time(_s.end_time) if _s.end_time else time(23, 59)
                     except (ValueError, AttributeError):
                         continue
-                    _et = time(23, 59)
-                    if _s.end_time:
-                        try:
-                            _eh, _em = map(int, _s.end_time.split(":"))
-                            _et = time(_eh, _em)
-                        except (ValueError, AttributeError):
-                            pass
                     if _et < _st:
                         _in_window = _cur_t >= _st or _cur_t <= _et
                     else:
@@ -1446,30 +1435,26 @@ async def get_override_status(
 
                 if _best and _best.zone_ids:
                     active_zone_ids = _best.zone_ids
-            except Exception:  # noqa: S110
-                pass  # Fall back to all zones if schedule lookup fails
+            except Exception as _sched_err:
+                _logger.warning("Schedule lookup failed in override status: %s", _sched_err)
+                # _best stays None; fall through to all-zones averages
 
             # ── Schedule target temp (what we want the rooms to be) ─────
             schedule_target_c: float | None = None
-            schedule_zone_names: str | None = None
             if _best is not None:
                 schedule_target_c = _best.target_temp_c
                 # Resolve zone names from zone_ids
-                if _best.zone_ids:
-                    import uuid as _uuid
-
-                    from backend.models.database import Zone as _Zone
-
-                    try:
-                        _zuuids = [_uuid.UUID(str(zid)) for zid in _best.zone_ids]
+                try:
+                    _zone_uuids = _parse_zone_ids(_best)
+                    if _zone_uuids:
                         _zr = await db.execute(
-                            select(_Zone.name).where(_Zone.id.in_(_zuuids))
+                            select(_Zone.name).where(_Zone.id.in_(_zone_uuids))
                         )
                         _znames = [row[0] for row in _zr.all()]
                         if _znames:
                             schedule_zone_names = ", ".join(sorted(_znames))
-                    except Exception:  # noqa: S110
-                        pass
+                except Exception as _zn_err:
+                    _logger.warning("Zone name resolution failed: %s", _zn_err)
 
             # Priority zone temp (for offset calculation, scoped to schedule)
             zone_temp_c, zone_name, _zpri = await get_priority_zone_temp_c(
@@ -1497,9 +1482,6 @@ async def get_override_status(
                 }
 
             # Convert averages to user display unit
-            schedule_avg_temp: float | None = None
-            all_zones_avg_temp: float | None = None
-            schedule_target_temp: float | None = None
             if schedule_avg_c is not None:
                 schedule_avg_temp = (
                     round(schedule_avg_c * 9 / 5 + 32, 1) if user_unit == "F"
@@ -1516,11 +1498,7 @@ async def get_override_status(
                     else round(schedule_target_c, 1)
                 )
         except Exception as _oi_err:
-            _logger.debug("Offset info computation (non-critical): %s", _oi_err)
-            schedule_avg_temp = None
-            all_zones_avg_temp = None
-            schedule_target_temp = None
-            schedule_zone_names = None
+            _logger.warning("Offset info computation failed: %s", _oi_err)
 
         return {
             "current_temp": display_current_temp,

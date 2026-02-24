@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.8.30
+
+### Fixed
+
+- **Target Temp, Current Temp, and All Zones no longer show `--`**. Three
+  compounding bugs caused these values to always be null:
+
+  1. **Scope bug** — `_best` (active schedule) was declared inside an inner
+     try-block but referenced outside it, causing a silent `NameError` that
+     nulled all three values on every request.
+
+  2. **Exception silenced at DEBUG** — failures in the offset computation
+     block were logged at DEBUG (invisible in default logs). Now logged at
+     WARNING and output variables are pre-declared so a partial failure
+     doesn't zero out unrelated fields.
+
+  3. **Sensor reading too strict** — `_get_live_zone_temp_c` rejected sensors
+     whose HA entity has a numeric temperature state but no `device_class` or
+     `unit_of_measurement`. Now tries three strategies: explicit temp entity,
+     plausible numeric state, and temperature stored as an attribute. Also
+     checks the sensor's secondary `entity_id` field as a fallback.
+
+  4. **Duplicate schedule-lookup logic** replaced with the shared
+     `_get_user_tz` / `parse_time` helpers from the schedule route.
+
 ## 0.8.29
 
 ### Fixed

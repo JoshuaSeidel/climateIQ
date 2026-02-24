@@ -29,6 +29,64 @@ async def _get_ha_temp_unit(ha_client: Any) -> str:
         return "°C"
 
 
+def _parse_temp_from_state(state: Any, ha_temp_unit: str) -> float | None:
+    """Extract a Celsius temperature from an HA state object.
+
+    Tries three strategies in order:
+    1. state.state is a numeric temperature value with a temperature uom
+       or device_class (covers dedicated temperature sensors).
+    2. state.state is numeric but the entity has no device_class / uom —
+       accept if the value is plausible as a temperature (handles some
+       Zigbee multisensors whose top-level entity IS the temperature).
+    3. state.attributes["temperature"] exists (covers climate entities
+       and some multisensors that expose temperature as an attribute).
+
+    Returns temperature in Celsius, or None if no reading can be extracted.
+    """
+    if not state:
+        return None
+    attrs = state.attributes or {}
+    device_class = attrs.get("device_class", "")
+    uom = str(attrs.get("unit_of_measurement", ""))
+
+    # Strategy 1 & 2: state.state is the temperature
+    raw_state = state.state
+    if raw_state not in ("unavailable", "unknown", None, ""):
+        try:
+            raw = float(raw_state)
+            effective_uom = uom if uom else ha_temp_unit
+
+            is_explicit_temp = device_class == "temperature" or (
+                uom and any(u in uom for u in ("°F", "°C", "°K", "F", "C", "K"))
+            )
+            if is_explicit_temp:
+                if "F" in effective_uom.upper():
+                    raw = (raw - 32) * 5 / 9
+                if -40 <= raw <= 60:
+                    return raw
+            elif not device_class and not uom:
+                # No type hint at all — accept only if value is plausible as °C
+                if -10 <= raw <= 45:
+                    return raw
+        except (ValueError, TypeError):
+            pass
+
+    # Strategy 3: temperature stored as an attribute (e.g. climate entity,
+    # some Zigbee multisensors report temperature in attributes only)
+    attr_temp = attrs.get("temperature") or attrs.get("current_temperature")
+    if attr_temp is not None:
+        try:
+            raw = float(attr_temp)
+            if "F" in ha_temp_unit.upper():
+                raw = (raw - 32) * 5 / 9
+            if -40 <= raw <= 60:
+                return raw
+        except (ValueError, TypeError):
+            pass
+
+    return None
+
+
 async def _get_live_zone_temp_c(
     ha_client: Any,
     zone: Any,
@@ -36,42 +94,32 @@ async def _get_live_zone_temp_c(
 ) -> float | None:
     """Read the live temperature for a zone from HA sensors.
 
-    Iterates through the zone's sensors, queries HA for each one,
-    and returns the first valid temperature reading in Celsius.
-    Sensors that are unavailable/unknown in HA are skipped.
+    Iterates through the zone's sensors and tries both the primary
+    ha_entity_id and the secondary entity_id field.  Returns the first
+    valid Celsius reading found.  Sensors that are unavailable/unknown
+    in HA are skipped.
     """
     if not zone.sensors:
         return None
 
     for sensor in zone.sensors:
-        if not sensor.ha_entity_id:
-            continue
-        try:
-            state = await ha_client.get_state(sensor.ha_entity_id)
-            if not state or state.state in ("unavailable", "unknown", None):
+        # Collect candidate entity IDs: primary first, secondary as fallback
+        candidates: list[str] = []
+        if sensor.ha_entity_id:
+            candidates.append(sensor.ha_entity_id)
+        if getattr(sensor, "entity_id", None) and sensor.entity_id != sensor.ha_entity_id:
+            candidates.append(sensor.entity_id)
+
+        for entity_id in candidates:
+            try:
+                state = await ha_client.get_state(entity_id)
+                if not state or state.state in ("unavailable", "unknown", None):
+                    continue
+                result = _parse_temp_from_state(state, ha_temp_unit)
+                if result is not None:
+                    return result
+            except Exception:  # noqa: S112
                 continue
-            attrs = state.attributes or {}
-            device_class = attrs.get("device_class", "")
-            uom = str(attrs.get("unit_of_measurement", ""))
-            # Accept if device_class is "temperature", OR if the unit is a
-            # temperature unit (°F / °C / K) and device_class is unset.
-            # This handles multisensors whose top-level entity has no device_class.
-            is_temp_entity = device_class == "temperature" or (
-                not device_class and uom and any(u in uom for u in ("°F", "°C", "°K", "F", "C", "K"))
-            )
-            if not is_temp_entity:
-                continue
-            raw = float(state.state)
-            effective_uom = uom if uom else ha_temp_unit
-            if "F" in effective_uom.upper():
-                raw = (raw - 32) * 5 / 9
-            # Sanity check: reject impossible Celsius values
-            if -40 <= raw <= 60:
-                return raw
-        except (ValueError, TypeError):
-            continue
-        except Exception:  # noqa: S112
-            continue
     return None
 
 
