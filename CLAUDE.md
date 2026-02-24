@@ -29,6 +29,14 @@
 - `zone.target_temp` in the zones API = global thermostat setpoint (offset-adjusted), NOT the schedule's desired zone temp
 - Ecobee uses `target_temp_low` (heat) and `target_temp_high` (cool) — `temperature` attr may be absent
 
+## Version Bump Checklist
+When bumping the version, ALL of these files must be updated:
+- `VERSION` (used by `addon.yml` to tag Docker images — **most critical**)
+- `climateiq/config.yaml`
+- `backend/pyproject.toml`
+- `frontend/package.json`
+- `climateiq/CHANGELOG.md`
+
 ## File Map
 - `frontend/src/pages/Dashboard.tsx` — main dashboard UI
 - `backend/api/routes/system.py:1275` — `get_override_status()` endpoint
