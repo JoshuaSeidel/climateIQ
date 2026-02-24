@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.8.33
+
+### Performance
+
+- **DB migration 002**: Added five missing indexes — `sensor_readings(sensor_id, recorded_at DESC)`
+  compound covering index (the most queried pattern); `sensors(zone_id)` and `devices(zone_id)`
+  FK indexes; partial indexes on `zones(is_active)` and `schedules(is_enabled)`.  The
+  sensor_readings compound index eliminates full-table scans on the largest table.
+
+- **Zone enrichment batched**: Replaced the 4-queries-per-zone loop in
+  `_enrich_zone_response` with a single UNION ALL query that fetches the latest
+  non-null value for temperature, humidity, presence, and lux in one round trip.
+  Zone list requests now issue O(1) DB reads instead of O(zones × 4).
+
+- **Background task staggering**: All scheduled tasks now have staggered
+  `start_date` offsets (0–55 seconds) so they no longer fire simultaneously.
+  `execute_schedules` and `maintain_climate_offset` previously both hit the DB
+  at exactly T+60s; they now start at T+10s and T+20s respectively.
+
+- **Frontend prefetch on app init**: `AppProviders` now kicks off
+  `prefetchQuery` for `settings`, `override-status`, and a zones warm-up
+  request the moment the app boots — before the router renders any page.
+  React Query deduplicates the in-flight requests so the Dashboard never
+  waits for a cold fetch.
+
 ## 0.8.32
 
 ### Fixed

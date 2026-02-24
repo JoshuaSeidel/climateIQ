@@ -2386,10 +2386,34 @@ def init_scheduler() -> AsyncIOScheduler:
         },
     )
 
+    # ---------------------------------------------------------------------------
+    # Background tasks — staggered start offsets prevent simultaneous DB load.
+    #
+    # Offset map (seconds from now):
+    #   0s  poll_zone_status          (30s interval)
+    #  10s  execute_schedules         (60s interval)
+    #  20s  maintain_climate_offset   (60s interval)
+    #  30s  execute_follow_me_mode    (90s interval)
+    #  40s  execute_rule_engine       (120s interval)
+    #  50s  execute_cover_automation  (180s interval)
+    #  55s  execute_vent_optimization (180s interval)
+    #   5s  poll_weather_data         (900s interval)
+    #   5s  cleanup_connections       (300s interval)
+    #  15s  execute_active_mode       (300s interval)
+    #  25s  check_sensor_health       (600s interval)
+    #  35s  execute_pattern_learning  (1800s interval)
+    # ---------------------------------------------------------------------------
+    from datetime import timedelta
+
+    def _stagger(seconds: int) -> datetime:
+        """Return an absolute start time offset from now."""
+        from datetime import datetime as _dt, timezone as _tz
+        return _dt.now(_tz.utc) + timedelta(seconds=seconds)
+
     # Zone status polling - every 30 seconds
     scheduler.add_job(
         poll_zone_status,
-        IntervalTrigger(seconds=30),
+        IntervalTrigger(seconds=30, start_date=_stagger(0)),
         id="poll_zone_status",
         name="Poll Zone Status",
         replace_existing=True,
@@ -2398,7 +2422,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Weather data polling - every 15 minutes
     scheduler.add_job(
         poll_weather_data,
-        IntervalTrigger(minutes=15),
+        IntervalTrigger(minutes=15, start_date=_stagger(5)),
         id="poll_weather_data",
         name="Poll Weather Data",
         replace_existing=True,
@@ -2407,7 +2431,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Connection cleanup - every 5 minutes
     scheduler.add_job(
         cleanup_stale_connections,
-        IntervalTrigger(minutes=5),
+        IntervalTrigger(minutes=5, start_date=_stagger(5)),
         id="cleanup_connections",
         name="Cleanup Stale Connections",
         replace_existing=True,
@@ -2416,7 +2440,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Schedule execution - every 60 seconds
     scheduler.add_job(
         execute_schedules,
-        IntervalTrigger(seconds=60),
+        IntervalTrigger(seconds=60, start_date=_stagger(10)),
         id="execute_schedules",
         name="Execute Schedules",
         replace_existing=True,
@@ -2425,7 +2449,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Continuous climate offset maintenance - every 60 seconds
     scheduler.add_job(
         maintain_climate_offset,
-        IntervalTrigger(seconds=60),
+        IntervalTrigger(seconds=60, start_date=_stagger(20)),
         id="maintain_climate_offset",
         name="Maintain Climate Offset",
         replace_existing=True,
@@ -2434,7 +2458,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Follow-Me mode execution - every 90 seconds
     scheduler.add_job(
         execute_follow_me_mode,
-        IntervalTrigger(seconds=90),
+        IntervalTrigger(seconds=90, start_date=_stagger(30)),
         id="execute_follow_me_mode",
         name="Execute Follow-Me Mode",
         replace_existing=True,
@@ -2443,7 +2467,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Active/AI mode execution - every 5 minutes
     scheduler.add_job(
         execute_active_mode,
-        IntervalTrigger(minutes=5),
+        IntervalTrigger(minutes=5, start_date=_stagger(15)),
         id="execute_active_mode",
         name="Execute Active AI Mode",
         replace_existing=True,
@@ -2452,7 +2476,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Lux-based cover (blind/shade) automation - every 3 minutes
     scheduler.add_job(
         execute_cover_automation,
-        IntervalTrigger(minutes=3),
+        IntervalTrigger(minutes=3, start_date=_stagger(50)),
         id="execute_cover_automation",
         name="Lux Cover Automation",
         replace_existing=True,
@@ -2461,7 +2485,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Sensor health check - every 10 minutes
     scheduler.add_job(
         check_sensor_health,
-        IntervalTrigger(minutes=10),
+        IntervalTrigger(minutes=10, start_date=_stagger(25)),
         id="check_sensor_health",
         name="Check Sensor Health",
         replace_existing=True,
@@ -2470,7 +2494,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Rule engine (comfort enforcement) - every 2 minutes
     scheduler.add_job(
         execute_rule_engine,
-        IntervalTrigger(minutes=2),
+        IntervalTrigger(minutes=2, start_date=_stagger(40)),
         id="execute_rule_engine",
         name="Rule Engine Comfort Enforcement",
         replace_existing=True,
@@ -2479,7 +2503,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Smart vent PID optimization - every 3 minutes
     scheduler.add_job(
         execute_vent_optimization,
-        IntervalTrigger(minutes=3),
+        IntervalTrigger(minutes=3, start_date=_stagger(55)),
         id="execute_vent_optimization",
         name="Smart Vent PID Optimization",
         replace_existing=True,
@@ -2488,7 +2512,7 @@ def init_scheduler() -> AsyncIOScheduler:
     # Pattern learning - every 30 minutes
     scheduler.add_job(
         execute_pattern_learning,
-        IntervalTrigger(minutes=30),
+        IntervalTrigger(minutes=30, start_date=_stagger(35)),
         id="execute_pattern_learning",
         name="Occupancy & Thermal Pattern Learning",
         replace_existing=True,

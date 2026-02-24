@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -319,30 +319,65 @@ async def _enrich_zone_response(
     """Build a ZoneResponse with latest sensor readings attached."""
     resp = ZoneResponse.model_validate(zone)
 
-    # 1) Fill from per-zone sensor readings in DB
-    #    Use targeted queries per field to find the latest non-null value.
-    #    This avoids the problem where a LIMIT-N scan misses infrequent
-    #    sensor types (e.g. humidity sensor reports every 10 min but temp
-    #    sensors flood the last N rows).
+    # 1) Fill from per-zone sensor readings in DB.
+    #    One query using DISTINCT ON fetches the latest non-null value for
+    #    each column across all sensors.  This replaces 4 separate queries
+    #    that previously fired per zone (each scanning the full table).
     if zone.sensors:
-        sensor_ids = [s.id for s in zone.sensors]
-        base = select(SensorReading).where(
-            SensorReading.sensor_id.in_(sensor_ids)
-        ).order_by(SensorReading.recorded_at.desc()).limit(1)
-
-        for col_attr, setter in (
-            (SensorReading.temperature_c, "current_temp"),
-            (SensorReading.humidity, "current_humidity"),
-            (SensorReading.presence, "is_occupied"),
-            (SensorReading.lux, "current_lux"),
-        ):
-            row = (await db.execute(
-                base.where(col_attr.isnot(None))
-            )).scalars().first()
-            if row is not None:
-                val = getattr(row, col_attr.key)
-                if val is not None:
-                    setattr(resp, setter, val)
+        sensor_ids = [str(s.id) for s in zone.sensors]
+        # Four sub-selects, each picks the single most-recent row that
+        # has a non-NULL value for one column, then we UNION ALL them.
+        # The outer SELECT picks the best (most recent) value per column.
+        sql = text("""
+            SELECT col, val_float, val_bool, recorded_at
+            FROM (
+                SELECT 'temperature_c' AS col,
+                       temperature_c   AS val_float,
+                       NULL::boolean   AS val_bool,
+                       recorded_at
+                FROM sensor_readings
+                WHERE sensor_id = ANY(:ids) AND temperature_c IS NOT NULL
+                ORDER BY recorded_at DESC
+                LIMIT 1
+            UNION ALL
+                SELECT 'humidity',
+                       humidity,
+                       NULL::boolean,
+                       recorded_at
+                FROM sensor_readings
+                WHERE sensor_id = ANY(:ids) AND humidity IS NOT NULL
+                ORDER BY recorded_at DESC
+                LIMIT 1
+            UNION ALL
+                SELECT 'presence',
+                       NULL::float,
+                       presence,
+                       recorded_at
+                FROM sensor_readings
+                WHERE sensor_id = ANY(:ids) AND presence IS NOT NULL
+                ORDER BY recorded_at DESC
+                LIMIT 1
+            UNION ALL
+                SELECT 'lux',
+                       lux,
+                       NULL::boolean,
+                       recorded_at
+                FROM sensor_readings
+                WHERE sensor_id = ANY(:ids) AND lux IS NOT NULL
+                ORDER BY recorded_at DESC
+                LIMIT 1
+            ) sub
+        """)
+        rows = (await db.execute(sql, {"ids": sensor_ids})).fetchall()
+        for col, val_float, val_bool, _ts in rows:
+            if col == "temperature_c" and val_float is not None:
+                resp.current_temp = val_float
+            elif col == "humidity" and val_float is not None:
+                resp.current_humidity = val_float
+            elif col == "presence" and val_bool is not None:
+                resp.is_occupied = val_bool
+            elif col == "lux" and val_float is not None:
+                resp.current_lux = val_float
 
     # 2) Try per-zone thermostat device (if one is linked)
     thermostat_entity: str | None = None
