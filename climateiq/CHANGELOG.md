@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.34
+
+### Fixed
+
+- **Zones disappearing after v0.8.33**: The batched `UNION ALL` raw SQL query
+  introduced in v0.8.33 used `ANY(:ids)` with a Python list, which psycopg3
+  does not auto-cast to a PostgreSQL array — causing a DB error that made the
+  entire `/zones` endpoint return a 500. Reverted to the original 4-query
+  approach but now uses `asyncio.gather` to run all four queries concurrently
+  rather than sequentially, preserving the performance benefit without the
+  type-binding issue.
+
 ## 0.8.33
 
 ### Performance
