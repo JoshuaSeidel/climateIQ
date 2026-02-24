@@ -390,11 +390,20 @@ class HAClient:
                 hvac_mode = state.state
                 attrs = state.attributes or {}
 
-                # Clear any active preset that would block the temp change.
-                # Presets like "sleep", "away", "home" hold the thermostat
-                # to a comfort profile and reject set_temperature calls.
+                # Clear any active *comfort-profile* preset that would
+                # block the temp change.  Ecobee presets like "sleep",
+                # "away", "home" hold the thermostat to a comfort
+                # profile and reject set_temperature calls.
+                #
+                # IMPORTANT: "temp" is NOT a blocker -- it means a
+                # temperature hold is already active (which is exactly
+                # what set_temperature creates).  Clearing it via
+                # resume_program would snap back to the Ecobee schedule
+                # and then our set_temperature would re-create the hold,
+                # causing a visible flip-flop.
+                _PASSTHROUGH_PRESETS = {"none", "", "temp"}
                 current_preset = (attrs.get("preset_mode") or "").lower()
-                if current_preset and current_preset not in ("none", ""):
+                if current_preset and current_preset not in _PASSTHROUGH_PRESETS:
                     logger.info(
                         "Clearing preset '%s' on %s before setting temperature",
                         current_preset, entity_id,

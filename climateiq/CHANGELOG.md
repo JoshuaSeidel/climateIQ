@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.15
+
+### Fixed
+
+- **Stop clearing Ecobee "temp" preset on set_temperature** -- the
+  `temp` preset means a temperature hold is already active, which is
+  exactly what `set_temperature` creates.  Clearing it via
+  `resume_program` snapped back to the Ecobee schedule (e.g. sleep at
+  68) and then the subsequent `set_temperature` re-created the hold,
+  causing a visible flip-flop between presets.  Now only
+  comfort-profile presets (sleep, away, home) are cleared.
+
+- **Override status no longer shows "Override Active" for normal
+  temperature holds** -- the `temp` preset is normal ClimateIQ
+  operation (we set a temp, Ecobee shows it as a hold).  Only
+  comfort-profile presets (sleep, away, home) now trigger the
+  "Override Active" badge in the UI.
+
 ## 0.8.14
 
 ### Fixed

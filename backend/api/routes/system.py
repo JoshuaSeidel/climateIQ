@@ -1340,9 +1340,16 @@ async def get_override_status(
             else:
                 display_target_temp = round(target_temp_c, 1)
 
-        # Determine if override is active
+        # Determine if override is active.
+        # On Ecobee, "temp" means a temperature hold is active -- that
+        # is normal ClimateIQ operation (we set a temp, Ecobee shows it
+        # as a hold).  Only comfort-profile presets (sleep, away, home,
+        # etc.) count as a real override that the user should see.
+        _NORMAL_PRESETS = {"none", "", "temp"}
         is_override = bool(
-            preset_mode and preset_mode.lower() != "none" and preset_mode.strip()
+            preset_mode
+            and preset_mode.lower() not in _NORMAL_PRESETS
+            and preset_mode.strip()
         )
 
         return {
