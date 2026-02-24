@@ -1,15 +1,14 @@
 # Changelog
 
-## 0.8.23
+## 0.8.24
 
 ### Improved
 
-- **Diagnostic logging for climate offset maintenance** -- added
-  debug-level logging at every decision point in
-  `maintain_climate_offset()`: which schedule is active, what the
-  offset calculation returned, and why the thermostat was or was not
-  updated.  This makes it possible to trace exactly why offset
-  compensation is or isn't being applied by checking the add-on logs.
+- **Climate offset maintenance logging at INFO level** -- all key
+  decision points in `maintain_climate_offset()` now log at INFO
+  level (not DEBUG) so they appear in the default add-on logs.
+  Every 60 seconds you will see which schedule is active, the
+  offset calculation result, and whether the thermostat was updated.
 
 ## 0.8.22
 
