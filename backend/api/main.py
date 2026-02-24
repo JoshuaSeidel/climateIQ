@@ -1129,7 +1129,7 @@ async def execute_follow_me_mode() -> None:
                     )
                     best_zone = sorted_zones[0][0]
                     zone_temp_c, _, _ = await get_priority_zone_temp_c(
-                        db, zone_ids=[str(best_zone.id)]
+                        db, zone_ids=[str(best_zone.id)], ha_client=ha_client
                     )
                     if zone_temp_c is not None:
                         thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity)

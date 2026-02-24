@@ -11,38 +11,70 @@ long enough to bring the priority zone to the desired temperature.
 
 import logging
 import uuid
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-async def get_priority_zone_temp_c(
-    db: Any,
-    zone_ids: list[str] | None = None,
-) -> tuple[float | None, str | None, int]:
-    """Get the current temperature for offset compensation.
+# ---------------------------------------------------------------------------
+# Helpers for reading live sensor temperatures from Home Assistant
+# ---------------------------------------------------------------------------
 
-    When multiple zones share the highest priority and have recent
-    readings, their temperatures are **averaged** so the system
-    balances between them rather than picking an arbitrary winner.
+async def _get_ha_temp_unit(ha_client: Any) -> str:
+    """Detect HA's configured temperature unit ('°F' or '°C')."""
+    try:
+        config = await ha_client.get_config()
+        return config.get("unit_system", {}).get("temperature", "°C")
+    except Exception:
+        return "°C"
 
-    Args:
-        db: AsyncSession
-        zone_ids: Optional list of zone UUID strings to consider.
-                  If empty/None, considers ALL active zones.
 
-    Returns:
-        (temperature_c, zone_name, zone_priority) or (None, None, 0)
-        if no zone has a recent reading.  ``zone_name`` is a
-        comma-separated string when multiple zones are averaged.
+async def _get_live_zone_temp_c(
+    ha_client: Any,
+    zone: Any,
+    ha_temp_unit: str,
+) -> float | None:
+    """Read the live temperature for a zone from HA sensors.
+
+    Iterates through the zone's sensors, queries HA for each one,
+    and returns the first valid temperature reading in Celsius.
+    Sensors that are unavailable/unknown in HA are skipped.
     """
+    if not zone.sensors:
+        return None
+
+    for sensor in zone.sensors:
+        if not sensor.ha_entity_id:
+            continue
+        try:
+            state = await ha_client.get_state(sensor.ha_entity_id)
+            if not state or state.state in ("unavailable", "unknown", None):
+                continue
+            attrs = state.attributes or {}
+            device_class = attrs.get("device_class", "")
+            if device_class != "temperature":
+                continue
+            raw = float(state.state)
+            uom = str(attrs.get("unit_of_measurement", ha_temp_unit))
+            if "F" in uom.upper():
+                raw = (raw - 32) * 5 / 9
+            # Sanity check: reject impossible Celsius values
+            if -40 <= raw <= 60:
+                return raw
+        except (ValueError, TypeError):
+            continue
+        except Exception:  # noqa: S112
+            continue
+    return None
+
+
+async def _fetch_zones(db: Any, zone_ids: list[str] | None = None) -> list[Any]:
+    """Fetch active zones (with sensors eagerly loaded) from the DB."""
     from sqlalchemy import select as sa_select
     from sqlalchemy.orm import selectinload
 
-    from backend.models.database import SensorReading, Zone
+    from backend.models.database import Zone
 
-    # Fetch candidate zones
     stmt = sa_select(Zone).options(selectinload(Zone.sensors)).where(Zone.is_active.is_(True))
     if zone_ids:
         try:
@@ -52,16 +84,42 @@ async def get_priority_zone_temp_c(
             pass
 
     result = await db.execute(stmt)
-    zones = list(result.scalars().unique().all())
+    return list(result.scalars().unique().all())
 
+
+async def get_priority_zone_temp_c(
+    db: Any,
+    zone_ids: list[str] | None = None,
+    ha_client: Any | None = None,
+) -> tuple[float | None, str | None, int]:
+    """Get the current temperature for offset compensation.
+
+    When multiple zones share the highest priority and have
+    readings, their temperatures are **averaged** so the system
+    balances between them rather than picking an arbitrary winner.
+
+    Reads live sensor data from Home Assistant.  Sensors that are
+    unavailable or offline in HA are skipped.
+
+    Args:
+        db: AsyncSession
+        zone_ids: Optional list of zone UUID strings to consider.
+                  If empty/None, considers ALL active zones.
+        ha_client: HAClient instance for live sensor reads.
+
+    Returns:
+        (temperature_c, zone_name, zone_priority) or (None, None, 0)
+        if no zone has a reading.  ``zone_name`` is a
+        comma-separated string when multiple zones are averaged.
+    """
+    zones = await _fetch_zones(db, zone_ids)
     if not zones:
         return None, None, 0
 
+    ha_temp_unit = await _get_ha_temp_unit(ha_client) if ha_client else "°C"
+
     # Sort by priority descending (highest priority first)
     zones.sort(key=lambda z: getattr(z, "priority", 5), reverse=True)
-
-    # Collect recent temperature readings for each zone, grouped by priority
-    cutoff = datetime.now(UTC) - timedelta(minutes=30)
 
     # First pass: find the highest priority level that has at least one reading
     top_priority: int | None = None
@@ -74,24 +132,14 @@ async def get_priority_zone_temp_c(
         if top_priority is not None and zone_priority < top_priority:
             break
 
-        if not zone.sensors:
-            continue
-        sensor_ids = [s.id for s in zone.sensors]
-        reading_result = await db.execute(
-            sa_select(SensorReading)
-            .where(
-                SensorReading.sensor_id.in_(sensor_ids),
-                SensorReading.recorded_at >= cutoff,
-                SensorReading.temperature_c.isnot(None),
-            )
-            .order_by(SensorReading.recorded_at.desc())
-            .limit(1)
-        )
-        reading = reading_result.scalar_one_or_none()
-        if reading and reading.temperature_c is not None:
+        temp_c: float | None = None
+        if ha_client:
+            temp_c = await _get_live_zone_temp_c(ha_client, zone, ha_temp_unit)
+
+        if temp_c is not None:
             if top_priority is None:
                 top_priority = zone_priority
-            zone_readings.append((zone.name, reading.temperature_c))
+            zone_readings.append((zone.name, temp_c))
 
     if not zone_readings:
         return None, None, 0
@@ -113,61 +161,40 @@ async def get_priority_zone_temp_c(
 async def get_avg_zone_temp_c(
     db: Any,
     zone_ids: list[str] | None = None,
+    ha_client: Any | None = None,
 ) -> tuple[float | None, str | None]:
     """Get the average temperature across zones (ignoring priority).
 
     Unlike ``get_priority_zone_temp_c`` which only averages zones at
     the highest priority tier, this function averages ALL zones that
-    have a recent reading.
+    have a live reading from Home Assistant.
+
+    Sensors that are unavailable or offline in HA are skipped.
 
     Args:
         db: AsyncSession
         zone_ids: Optional list of zone UUID strings to consider.
                   If empty/None, considers ALL active zones.
+        ha_client: HAClient instance for live sensor reads.
 
     Returns:
         (avg_temp_c, zone_names) or (None, None) if no readings.
         ``zone_names`` is a comma-separated string of contributing zones.
     """
-    from sqlalchemy import select as sa_select
-    from sqlalchemy.orm import selectinload
-
-    from backend.models.database import SensorReading, Zone
-
-    stmt = sa_select(Zone).options(selectinload(Zone.sensors)).where(Zone.is_active.is_(True))
-    if zone_ids:
-        try:
-            uuids = [uuid.UUID(str(zid)) for zid in zone_ids]
-            stmt = stmt.where(Zone.id.in_(uuids))
-        except (ValueError, AttributeError):
-            pass
-
-    result = await db.execute(stmt)
-    zones = list(result.scalars().unique().all())
-
+    zones = await _fetch_zones(db, zone_ids)
     if not zones:
         return None, None
 
-    cutoff = datetime.now(UTC) - timedelta(minutes=30)
+    ha_temp_unit = await _get_ha_temp_unit(ha_client) if ha_client else "°C"
     readings: list[tuple[str, float]] = []  # (zone_name, temp_c)
 
     for zone in zones:
-        if not zone.sensors:
-            continue
-        sensor_ids = [s.id for s in zone.sensors]
-        reading_result = await db.execute(
-            sa_select(SensorReading)
-            .where(
-                SensorReading.sensor_id.in_(sensor_ids),
-                SensorReading.recorded_at >= cutoff,
-                SensorReading.temperature_c.isnot(None),
-            )
-            .order_by(SensorReading.recorded_at.desc())
-            .limit(1)
-        )
-        reading = reading_result.scalar_one_or_none()
-        if reading and reading.temperature_c is not None:
-            readings.append((zone.name, reading.temperature_c))
+        temp_c: float | None = None
+        if ha_client:
+            temp_c = await _get_live_zone_temp_c(ha_client, zone, ha_temp_unit)
+
+        if temp_c is not None:
+            readings.append((zone.name, temp_c))
 
     if not readings:
         return None, None
@@ -301,8 +328,8 @@ async def apply_offset_compensation(
         If compensation cannot be computed (missing data), returns
         (desired_temp_c, 0.0, None) -- i.e. no adjustment.
     """
-    # 1. Get the average temperature across ALL schedule zones
-    avg_temp_c, zone_names = await get_avg_zone_temp_c(db, zone_ids)
+    # 1. Get the average temperature across ALL schedule zones (live from HA)
+    avg_temp_c, zone_names = await get_avg_zone_temp_c(db, zone_ids, ha_client=ha_client)
     if avg_temp_c is None:
         logger.debug("No zone temperature available, skipping offset compensation")
         return desired_temp_c, 0.0, None

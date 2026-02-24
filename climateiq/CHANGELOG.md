@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.27
+
+### Fixed
+
+- **Offset compensation now reads live sensor data from Home Assistant**
+  instead of querying the sensor_readings database table with a
+  30-minute cutoff.  Previously, sensors that hadn't reported a state
+  change (because the temperature was stable) would be excluded from
+  the zone average, causing the offset to be calculated from only a
+  subset of schedule zones.  Now all zone sensors are queried live
+  from HA -- only sensors marked unavailable/unknown are skipped.
+
 ## 0.8.26
 
 ### Fixed
