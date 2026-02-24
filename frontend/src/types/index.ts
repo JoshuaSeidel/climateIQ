@@ -424,4 +424,6 @@ export type OverrideStatus = {
   offset_info?: OffsetInfo
   schedule_avg_temp: number | null
   all_zones_avg_temp: number | null
+  schedule_target_temp: number | null
+  schedule_zone_names: string | null
 }

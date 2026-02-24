@@ -1449,6 +1449,28 @@ async def get_override_status(
             except Exception:  # noqa: S110
                 pass  # Fall back to all zones if schedule lookup fails
 
+            # ── Schedule target temp (what we want the rooms to be) ─────
+            schedule_target_c: float | None = None
+            schedule_zone_names: str | None = None
+            if _best is not None:
+                schedule_target_c = _best.target_temp_c
+                # Resolve zone names from zone_ids
+                if _best.zone_ids:
+                    import uuid as _uuid
+
+                    from backend.models.database import Zone as _Zone
+
+                    try:
+                        _zuuids = [_uuid.UUID(str(zid)) for zid in _best.zone_ids]
+                        _zr = await db.execute(
+                            select(_Zone.name).where(_Zone.id.in_(_zuuids))
+                        )
+                        _znames = [row[0] for row in _zr.all()]
+                        if _znames:
+                            schedule_zone_names = ", ".join(sorted(_znames))
+                    except Exception:  # noqa: S110
+                        pass
+
             # Priority zone temp (for offset calculation, scoped to schedule)
             zone_temp_c, zone_name, _zpri = await get_priority_zone_temp_c(
                 db, zone_ids=active_zone_ids, ha_client=_ha_client
@@ -1477,6 +1499,7 @@ async def get_override_status(
             # Convert averages to user display unit
             schedule_avg_temp: float | None = None
             all_zones_avg_temp: float | None = None
+            schedule_target_temp: float | None = None
             if schedule_avg_c is not None:
                 schedule_avg_temp = (
                     round(schedule_avg_c * 9 / 5 + 32, 1) if user_unit == "F"
@@ -1487,10 +1510,17 @@ async def get_override_status(
                     round(all_zones_avg_c * 9 / 5 + 32, 1) if user_unit == "F"
                     else round(all_zones_avg_c, 1)
                 )
+            if schedule_target_c is not None:
+                schedule_target_temp = (
+                    round(schedule_target_c * 9 / 5 + 32, 1) if user_unit == "F"
+                    else round(schedule_target_c, 1)
+                )
         except Exception as _oi_err:
             _logger.debug("Offset info computation (non-critical): %s", _oi_err)
             schedule_avg_temp = None
             all_zones_avg_temp = None
+            schedule_target_temp = None
+            schedule_zone_names = None
 
         return {
             "current_temp": display_current_temp,
@@ -1501,6 +1531,8 @@ async def get_override_status(
             "offset_info": offset_info,
             "schedule_avg_temp": schedule_avg_temp,
             "all_zones_avg_temp": all_zones_avg_temp,
+            "schedule_target_temp": schedule_target_temp,
+            "schedule_zone_names": schedule_zone_names,
         }
 
     except Exception as exc:
@@ -1514,6 +1546,8 @@ async def get_override_status(
             "offset_info": {},
             "schedule_avg_temp": None,
             "all_zones_avg_temp": None,
+            "schedule_target_temp": None,
+            "schedule_zone_names": None,
         }
 
 

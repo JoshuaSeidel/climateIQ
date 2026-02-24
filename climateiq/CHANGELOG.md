@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.28
+
+### Fixed
+
+- **Target Temperature now shows the schedule's desired temp** instead
+  of the thermostat's offset-adjusted setpoint.  The big number in the
+  Manual Override card is what ClimateIQ wants the rooms to be, not
+  what the thermostat is told to target.
+
+- **Targeting line now shows only active schedule zones** instead of
+  the priority zone from offset calculation.  Previously it could show
+  zones (e.g. Master Bedroom, Oliver's Room) that weren't part of the
+  active schedule.
+
+- **Faster Dashboard polling** -- zone data refreshes every 15s
+  (was 30s), override status every 10s (was 15s), active schedule
+  every 30s (was 60s) for a more realtime feel.
+
 ## 0.8.27
 
 ### Fixed

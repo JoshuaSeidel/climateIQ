@@ -123,7 +123,7 @@ export const Dashboard = () => {
       }))
       return mapped
     },
-    refetchInterval: 30_000,
+    refetchInterval: 15_000,
   })
 
   // Fetch system settings (for current mode)
@@ -172,7 +172,7 @@ export const Dashboard = () => {
       if (!response.ok) return { active: false, schedule: null }
       return response.json()
     },
-    refetchInterval: 60_000, // check every minute
+    refetchInterval: 30_000, // check every 30 seconds
   })
 
   // Fetch live energy data from HA entity (only shows if energy_entity is configured)
@@ -219,13 +219,13 @@ export const Dashboard = () => {
   const { data: overrideStatus, refetch: refetchOverride } = useQuery<OverrideStatus>({
     queryKey: ['override-status'],
     queryFn: () => api.get<OverrideStatus>('/system/override'),
-    refetchInterval: 15_000,
+    refetchInterval: 10_000,
   })
 
-  // Initialize manualTemp from override status when it loads
+  // Initialize manualTemp from schedule target temp when it loads
   useEffect(() => {
-    if (overrideStatus?.target_temp != null && manualTemp === null) {
-      setManualTemp(Math.round(overrideStatus.target_temp))
+    if (overrideStatus?.schedule_target_temp != null && manualTemp === null) {
+      setManualTemp(Math.round(overrideStatus.schedule_target_temp))
     }
   }, [overrideStatus, manualTemp])
 
@@ -464,7 +464,7 @@ export const Dashboard = () => {
               <div className="flex flex-col items-center">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Target Temperature</p>
                 <p className="text-5xl font-black tabular-nums text-foreground dark:drop-shadow-[0_0_20px_rgba(249,115,22,0.2)]">
-                  {manualTemp ?? (overrideStatus?.target_temp != null ? Math.round(overrideStatus.target_temp) : '--')}
+                  {manualTemp ?? (overrideStatus?.schedule_target_temp != null ? Math.round(overrideStatus.schedule_target_temp) : '--')}
                   <span className="text-2xl font-bold text-muted-foreground">{tempUnitLabel(unitKey)}</span>
                 </p>
               </div>
@@ -487,7 +487,7 @@ export const Dashboard = () => {
                 type="range"
                 min={unitKey === 'f' ? 50 : 10}
                 max={unitKey === 'f' ? 95 : 35}
-                value={manualTemp ?? (overrideStatus?.target_temp != null ? Math.round(overrideStatus.target_temp) : (unitKey === 'f' ? 72 : 22))}
+                value={manualTemp ?? (overrideStatus?.schedule_target_temp != null ? Math.round(overrideStatus.schedule_target_temp) : (unitKey === 'f' ? 72 : 22))}
                 onChange={(e) => setManualTemp(Number(e.target.value))}
                 className="w-full accent-orange-500"
               />
@@ -555,14 +555,16 @@ export const Dashboard = () => {
                 Preset: <span className="font-bold capitalize text-foreground">{overrideStatus.preset_mode}</span>
               </span>
             )}
-            {overrideStatus?.offset_info?.priority_zone && overrideStatus.offset_info.offset_f != null && Math.abs(overrideStatus.offset_info.offset_f) > 0.5 && (
+            {overrideStatus?.schedule_zone_names && (
               <span className="text-xs text-muted-foreground">
-                Targeting <span className="font-bold text-foreground">{overrideStatus.offset_info.priority_zone}</span>
-                {' '}(offset: <span className="font-bold text-foreground">
-                  {overrideStatus.offset_info.offset_f > 0 ? '+' : ''}{unitKey === 'f'
-                    ? `${overrideStatus.offset_info.offset_f.toFixed(1)}${tempUnitLabel('f')}`
-                    : `${overrideStatus.offset_info.offset_c?.toFixed(1) ?? '0'}${tempUnitLabel('c')}`}
-                </span>)
+                Targeting <span className="font-bold text-foreground">{overrideStatus.schedule_zone_names}</span>
+                {overrideStatus.offset_info?.offset_f != null && Math.abs(overrideStatus.offset_info.offset_f) > 0.5 && (
+                  <>{' '}(offset: <span className="font-bold text-foreground">
+                    {overrideStatus.offset_info.offset_f > 0 ? '+' : ''}{unitKey === 'f'
+                      ? `${overrideStatus.offset_info.offset_f.toFixed(1)}${tempUnitLabel('f')}`
+                      : `${overrideStatus.offset_info.offset_c?.toFixed(1) ?? '0'}${tempUnitLabel('c')}`}
+                  </span>)</>
+                )}
               </span>
             )}
           </div>
