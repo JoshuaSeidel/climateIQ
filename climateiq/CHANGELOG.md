@@ -1,14 +1,29 @@
 # Changelog
 
-## 0.8.24
+## 0.8.25
+
+### Fixed
+
+- **Offset compensation now uses average of ALL schedule zones** --
+  previously used only the highest-priority zone for the offset
+  calculation, which could pick a single zone (e.g. Office at 69.8 F)
+  that was close to the thermostat, resulting in a tiny offset.  Now
+  averages all zones in the active schedule (e.g. Dining Room 68 F,
+  Living Room 66 F, Office 70 F, Kitchen 68 F, Foyer 67 F = avg 67.8 F)
+  so the offset reflects the true gap between the thermostat and the
+  rooms being heated.
+
+- **Silenced Ecobee hold preset errors** -- `set_temperature_with_hold`
+  was logging ERROR/WARNING for 500 responses when trying to set
+  `temp`/`hold` presets on Ecobee.  Ecobee automatically creates a
+  temperature hold on `set_temperature` -- the explicit preset calls
+  are unnecessary.  Downgraded to DEBUG level.
 
 ### Improved
 
 - **Climate offset maintenance logging at INFO level** -- all key
-  decision points in `maintain_climate_offset()` now log at INFO
-  level (not DEBUG) so they appear in the default add-on logs.
-  Every 60 seconds you will see which schedule is active, the
-  offset calculation result, and whether the thermostat was updated.
+  decision points now log at INFO level so they appear in the default
+  add-on logs.
 
 ## 0.8.22
 

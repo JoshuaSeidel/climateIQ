@@ -1455,9 +1455,9 @@ async def get_override_status(
             )
 
             # Schedule zones average -- avg across ALL zones in the schedule
-            schedule_avg_c = await get_avg_zone_temp_c(db, zone_ids=active_zone_ids)
+            schedule_avg_c, _sched_names = await get_avg_zone_temp_c(db, zone_ids=active_zone_ids)
             # All active zones average -- avg across every active zone
-            all_zones_avg_c = await get_avg_zone_temp_c(db)
+            all_zones_avg_c, _all_names = await get_avg_zone_temp_c(db)
 
             thermostat_c = await get_thermostat_reading_c(_ha_client, climate_entity)
             if zone_temp_c is not None and thermostat_c is not None:

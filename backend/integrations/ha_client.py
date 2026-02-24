@@ -471,13 +471,15 @@ class HAClient:
     async def set_temperature_with_hold(self, entity_id: str, temperature: float) -> Any:
         """Set the target temperature with a hold to prevent schedule override.
 
-        This first sets the temperature, then attempts to set a 'temp' or 'hold'
-        preset mode to prevent the thermostat's built-in schedule from reverting
-        the change. If the hold preset is not supported, the temperature is still
-        set but may be overridden by the thermostat's own schedule.
+        On Ecobee, calling ``set_temperature`` automatically creates a
+        temperature hold (``preset_mode: temp``), so no explicit preset
+        call is needed.  For other thermostats that require an explicit
+        hold, this tries ``temp`` and ``hold`` presets as a best-effort.
         """
         result = await self.set_temperature(entity_id, temperature)
 
+        # Ecobee automatically holds on set_temperature -- the preset
+        # calls below are best-effort for other thermostat brands.
         for preset in ("temp", "hold"):
             try:
                 await self.call_service(
@@ -486,7 +488,7 @@ class HAClient:
                     data={"preset_mode": preset},
                     target={"entity_id": entity_id},
                 )
-                logger.info(
+                logger.debug(
                     "Hold preset '%s' set on %s after temperature change",
                     preset,
                     entity_id,
@@ -499,9 +501,9 @@ class HAClient:
                     entity_id,
                 )
 
-        logger.warning(
-            "Could not set a hold preset on %s; temperature was set to %.1f "
-            "but may be overridden by the thermostat schedule",
+        # This is expected for Ecobee -- the hold is implicit
+        logger.debug(
+            "No explicit hold preset needed on %s; temperature set to %.1f",
             entity_id,
             temperature,
         )

@@ -113,7 +113,7 @@ async def get_priority_zone_temp_c(
 async def get_avg_zone_temp_c(
     db: Any,
     zone_ids: list[str] | None = None,
-) -> float | None:
+) -> tuple[float | None, str | None]:
     """Get the average temperature across zones (ignoring priority).
 
     Unlike ``get_priority_zone_temp_c`` which only averages zones at
@@ -126,7 +126,8 @@ async def get_avg_zone_temp_c(
                   If empty/None, considers ALL active zones.
 
     Returns:
-        Average temperature in Celsius, or None if no readings.
+        (avg_temp_c, zone_names) or (None, None) if no readings.
+        ``zone_names`` is a comma-separated string of contributing zones.
     """
     from sqlalchemy import select as sa_select
     from sqlalchemy.orm import selectinload
@@ -145,10 +146,10 @@ async def get_avg_zone_temp_c(
     zones = list(result.scalars().unique().all())
 
     if not zones:
-        return None
+        return None, None
 
     cutoff = datetime.now(UTC) - timedelta(minutes=30)
-    temps: list[float] = []
+    readings: list[tuple[str, float]] = []  # (zone_name, temp_c)
 
     for zone in zones:
         if not zone.sensors:
@@ -166,12 +167,14 @@ async def get_avg_zone_temp_c(
         )
         reading = reading_result.scalar_one_or_none()
         if reading and reading.temperature_c is not None:
-            temps.append(reading.temperature_c)
+            readings.append((zone.name, reading.temperature_c))
 
-    if not temps:
-        return None
+    if not readings:
+        return None, None
 
-    return sum(temps) / len(temps)
+    avg_temp = sum(t for _, t in readings) / len(readings)
+    zone_names = ", ".join(name for name, _ in readings)
+    return avg_temp, zone_names
 
 
 async def compute_adjusted_setpoint(
@@ -294,28 +297,28 @@ async def apply_offset_compensation(
                   None = all active zones (for Follow-Me / Active mode).
 
     Returns:
-        (adjusted_temp_c, offset_c, priority_zone_name)
+        (adjusted_temp_c, offset_c, zone_names)
         If compensation cannot be computed (missing data), returns
         (desired_temp_c, 0.0, None) -- i.e. no adjustment.
     """
-    # 1. Get the priority zone's current temperature
-    zone_temp_c, zone_name, _priority = await get_priority_zone_temp_c(db, zone_ids)
-    if zone_temp_c is None:
-        logger.debug("No priority zone temperature available, skipping offset compensation")
+    # 1. Get the average temperature across ALL schedule zones
+    avg_temp_c, zone_names = await get_avg_zone_temp_c(db, zone_ids)
+    if avg_temp_c is None:
+        logger.debug("No zone temperature available, skipping offset compensation")
         return desired_temp_c, 0.0, None
 
     # 2. Get the thermostat's current reading
     thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity)
     if thermostat_c is None:
         logger.debug("No thermostat reading available, skipping offset compensation")
-        return desired_temp_c, 0.0, zone_name
+        return desired_temp_c, 0.0, zone_names
 
     # 3. Get the max offset setting
     max_offset_f = await get_max_offset_setting(db)
 
-    # 4. Compute the adjusted setpoint
+    # 4. Compute the adjusted setpoint using the zone average
     adjusted_c, offset_c = await compute_adjusted_setpoint(
-        desired_temp_c, thermostat_c, zone_temp_c, max_offset_f
+        desired_temp_c, thermostat_c, avg_temp_c, max_offset_f
     )
 
-    return adjusted_c, offset_c, zone_name
+    return adjusted_c, offset_c, zone_names
