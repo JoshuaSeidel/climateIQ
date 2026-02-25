@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.9.1] - 2026-02-24
+
+### Fixed
+- **Chat page crash when AI uses tools**: `ChatMessage.actions` was typed as OpenAI tool-call format (`{ function: { name } }`) but the backend sends action results shaped as `{ tool, args, ... }`. Accessing `action.function.name` on a non-empty `actions_taken` list threw a `TypeError` that crashed the React chat UI. Updated `ChatAction` type to match the backend shape and render `action.tool` instead.
+
 ## [0.9.0] - 2026-02-24
 
 ### Security
