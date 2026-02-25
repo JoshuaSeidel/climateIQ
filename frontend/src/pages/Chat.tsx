@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { api, BASE_PATH } from '@/lib/api'
-import type { ChatMessage, ChatResponse, ConversationHistoryItem, UserDirective } from '@/types'
+import type { ChatAction, ChatMessage, ChatResponse, ConversationHistoryItem, UserDirective } from '@/types'
 import {
   MessageSquarePlus,
   Send,
@@ -423,9 +423,10 @@ export const Chat = () => {
                     {message.actions && message.actions.length > 0 && (
                       <div className="mt-2 space-y-1 border-t border-border/30 pt-2">
                         <p className="text-xs font-medium opacity-70">Actions taken:</p>
-                        {message.actions.map((action, i) => (
+                        {message.actions.map((action: ChatAction, i: number) => (
                           <div key={i} className="text-xs opacity-70">
-                            {action.function.name}
+                            {action.tool ?? 'tool'}
+                            {action.error && <span className="ml-1 text-red-400">({action.error})</span>}
                           </div>
                         ))}
                       </div>

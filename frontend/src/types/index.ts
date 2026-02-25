@@ -253,18 +253,25 @@ export type OverviewResponse = {
 // ============================================================================
 // Chat Types
 // ============================================================================
+export type ChatAction = {
+  tool: string
+  args?: Record<string, unknown>
+  error?: string
+  [key: string]: unknown
+}
+
 export type ChatMessage = {
   id: string
   role: 'user' | 'assistant'
   content: string
   timestamp: Date
-  actions?: Array<{ id: string; function: { name: string; arguments: string } }>
+  actions?: ChatAction[]
 }
 
 export type ChatResponse = {
   message: string
   session_id: string
-  actions_taken: Array<{ id: string; function: { name: string; arguments: string } }>
+  actions_taken: ChatAction[]
   suggestions: string[]
   metadata: Record<string, unknown>
   timestamp: string
