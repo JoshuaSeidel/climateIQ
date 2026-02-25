@@ -211,7 +211,8 @@ export const Dashboard = () => {
       const data = await response.json()
       return { message: data.message }
     },
-    staleTime: 120_000,
+    enabled: false,
+    staleTime: Infinity,
     retry: false,
   })
 
@@ -622,7 +623,7 @@ export const Dashboard = () => {
               Generating summary...
             </div>
           ) : (
-            <p className="text-sm text-foreground">{llmSummary?.message ?? 'No summary available.'}</p>
+            <p className="text-sm text-foreground">{llmSummary?.message ?? 'Click ↑ to generate a summary.'}</p>
           )}
         </CardContent>
       </Card>
