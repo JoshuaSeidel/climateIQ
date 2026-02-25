@@ -29,6 +29,19 @@
 - `zone.target_temp` in the zones API = global thermostat setpoint (offset-adjusted), NOT the schedule's desired zone temp
 - Ecobee uses `target_temp_low` (heat) and `target_temp_high` (cool) — `temperature` attr may be absent
 
+## Pre-Commit Checks (REQUIRED before every commit)
+Run these before committing any change. Fix all errors — do not commit with failures.
+
+```bash
+# Backend — lint
+cd /Users/joshuaseidel/climateIQ && ruff check backend/
+
+# Frontend — type-check + build (catches TS errors the same way Docker does)
+cd /Users/joshuaseidel/climateIQ/frontend && npm run typecheck && npm run build
+```
+
+Both must pass clean. A green local build = no Docker build surprises.
+
 ## Version Bump Checklist
 When bumping the version, ALL of these files must be updated:
 - `VERSION` (used by `addon.yml` to tag Docker images — **most critical**)

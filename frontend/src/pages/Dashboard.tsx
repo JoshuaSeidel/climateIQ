@@ -370,7 +370,6 @@ export const Dashboard = () => {
           // Use hvac_action from HA — the actual running state, not the mode.
           // Values: "heating", "cooling", "idle", "off", "fan"
           const action = overrideStatus?.hvac_action ?? null
-          const mode = overrideStatus?.hvac_mode ?? ''
           const isHeating = action === 'heating'
           const isCooling = action === 'cooling'
 
