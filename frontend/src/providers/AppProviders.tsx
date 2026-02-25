@@ -30,7 +30,6 @@ function usePrefetchCriticalQueries() {
       queryFn: () => fetch(`${BASE_PATH}/api/v1/zones`).then((r) => r.json()),
       staleTime: 14_000, // slightly less than the 15s poll interval
     })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 }
 

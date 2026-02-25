@@ -479,8 +479,25 @@ export const Chat = () => {
                         <p className="text-xs font-medium opacity-70">Actions taken:</p>
                         {message.actions.map((action: ChatAction, i: number) => (
                           <div key={i} className="text-xs opacity-70">
-                            {action.tool ?? 'tool'}
-                            {action.error && <span className="ml-1 text-red-400">({action.error})</span>}
+                            {action.tool === 'save_memory' ? (
+                              <span>
+                                <span className="font-medium">Saved memory: </span>
+                                {String(action.directive ?? '')}
+                                {action.category && (
+                                  <span className="ml-1 opacity-60">
+                                    [{String(action.category).replace(/_/g, ' ')}]
+                                  </span>
+                                )}
+                                {action.saved === false && action.note && (
+                                  <span className="ml-1 italic">{String(action.note)}</span>
+                                )}
+                              </span>
+                            ) : (
+                              <>
+                                {action.tool ?? 'tool'}
+                                {action.error && <span className="ml-1 text-red-400">({action.error})</span>}
+                              </>
+                            )}
                           </div>
                         ))}
                       </div>

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.11] - 2026-02-25
+
+### Fixed
+- **`save_memory` actions now show directive text in chat UI**: The "Actions taken" panel previously displayed repeated `save_memory` chips with no visible content — the user had no way to see what was actually stored. Action chips for `save_memory` now render the directive text and category (e.g. "Saved memory: Office occupied 9am-5pm weekdays [occupancy]"). Duplicate-skipped memories show the note text instead.
+- **Chat response narrates saved memories when LLM omits text**: When the LLM calls `save_memory` but returns no accompanying text response, the backend now synthesises a confirmation message listing every directive that was saved (one bullet per item). This ensures the user always sees a readable acknowledgement regardless of LLM verbosity. System prompt updated with an explicit IMPORTANT instruction to always include a text confirmation after calling `save_memory`.
+
 ## [1.0.10] - 2026-02-25
 
 ### Fixed

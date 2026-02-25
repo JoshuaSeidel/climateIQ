@@ -388,7 +388,7 @@ You can:
 - Explain how ClimateIQ works in detail
 - Save facts, routines, and preferences to permanent memory using the save_memory tool
 
-MEMORY SYSTEM: Facts shared in conversation are automatically extracted and saved. When a user explicitly asks to "save", "remember", or "store" something, or when they share important house facts or routines that you want to ensure are captured, use the save_memory tool directly. Saved memories persist across all future conversations and are used by the AI advisor to make better decisions. After saving, confirm what was saved.
+MEMORY SYSTEM: Facts shared in conversation are automatically extracted and saved. When a user explicitly asks to "save", "remember", or "store" something, or when they share important house facts or routines that you want to ensure are captured, use the save_memory tool directly. Saved memories persist across all future conversations and are used by the AI advisor to make better decisions. IMPORTANT: After calling save_memory, you MUST include a text response listing each memory you saved (one bullet per item, e.g. "* Office occupied 9am-5pm weekdays [occupancy]"). Never call save_memory without also including a text confirmation.
 
 When users request changes, use the available tools to execute them. Always confirm what action you're taking.
 
@@ -1536,6 +1536,19 @@ async def send_chat_message(
             except Exception as tool_exc:
                 tool_result["error"] = str(tool_exc)
             actions_taken.append(tool_result)
+
+        # If the LLM returned only tool calls with no text, synthesize a summary
+        if not assistant_message and actions_taken:
+            saved = [a for a in actions_taken if a.get("tool") == "save_memory" and a.get("saved")]
+            skipped = [a for a in actions_taken if a.get("tool") == "save_memory" and a.get("saved") is False]
+            if saved:
+                lines = ["I've saved the following to memory:"]
+                for a in saved:
+                    cat = str(a.get("category", "")).replace("_", " ")
+                    lines.append(f"• {a['directive']} [{cat}]")
+                if skipped:
+                    lines.append(f"\n{len(skipped)} item(s) were already saved and skipped.")
+                assistant_message = "\n".join(lines)
 
     except Exception as e:
         logger.error("LLM request failed for session %s: %s", session_id, e, exc_info=True)
