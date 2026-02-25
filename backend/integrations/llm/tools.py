@@ -153,12 +153,64 @@ def create_schedule_tool() -> dict[str, Any]:
     }
 
 
+def save_memory_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "save_memory",
+            "description": (
+                "Permanently save a fact, preference, or routine to the ClimateIQ memory store "
+                "so it is available in future conversations and influences AI climate decisions. "
+                "Use this when the user explicitly asks to save or remember something, or when "
+                "they share important house facts, daily routines, or comfort preferences that "
+                "were not already extracted automatically."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "directive": {
+                        "type": "string",
+                        "description": "The fact or preference to remember (max 200 chars). Be specific and concise.",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": [
+                            "preference",
+                            "constraint",
+                            "comfort",
+                            "schedule_hint",
+                            "routine",
+                            "occupancy",
+                            "house_info",
+                            "energy",
+                        ],
+                        "description": (
+                            "preference/comfort/constraint = temperature likes/dislikes; "
+                            "routine/occupancy = when people are home/sleeping; "
+                            "house_info = physical characteristics of the home; "
+                            "schedule_hint = implicit schedule info; "
+                            "energy = energy saving preferences."
+                        ),
+                    },
+                    "zone_name": {
+                        "type": "string",
+                        "description": "Optional zone name this memory applies to (e.g. 'Master Bedroom'). Omit for whole-house facts.",
+                    },
+                },
+                "required": ["directive", "category"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 TOOLS: list[dict[str, Any]] = [
     set_zone_temperature_tool(),
     set_device_state_tool(),
     get_zone_status_tool(),
     get_weather_tool(),
     create_schedule_tool(),
+    save_memory_tool(),
 ]
 
 

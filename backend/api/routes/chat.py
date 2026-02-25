@@ -368,6 +368,9 @@ You can:
 - Explain active schedules and suggest new ones
 - Provide energy-saving recommendations
 - Explain how ClimateIQ works in detail
+- Save facts, routines, and preferences to permanent memory using the save_memory tool
+
+MEMORY SYSTEM: Facts shared in conversation are automatically extracted and saved. When a user explicitly asks to "save", "remember", or "store" something, or when they share important house facts or routines that you want to ensure are captured, use the save_memory tool directly. Saved memories persist across all future conversations and are used by the AI advisor to make better decisions. After saving, confirm what was saved.
 
 When users request changes, use the available tools to execute them. Always confirm what action you're taking.
 
@@ -1376,6 +1379,71 @@ async def _execute_tool_call(
             "timezone": timezone,
             "schedule_ids": [str(s.id) for s in created],
         }
+
+    elif func_name == "save_memory":
+        from backend.models.database import UserDirective, Zone
+
+        directive_text = str(func_args.get("directive", "")).strip()[:200]
+        if not directive_text:
+            return {"success": False, "error": "directive text is required"}
+
+        category = func_args.get("category", "preference")
+        valid_categories = {
+            "preference", "constraint", "schedule_hint", "comfort",
+            "energy", "house_info", "routine", "occupancy",
+        }
+        if category not in valid_categories:
+            category = "preference"
+
+        # Resolve optional zone name → zone_id
+        zone_id: uuid.UUID | None = None
+        zone_name_arg = func_args.get("zone_name")
+        if zone_name_arg:
+            zone_result = await db.execute(
+                select(Zone).where(Zone.name.ilike(f"%{zone_name_arg}%"), Zone.is_active.is_(True))
+            )
+            zone = zone_result.scalar_one_or_none()
+            if zone:
+                zone_id = zone.id
+
+        # Deduplicate
+        existing = await db.execute(
+            select(UserDirective).where(
+                UserDirective.directive == directive_text,
+                UserDirective.is_active.is_(True),
+            )
+        )
+        if existing.scalar_one_or_none():
+            return {"success": True, "saved": False, "note": "Already saved — this memory already exists."}
+
+        new_directive = UserDirective(
+            directive=directive_text,
+            zone_id=zone_id,
+            category=category,
+        )
+        db.add(new_directive)
+        await db.flush()
+
+        # Generate embedding (best-effort)
+        try:
+            import asyncio as _asyncio
+
+            import litellm as _litellm
+
+            from backend.config import SETTINGS as _SETTINGS
+            if _SETTINGS.openai_api_key:
+                emb_resp = await _asyncio.to_thread(
+                    _litellm.embedding,
+                    model="text-embedding-3-small",
+                    input=directive_text,
+                    api_key=_SETTINGS.openai_api_key,
+                )
+                new_directive.embedding = emb_resp.data[0].embedding
+        except Exception:  # noqa: S110
+            pass
+
+        await db.commit()
+        return {"success": True, "saved": True, "directive": directive_text, "category": category}
 
     return {"success": False, "error": f"Unknown tool: {func_name}"}
 

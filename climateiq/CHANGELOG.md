@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.9] - 2026-02-25
+
+### Added
+- **`save_memory` LLM tool**: The chat AI can now explicitly save facts, routines, and preferences to permanent memory when a user asks it to. Previously the LLM told users it had no ability to save memories even though the system has a `user_directives` table — it just lacked a callable tool. Added `save_memory(directive, category, zone_name?)` to the tool schema in `tools.py`, wired up the handler in `_execute_tool_call`, and updated `SYSTEM_PROMPT` to explain the memory system and instruct the LLM to use the tool when asked. Automatic extraction still runs on every message; this tool covers explicit user requests and important facts the LLM wants to ensure are captured. Saved memories include embedding generation and deduplication, identical to the auto-extraction path.
+
 ## [1.0.8] - 2026-02-25
 
 ### Fixed
