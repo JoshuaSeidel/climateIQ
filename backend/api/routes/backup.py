@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Annotated, Any
-
 import uuid as _uuid_mod
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field

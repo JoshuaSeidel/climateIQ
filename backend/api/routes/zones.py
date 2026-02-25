@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-import asyncio
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -344,7 +343,7 @@ async def _enrich_zone_response(
             .limit(1)
         )
 
-        async def _fetch_col(col_attr: object) -> "SensorReading | None":
+        async def _fetch_col(col_attr: object) -> SensorReading | None:
             result = await db.execute(base.where(col_attr.isnot(None)))  # type: ignore[union-attr]
             return result.scalars().first()
 

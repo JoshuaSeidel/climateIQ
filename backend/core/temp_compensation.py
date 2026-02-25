@@ -516,8 +516,8 @@ async def apply_offset_compensation(
     #    direction, the deviation is sub-thermostat-resolution and will even out
     #    naturally.  Skip the offset entirely so we don't chase noise.
     #
-    #    Heat mode: rooms 0–1°F above target → environment will cool naturally.
-    #    Cool mode: rooms 0–1°F below target → environment will warm naturally.
+    #    Heat mode: rooms 0-1°F above target -- environment will cool naturally.
+    #    Cool mode: rooms 0-1°F below target -- environment will warm naturally.
     zone_error_f = (desired_temp_c - avg_temp_c) * 9.0 / 5.0
     in_dead_band = (
         ("heat" in hvac_mode and -1.0 < zone_error_f < 0.0)

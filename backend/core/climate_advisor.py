@@ -121,7 +121,7 @@ async def _build_llm_provider(db: Any, settings: Any) -> Any:
             primary_provider = llm_settings["provider"]
         if llm_settings.get("model"):
             primary_model = llm_settings["model"]
-    except Exception:
+    except Exception:  # noqa: S110
         pass
 
     def _api_key(provider: str) -> str | None:
@@ -430,8 +430,8 @@ setpoint must cross the thermostat's current reading.
 Return JSON only (no prose):
 {{
   "action": "adjust" | "hold" | "wait",
-  "setpoint_f": <integer 55–90, required only if action=adjust>,
-  "wait_minutes": <integer 5–30, required only if action=wait>,
+  "setpoint_f": <integer 55-90, required only if action=adjust>,
+  "wait_minutes": <integer 5-30, required only if action=wait>,
   "reasoning": "<2 sentences max>"
 }}"""
 
@@ -459,7 +459,7 @@ class SafetyProtocol:
         orig_sp = sp
         changed = False
 
-        # Rule 1: absolute physical bounds (55–90°F)
+        # Rule 1: absolute physical bounds (55-90°F)
         if sp < _SAFETY_ABS_MIN_C:
             sp = _SAFETY_ABS_MIN_C
             changed = True
@@ -573,7 +573,7 @@ class ClimateAdvisor:
                 if state:
                     outdoor_temp_c = state.attributes.get("temperature")
                     outdoor_condition = state.state or ""
-        except Exception:
+        except Exception:  # noqa: S110
             pass
 
         # ── 5. Time since last setpoint change ──────────────────────────────
@@ -667,7 +667,7 @@ class ClimateAdvisor:
                 if isinstance(val, dict):
                     val = val.get("value", True)
                 return bool(val)
-        except Exception:
+        except Exception:  # noqa: S110
             pass
         return True  # enabled by default
 
@@ -686,7 +686,7 @@ class ClimateAdvisor:
                 if isinstance(val, dict):
                     val = val.get("value", "")
                 return str(val) if val else None
-        except Exception:
+        except Exception:  # noqa: S110
             pass
         return None
 
@@ -729,7 +729,7 @@ class ClimateAdvisor:
         text = content.strip()
         if text.startswith("```"):
             lines = text.splitlines()
-            text = "\n".join(l for l in lines if not l.startswith("```"))
+            text = "\n".join(line for line in lines if not line.startswith("```"))
 
         try:
             data = json.loads(text)
@@ -740,7 +740,7 @@ class ClimateAdvisor:
             if m:
                 data = json.loads(m.group())
             else:
-                raise ValueError(f"No JSON found in LLM response: {text[:200]!r}")
+                raise ValueError(f"No JSON found in LLM response: {text[:200]!r}") from None
 
         action = str(data.get("action", "adjust")).lower()
         if action not in ("adjust", "hold", "wait"):

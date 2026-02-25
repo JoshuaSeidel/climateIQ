@@ -224,7 +224,6 @@ class ZoneAnalytics:
         # Segment into warming and cooling windows using 15-min rolling deltas
         warming_rates: list[float] = []
         cooling_rates: list[float] = []
-        window = 15 * 60  # 15 minutes in seconds
 
         for i, reading in enumerate(readings):
             # Find reading ~15 min later
@@ -301,10 +300,10 @@ class ZoneAnalytics:
 
         # Rolling average trend (last 30 min)
         recent_cutoff = datetime.now(UTC) - timedelta(minutes=30)
-        recent = [(t, T) for t, T in zip(times_h, temps_c)
+        recent = [(t, T) for t, T in zip(times_h, temps_c, strict=False)
                   if readings[times_h.index(t)]["recorded_at"] >= recent_cutoff]
         if len(recent) >= 2:
-            rt, rT = zip(*recent)
+            rt, rT = zip(*recent, strict=False)
             rate = _linear_rate(list(rt), list(rT))
             if rate is not None:
                 result["avg_trend_c_per_min"] = round(rate / 60, 5)
@@ -317,7 +316,7 @@ class ZoneAnalytics:
 
     def _compute_occupancy(self, readings: list[dict[str, Any]]) -> dict[str, Any]:
         """Compute per-hour occupancy scores and detect sleep / nap patterns."""
-        # Hourly occupancy score (0.0–1.0) for each hour 0–23
+        # Hourly occupancy score (0.0-1.0) for each hour 0-23
         hour_present: dict[int, list[float]] = {h: [] for h in range(24)}
         hour_lux: dict[int, list[float]] = {h: [] for h in range(24)}
         hour_dark_present: dict[int, list[bool]] = {h: [] for h in range(24)}
@@ -360,7 +359,7 @@ class ZoneAnalytics:
             if hour_dark_present[h] and
             sum(hour_dark_present[h]) / len(hour_dark_present[h]) >= 0.5
         ]
-        # Sleep is a sustained overnight block (midnight–6am is most common)
+        # Sleep is a sustained overnight block (midnight-6am is most common)
         overnight = [h for h in sleep_hours if h <= 6 or h >= 21]
         if overnight:
             result["sleep_start"] = f"{min(h for h in overnight if h >= 18):02d}:00"

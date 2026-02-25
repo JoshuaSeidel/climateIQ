@@ -937,11 +937,12 @@ async def maintain_climate_offset() -> None:
             else:
                 # Fetch supporting data for the advisor
                 from sqlalchemy.orm import selectinload as _selectinload
+
                 from backend.models.database import Zone as _Zone
 
-                zone_sensor_ids: list[Any] = []
-                zone_id_list: list[Any] = []
-                thermal_profile: dict[str, Any] = {}
+                zone_sensor_ids = []
+                zone_id_list = []
+                thermal_profile: dict = {}
                 if zone_ids:
                     try:
                         _zone_uuids = [uuid.UUID(str(zid)) for zid in zone_ids]
@@ -2600,8 +2601,7 @@ def init_scheduler() -> AsyncIOScheduler:
 
     def _stagger(seconds: int) -> datetime:
         """Return an absolute start time offset from now."""
-        from datetime import datetime as _dt, timezone as _tz
-        return _dt.now(_tz.utc) + timedelta(seconds=seconds)
+        return datetime.now(UTC) + timedelta(seconds=seconds)
 
     # Zone status polling - every 30 seconds
     scheduler.add_job(
@@ -2713,8 +2713,8 @@ def init_scheduler() -> AsyncIOScheduler:
 
     # Zone thermal profile + occupancy analytics - every 4 hours
     async def _run_zone_analytics() -> None:
-        from backend.core.zone_analytics import run_zone_analytics
         import backend.api.dependencies as _deps_za
+        from backend.core.zone_analytics import run_zone_analytics
 
         _ha = _deps_za._ha_client
         _sm = get_session_maker()

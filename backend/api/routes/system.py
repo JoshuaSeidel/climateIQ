@@ -1326,7 +1326,7 @@ async def debug_offset_calculation(
             tz_val = tz_row.value.get("value", "")
             if tz_val:
                 user_tz = ZoneInfo(tz_val)
-    except Exception:
+    except Exception:  # noqa: S110
         pass
 
     # Find active schedule
@@ -1567,7 +1567,8 @@ async def get_override_status(
                 get_priority_zone_temp_c,
                 get_thermostat_reading_c,
             )
-            from backend.models.database import Schedule, Zone as _Zone
+            from backend.models.database import Schedule
+            from backend.models.database import Zone as _Zone
 
             # Find the currently-active schedule using the same helpers as the
             # schedule endpoint — avoids the duplicate/buggy inline logic.
