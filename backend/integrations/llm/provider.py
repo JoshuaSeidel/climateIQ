@@ -54,12 +54,14 @@ class LLMProvider:
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        fallbacks: list[LLMProvider] | None = None,
     ) -> None:
         self.provider = provider
         self.api_key = api_key
         self.model = model or self.PROVIDER_MODELS.get(provider, "gpt-4o")
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.fallbacks: list[LLMProvider] = fallbacks or []
 
     async def chat(
         self,
@@ -80,6 +82,27 @@ class LLMProvider:
         Returns:
             Dict with 'content' and optionally 'tool_calls'
         """
+        try:
+            return await self._chat_once(messages, system=system, tools=tools, **kwargs)
+        except Exception as e:
+            logger.warning("LLM request failed on provider=%s: %s — trying fallbacks", self.provider, e)
+            for fallback in self.fallbacks:
+                try:
+                    result = await fallback._chat_once(messages, system=system, tools=tools, **kwargs)
+                    logger.info("LLM fallback succeeded via provider=%s", fallback.provider)
+                    return result
+                except Exception as fe:
+                    logger.warning("LLM fallback failed provider=%s: %s", fallback.provider, fe)
+            logger.error("LLM request failed: all providers exhausted")
+            raise
+
+    async def _chat_once(
+        self,
+        messages: list[dict[str, Any]],
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         litellm = _require_litellm()
 
         # Build messages list
@@ -99,41 +122,36 @@ class LLMProvider:
         else:
             model_str = self.model
 
-        try:
-            response = await litellm.acompletion(
-                model=model_str,
-                messages=full_messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                tools=tools if tools else None,
-                api_key=self.api_key,
-                **kwargs,
-            )
+        response = await litellm.acompletion(
+            model=model_str,
+            messages=full_messages,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            tools=tools if tools else None,
+            api_key=self.api_key,
+            **kwargs,
+        )
 
-            # Extract response content
-            choice = response.choices[0]
-            content = choice.message.content or ""
+        # Extract response content
+        choice = response.choices[0]
+        content = choice.message.content or ""
 
-            result: dict[str, Any] = {"content": content}
+        result: dict[str, Any] = {"content": content}
 
-            # Extract tool calls if present
-            if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
-                result["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in choice.message.tool_calls
-                ]
+        # Extract tool calls if present
+        if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
+            result["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in choice.message.tool_calls
+            ]
 
-            return result
-
-        except Exception as e:
-            logger.error("LLM request failed: %s", e)
-            raise
+        return result
 
     async def generate(
         self,

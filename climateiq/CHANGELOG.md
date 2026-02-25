@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.5] - 2026-02-25
+
+### Fixed
+- **LLM provider fallback on overload/errors**: When the primary provider (Anthropic) returns a 529 overloaded error or any other failure, the chat route now automatically retries with the next configured provider (OpenAI, then Gemini) before surfacing an error. Previously `LLMProvider.chat()` caught the exception only to re-raise it — no fallback occurred. Added a `fallbacks: list[LLMProvider]` field and a `_chat_once()` helper; `get_llm_provider()` now builds the full chain from all configured API keys rather than picking just the first available provider.
+
 ## [1.0.4] - 2026-02-25
 
 ### Fixed

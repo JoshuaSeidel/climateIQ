@@ -568,30 +568,28 @@ async def _get_live_system_context(db: AsyncSession, temperature_unit: str) -> s
 
 
 async def get_llm_provider() -> LLMProvider:
-    """Get configured LLM provider."""
+    """Get configured LLM provider with fallback chain from all configured keys."""
     settings = get_settings()
 
-    # Determine which provider to use based on available keys
+    # Build ordered candidate list: anthropic → openai → gemini
+    candidates: list[tuple[str, str]] = []
     if settings.anthropic_api_key:
-        return LLMProvider(
-            provider="anthropic",
-            api_key=settings.anthropic_api_key,
-        )
-    elif settings.openai_api_key:
-        return LLMProvider(
-            provider="openai",
-            api_key=settings.openai_api_key,
-        )
-    elif settings.gemini_api_key:
-        return LLMProvider(
-            provider="gemini",
-            api_key=settings.gemini_api_key,
-        )
-    else:
+        candidates.append(("anthropic", settings.anthropic_api_key))
+    if settings.openai_api_key:
+        candidates.append(("openai", settings.openai_api_key))
+    if settings.gemini_api_key:
+        candidates.append(("gemini", settings.gemini_api_key))
+
+    if not candidates:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No LLM provider configured. Please add an API key in settings.",
         )
+
+    # Build providers; first is primary, rest are fallbacks
+    providers = [LLMProvider(provider=p, api_key=k) for p, k in candidates]
+    providers[0].fallbacks = providers[1:]
+    return providers[0]
 
 
 async def get_zone_context(db: AsyncSession, temperature_unit: str) -> str:
