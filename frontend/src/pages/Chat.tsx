@@ -483,13 +483,13 @@ export const Chat = () => {
                               <span>
                                 <span className="font-medium">Saved memory: </span>
                                 {String(action.directive ?? '')}
-                                {action.category && (
+                                {(action.category as string | undefined) && (
                                   <span className="ml-1 opacity-60">
-                                    [{String(action.category).replace(/_/g, ' ')}]
+                                    [{(action.category as string).replace(/_/g, ' ')}]
                                   </span>
                                 )}
-                                {action.saved === false && action.note && (
-                                  <span className="ml-1 italic">{String(action.note)}</span>
+                                {action.saved === false && (action.note as string | undefined) && (
+                                  <span className="ml-1 italic">{action.note as string}</span>
                                 )}
                               </span>
                             ) : (
