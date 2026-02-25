@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.15] - 2026-02-25
+
+### Fixed
+- **Dashboard "What's Happening" placeholder text**: Placeholder said "Click ↑ to generate a summary" but the button uses a circular refresh icon, not an up arrow. Updated to "Click the refresh button to generate a summary."
+
 ## [1.0.14] - 2026-02-25
 
 ### Fixed

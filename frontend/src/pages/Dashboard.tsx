@@ -624,7 +624,7 @@ export const Dashboard = () => {
               Generating summary...
             </div>
           ) : (
-            <p className="text-sm text-foreground">{llmSummary?.message ?? 'Click ↑ to generate a summary.'}</p>
+            <p className="text-sm text-foreground">{llmSummary?.message ?? 'Click the refresh button to generate a summary.'}</p>
           )}
         </CardContent>
       </Card>
