@@ -127,22 +127,30 @@ async def _get_db_zone_temp_c(db: Any, zone: Any) -> float | None:
     """Return the most-recent valid temperature from DB sensor readings for a zone.
 
     Used as a fallback when the HA live sensor read returns None (sensor
-    unavailable, entity not yet polled, etc.).  Mirrors the same query used
-    by the zones API ``_enrich_zone_response``.
+    unavailable, entity not yet polled, etc.).
+
+    Only uses readings from the last 30 minutes.  Stale data (e.g. from
+    hours ago when the room was at a very different temperature) must not
+    feed into offset compensation — it produces a wrong offset that can
+    cause the HVAC to run in the wrong direction.
     """
     if not zone.sensors:
         return None
+
+    from datetime import UTC, datetime, timedelta
 
     from sqlalchemy import select as sa_select
 
     from backend.models.database import SensorReading
 
     sensor_ids = [s.id for s in zone.sensors]
+    cutoff = datetime.now(UTC) - timedelta(minutes=30)
     result = await db.execute(
         sa_select(SensorReading.temperature_c)
         .where(
             SensorReading.sensor_id.in_(sensor_ids),
             SensorReading.temperature_c.is_not(None),
+            SensorReading.recorded_at >= cutoff,
         )
         .order_by(SensorReading.recorded_at.desc())
         .limit(10)

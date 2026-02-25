@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.9.2] - 2026-02-24
+
+### Fixed
+- **DB fallback stale sensor data causing over-heating**: `_get_db_zone_temp_c` now only uses sensor readings from the last 30 minutes. Previously, when the HA live sensor was unavailable the fallback could return readings from hours earlier (when the room was cold), producing a spurious positive offset that set the thermostat above the schedule target and caused the HVAC to heat rooms that were already well above the target temperature.
+
 ## [0.9.1] - 2026-02-24
 
 ### Fixed
