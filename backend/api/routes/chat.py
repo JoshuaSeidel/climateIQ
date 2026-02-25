@@ -111,21 +111,22 @@ class CommandResponse(BaseModel):
 # Directive / Memory Helpers
 # ============================================================================
 
-DIRECTIVE_EXTRACTION_PROMPT = """Analyze the following conversation exchange and extract any user preferences, constraints, or directives about their HVAC/climate system. Only extract actionable, long-term preferences — NOT one-time requests.
+DIRECTIVE_EXTRACTION_PROMPT = """Analyze the following conversation exchange and extract any long-term house knowledge the user has shared — preferences, constraints, house characteristics, routines, or occupancy patterns. Do NOT extract one-time requests or things that are already being handled in this conversation.
 
-Examples of directives to extract:
-- "Never heat the basement above 65F"
-- "I prefer it cooler at night"
-- "Always keep the nursery at 72F"
-- "Don't run the AC when outdoor temp is below 60F"
-- "I work from home on Mondays and Fridays"
+Extract ANY fact that would help an intelligent climate system make better long-term decisions, including:
+- Temperature preferences: "Never heat the basement above 65F", "I prefer it cooler at night"
+- Zone characteristics: "South-facing bedroom overheats in afternoon sun", "Basement always feels 5F colder than the thermostat reads"
+- Daily routines: "We wake up at 7am on weekdays, 9am on weekends"
+- Occupancy patterns: "Office is occupied 9am to 5pm on workdays", "I work from home on Mondays and Fridays"
+- Household context: "We have a baby — keep the nursery warm and stable", "Guest bedroom is only used on weekends"
+- Energy preferences: "Don't run the AC when outdoor temp is below 60F"
 
-For each directive found, output a JSON array of objects with:
-- "directive": the preference in clear, concise language
-- "category": one of "preference", "constraint", "schedule_hint", "comfort", "energy"
+For each item found, output a JSON array of objects with:
+- "directive": the fact in clear, concise language (first person OK)
+- "category": one of "preference", "constraint", "schedule_hint", "comfort", "energy", "house_info", "routine", "occupancy"
 - "zone_name": the zone name if zone-specific, or null
 
-If no directives are found, return an empty array: []
+If no extractable house knowledge is found, return an empty array: []
 
 IMPORTANT: Return ONLY the JSON array, no other text.
 
@@ -191,8 +192,12 @@ async def _extract_directives(
             # Security: cap length to prevent prompt-injection via long directives.
             directive_text = directive_text[:200]
 
+            _valid_categories = {
+                "preference", "constraint", "schedule_hint", "comfort",
+                "energy", "house_info", "routine", "occupancy",
+            }
             category = d.get("category", "preference")
-            if category not in ("preference", "constraint", "schedule_hint", "comfort", "energy"):
+            if category not in _valid_categories:
                 category = "preference"
 
             # Try to match zone
@@ -211,12 +216,32 @@ async def _extract_directives(
             if existing.scalar_one_or_none():
                 continue
 
-            db.add(UserDirective(
+            new_directive = UserDirective(
                 directive=directive_text,
                 source_conversation_id=conversation_id,
                 zone_id=zone_id,
                 category=category,
-            ))
+            )
+            db.add(new_directive)
+            await db.flush()  # get the id assigned
+
+            # Generate and store embedding (best-effort; nullable column)
+            try:
+                import asyncio as _asyncio
+
+                import litellm as _litellm
+
+                from backend.config import SETTINGS as _SETTINGS
+                if _SETTINGS.openai_api_key:
+                    emb_resp = await _asyncio.to_thread(
+                        _litellm.embedding,
+                        model="text-embedding-3-small",
+                        input=directive_text,
+                        api_key=_SETTINGS.openai_api_key,
+                    )
+                    new_directive.embedding = emb_resp.data[0].embedding
+            except Exception:  # noqa: S110
+                pass
 
         await db.commit()
         logger.info("Extracted %d directive(s) from conversation %s", len(directives), conversation_id)
@@ -255,6 +280,71 @@ async def _get_active_directives(db: AsyncSession) -> str:
     lines.append("</user_directives>")
 
     return "\n".join(lines)
+
+
+async def _get_relevant_directives(
+    db: AsyncSession,
+    context_text: str,
+    *,
+    limit: int = 8,
+) -> str:
+    """Return the most semantically relevant active directives for a given context.
+
+    Uses pgvector cosine similarity when an OpenAI key is available and
+    embeddings have been generated. Falls back to loading all active
+    directives (the behaviour of _get_active_directives) if similarity
+    search is unavailable.
+    """
+    import asyncio as _asyncio
+    import html
+
+    from sqlalchemy import text as _text
+
+    from backend.config import SETTINGS as _SETTINGS
+
+    try:
+        if _SETTINGS.openai_api_key:
+            import litellm as _litellm
+
+            emb_resp = await _asyncio.to_thread(
+                _litellm.embedding,
+                model="text-embedding-3-small",
+                input=context_text,
+                api_key=_SETTINGS.openai_api_key,
+            )
+            vec = emb_resp.data[0].embedding
+
+            rows = await db.execute(
+                _text("""
+                    SELECT d.directive, d.category, z.name AS zone_name
+                    FROM user_directives d
+                    LEFT JOIN zones z ON d.zone_id = z.id
+                    WHERE d.is_active = true AND d.embedding IS NOT NULL
+                    ORDER BY d.embedding <=> CAST(:vec AS vector)
+                    LIMIT :limit
+                """),
+                {"vec": str(vec), "limit": limit},
+            )
+            results = rows.fetchall()
+            if results:
+                lines = ["<user_directives>"]
+                lines.append(
+                    "<!-- relevant house knowledge retrieved by semantic search -->"
+                )
+                for row in results:
+                    zone_attr = f" zone='{html.escape(row.zone_name)}'" if row.zone_name else ""
+                    safe_text = html.escape(str(row.directive)[:200])
+                    lines.append(
+                        f"  <directive category='{html.escape(row.category)}'"
+                        f"{zone_attr}>{safe_text}</directive>"
+                    )
+                lines.append("</user_directives>")
+                return "\n".join(lines)
+    except Exception as _e:
+        logger.debug("Semantic directive search failed, falling back: %s", _e)
+
+    # Fallback: load all active directives
+    return await _get_active_directives(db)
 
 
 # ============================================================================

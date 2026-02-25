@@ -153,6 +153,17 @@ export const Chat = () => {
     },
   })
 
+  // Add memory manually
+  const [newMemory, setNewMemory] = useState('')
+  const addMemory = useMutation({
+    mutationFn: (directive: string) =>
+      api.post('/chat/directives', { directive }),
+    onSuccess: () => {
+      setNewMemory('')
+      refetchDirectives()
+    },
+  })
+
   // Load a conversation from history
   const loadConversation = useCallback(
     async (sid: string) => {
@@ -321,39 +332,82 @@ export const Chat = () => {
             </div>
           )}
 
-          {/* Memory / Directives Section */}
-          {directives && directives.length > 0 && (
-            <div className="border-t border-border/40 dark:border-[rgba(148,163,184,0.12)]">
-              <div className="flex items-center gap-2 p-3">
-                <Brain className="h-4 w-4 text-primary" />
-                <h3 className="text-sm font-bold">Memory</h3>
-                <span className="ml-auto text-xs text-muted-foreground">{directives.length}</span>
+          {/* Memories Section */}
+          <div className="border-t border-border/40 dark:border-[rgba(148,163,184,0.12)]">
+            <div className="flex items-center gap-2 p-3">
+              <Brain className="h-4 w-4 text-primary" />
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-bold">Memories</h3>
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">
+                  Learned from conversations · used by the AI advisor
+                </p>
               </div>
-              <div className="space-y-1 px-2 pb-2">
-                {directives.map((d) => (
-                  <div
-                    key={d.id}
-                    className="group flex items-start gap-2 rounded-lg p-2 text-xs hover:bg-muted/50 dark:hover:bg-white/5"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="text-muted-foreground">{d.directive}</p>
-                      <p className="mt-0.5 text-[10px] text-muted-foreground/60">
-                        {d.category} -- {new Date(d.created_at).toLocaleDateString()}
-                      </p>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100"
-                      onClick={() => deleteDirective.mutate(d.id)}
-                    >
-                      <X className="h-3 w-3" />
-                    </Button>
-                  </div>
-                ))}
-              </div>
+              {directives && directives.length > 0 && (
+                <span className="text-xs text-muted-foreground shrink-0">{directives.length}</span>
+              )}
             </div>
-          )}
+            {directives && directives.length > 0 && (
+              <div className="space-y-1 px-2 pb-2">
+                {directives.map((d) => {
+                  const categoryColors: Record<string, string> = {
+                    preference: 'text-blue-500',
+                    comfort: 'text-blue-500',
+                    constraint: 'text-blue-600',
+                    routine: 'text-green-500',
+                    schedule_hint: 'text-green-500',
+                    occupancy: 'text-green-600',
+                    house_info: 'text-amber-500',
+                    energy: 'text-purple-500',
+                  }
+                  const color = categoryColors[d.category] ?? 'text-muted-foreground/60'
+                  return (
+                    <div
+                      key={d.id}
+                      className="group flex items-start gap-2 rounded-lg p-2 text-xs hover:bg-muted/50 dark:hover:bg-white/5"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="text-muted-foreground">{d.directive}</p>
+                        <p className={`mt-0.5 text-[10px] ${color}`}>
+                          {d.category.replace('_', ' ')} · {new Date(d.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100"
+                        onClick={() => deleteDirective.mutate(d.id)}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            {/* Add memory form */}
+            <div className="px-2 pb-3 flex gap-1.5">
+              <Input
+                value={newMemory}
+                onChange={(e) => setNewMemory(e.target.value)}
+                placeholder="Add a memory…"
+                className="h-7 text-xs"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && newMemory.trim()) {
+                    addMemory.mutate(newMemory.trim())
+                  }
+                }}
+              />
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7 shrink-0"
+                disabled={!newMemory.trim() || addMemory.isPending}
+                onClick={() => newMemory.trim() && addMemory.mutate(newMemory.trim())}
+              >
+                <Send className="h-3 w-3" />
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
 

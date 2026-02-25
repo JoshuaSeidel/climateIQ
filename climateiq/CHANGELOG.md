@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.7] - 2026-02-25
+
+### Added
+- **Persistent house memory with semantic search**: Conversations now build a growing knowledge base about your home. The extraction prompt was broadened from HVAC action-preferences only to capture any house knowledge — zone characteristics ("south bedroom overheats in afternoon sun"), daily routines ("we wake up at 7am weekdays"), occupancy patterns ("office occupied 9am–5pm"), and household context ("we have a baby"). Three new memory categories added: `house_info`, `routine`, `occupancy`.
+- **Vector embeddings on memories**: After each directive is extracted from conversation, an embedding is generated (via `text-embedding-3-small` when an OpenAI key is configured) and stored in a new `embedding vector(1536)` column on `user_directives` (migration `003_memory_embeddings`). An ivfflat index enables fast approximate nearest-neighbour search.
+- **Semantic retrieval in climate advisor**: `ClimateAdvisor.advise()` now calls `_get_relevant_directives()` before building its prompt — performing a pgvector cosine similarity search against the current zone + HVAC context to surface the most relevant memories. A new "HOUSE KNOWLEDGE / USER PREFERENCES" section is injected into every advisor prompt. Falls back to loading all active memories when embeddings are unavailable.
+- **"Add memory" form in chat sidebar**: Users can now type house facts directly into the Memories panel without needing a full conversation. Submits to the existing `POST /chat/directives` endpoint.
+- **Enhanced Memories UI**: The sidebar panel is renamed from "Directives" to "Memories" with a subtitle ("Learned from conversations · used by the AI advisor"), color-coded category badges (blue=preference/comfort/constraint, green=routine/schedule/occupancy, amber=house_info, purple=energy), and the `·` separator replaces `--`.
+
 ## [1.0.6] - 2026-02-25
 
 ### Fixed

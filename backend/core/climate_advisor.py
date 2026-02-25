@@ -287,6 +287,7 @@ def _build_prompt(
     outdoor_condition: str,
     last_setpoint_changed_minutes: int,
     temp_unit: str,
+    memories: str = "",
 ) -> str:
     """Assemble the full LLM decision prompt."""
     target_f = round(_c_to_f(desired_temp_c))
@@ -421,6 +422,9 @@ idle (see above) the trend may not continue without a setpoint adjustment.
 {profile_lines}
 ─── RECENT THERMOSTAT ACTIONS ─────────────────────────────────
 {actions_str}
+─── HOUSE KNOWLEDGE / USER PREFERENCES ─────────────────────────
+{memories if memories else "No stored house knowledge yet."}
+
 ─── DECISION ───────────────────────────────────────────────────
 Analyze the full picture. Consider whether to apply the formula's setpoint
 now, modify it based on thermal trends and occupancy, or wait for the
@@ -596,7 +600,21 @@ class ClimateAdvisor:
         # ── 6. Retrieve temperature unit for prompt display ──────────────────
         temp_unit = getattr(settings, "temperature_unit", "F")
 
-        # ── 7. Build prompt and call LLM ─────────────────────────────────────
+        # ── 7. Load relevant house memories ─────────────────────────────────
+        memories = ""
+        try:
+            from backend.api.routes.chat import _get_relevant_directives
+            context_text = (
+                f"Zone: {zone_names or 'unknown'}. "
+                f"HVAC mode: {hvac_mode}. "
+                f"Target: {round(current_avg_c * 9 / 5 + 32):.0f}°F. "
+                f"Current avg: {round(current_avg_c * 9 / 5 + 32, 1):.1f}°F."
+            )
+            memories = await _get_relevant_directives(db, context_text)
+        except Exception:  # noqa: S110
+            pass
+
+        # ── 8. Build prompt and call LLM ─────────────────────────────────────
         prompt = _build_prompt(
             hvac_mode=hvac_mode,
             desired_temp_c=desired_temp_c,
@@ -611,6 +629,7 @@ class ClimateAdvisor:
             outdoor_condition=outdoor_condition,
             last_setpoint_changed_minutes=mins_since_change,
             temp_unit=temp_unit,
+            memories=memories,
         )
 
         try:

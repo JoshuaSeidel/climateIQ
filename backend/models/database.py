@@ -357,8 +357,9 @@ class UserDirective(Base):
     )
     category: Mapped[str] = mapped_column(
         String(64), default="preference"
-    )  # preference, constraint, schedule_hint, comfort, energy
+    )  # preference, constraint, schedule_hint, comfort, energy, house_info, routine, occupancy
     is_active: Mapped[bool] = mapped_column(Boolean(), default=True)
+    embedding: Mapped[Any | None] = mapped_column(Vector(1536), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow

@@ -294,7 +294,7 @@ export type UserDirective = {
   directive: string
   source_conversation_id?: string
   zone_id?: string
-  category: 'preference' | 'constraint' | 'schedule_hint' | 'comfort' | 'energy'
+  category: 'preference' | 'constraint' | 'schedule_hint' | 'comfort' | 'energy' | 'house_info' | 'routine' | 'occupancy'
   is_active: boolean
   created_at: string
   updated_at: string
