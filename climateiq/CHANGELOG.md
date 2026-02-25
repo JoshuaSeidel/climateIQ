@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.12] - 2026-02-25
+
+### Fixed
+- **mypy: `zone_id` redefinition in `_execute_tool_call`**: The `save_memory` branch re-declared `zone_id` with a type annotation in the same function scope as the `set_zone_temperature` branch, causing a `[no-redef]` error. Renamed to `mem_zone_id` to isolate the two branches.
+- **mypy: `ha_url`/`ha_token` not on `Settings`**: `system.py` was accessing non-existent `_cfg.ha_url` and `_cfg.ha_token`. Corrected to `home_assistant_url` and `home_assistant_token` (the actual `Settings` field names).
+- **mypy: Schedule query typed as `SystemSetting`**: Reusing the `result` variable for both a `SystemSetting` query and a subsequent `Schedule` query caused mypy to infer the wrong element type, flagging `schedule.days_of_week` etc. as missing. Renamed the Schedule query variable to `sched_result`.
+- **mypy: `val` type reuse in `sensors.py`**: `val` was first assigned `float` via `float(state.state)`, then reassigned `Any | None` via `attrs.get()` in fallback loops. Renamed to `attr_val` in the fallback blocks.
+- **mypy: `col_attr: object` lacks `.isnot()`**: Parameter typed as `object` in `zones.py` — changed to `Any` so SQLAlchemy column methods are accessible without error.
+- **mypy: `float | None` multiply in `zone_analytics.py`**: `_safe_mean()` returns `float | None`; the result was multiplied by a weight without a None guard. Added an explicit `if present_avg is not None` check instead of the incorrect `# type: ignore[arg-type]`.
+- **mypy: `type: ignore[union-attr]` not covering `[attr-defined]`**: Three `db.execute()` calls in `main.py` and one in `zones.py` had ignore comments that didn't match the actual error code. Updated to `[union-attr, attr-defined]`.
+- **mypy: `**dict[str, object]` in test helpers**: `_make_payload` in `test_schedule_helpers.py` returned `dict[str, object]`, making `ScheduleCreate(**payload)` fail strict type checking. Changed to `dict[str, Any]`.
+
 ## [1.0.11] - 2026-02-25
 
 ### Fixed
