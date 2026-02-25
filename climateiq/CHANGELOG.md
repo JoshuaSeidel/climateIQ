@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.0.0] - 2026-02-25
+
+### Added
+- **LLM-driven predictive climate advisor**: The LLM is now the primary decision-maker for thermostat setpoint adjustments. On each maintenance tick, `ClimateAdvisor` assembles rich context — zone averages, thermostat reading, temperature trend data from TimescaleDB 5-min and hourly continuous aggregates, the zone's learned thermal profile, current occupancy, outdoor weather, and recent device actions — and asks the configured LLM whether to `adjust`, `hold`, or `wait`. `SafetyProtocol` vetoes only physically dangerous values (below 55°F / above 90°F) and max-offset violations; routine suppression decisions are left entirely to the LLM.
+- **Zone thermal analytics background task** (`zone_analytics.py`): Runs every 4 hours via apscheduler. Queries 30 days of `sensor_readings` and `device_actions` per zone and computes heating/cooling rates, HVAC response lag, typical overshoot, per-hour occupancy scores, sleep pattern detection (lux ≤ 10 lx + presence = sleeping), and midday nap detection. Results are persisted to `zones.thermal_profile` (JSONB) and consumed by the LLM advisor on every decision tick.
+- **1°F dead-band in offset compensation**: Rooms that are within 1°F of target in the correct direction (≤1°F above target in heat mode, ≤1°F below in cool mode) skip the advisor and return the schedule target unchanged, eliminating micro-corrections for thermostat rounding noise.
+- **AI toggle in Settings → Logic tab**: A new "AI Decision Making" card with a toggle switch lets users enable or disable the LLM advisor at runtime. When disabled, the formula-based offset result is used directly; when the LLM is unavailable or returns an unparseable response, the formula is used as an automatic fallback with a WARNING log.
+- **Advisor cache invalidation on drift**: `_handle_climate_state_change` (the drift-correction handler) now calls `clear_advisor_cache()` in addition to clearing `_last_offset_temp`, ensuring the LLM produces a fresh decision immediately after a thermostat drift event.
+
+### Changed
+- **Default LLM**: Anthropic `claude-sonnet-4-6` is now the primary provider across `decision_engine.py` and `climate_advisor.py`; OpenAI `gpt-4o-mini` is the secondary fallback (was reversed).
+- **`apply_offset_compensation` return expanded to 5-tuple**: Returns `(adjusted_c, offset_c, zone_names, avg_temp_c, hvac_mode)` so callers can pass zone context to the advisor without redundant HA fetches.
+- **Dead clamp removed**: The conditional heat/cool clamp introduced in v0.8.41 and partially relaxed in v0.9.5 is removed. Clamping is now only performed by `SafetyProtocol` for absolute physical bounds.
+
+## [0.9.5] - 2026-02-25
+
+### Fixed
+- **Offset clamp now allows setpoint to bypass schedule target when zones are overshot**: Previously the heat-mode clamp unconditionally floored the adjusted setpoint at the schedule target — even when zone temperatures were already *above* the target. This meant that if rooms overheated (e.g. 76°F when the schedule is 68°F), the formula correctly computed a below-target setpoint (e.g. 60°F) to suppress heating, but the clamp overrode it back to 68°F. The HVAC would then run or remain on because the thermostat setpoint equalled the schedule target. The clamp now only applies when zone temperatures are on the *correct* side of the target: in heat mode the floor is enforced only when `avg_zone_temp < desired` (normal heating scenario); when zones are already above the target the negative offset is allowed through so the thermostat setpoint drops below the schedule target and the HVAC stops heating until the rooms cool. The same conditional logic applies to cool mode (ceiling only enforced when `avg_zone_temp > desired`).
+
 ## [0.9.4] - 2026-02-25
 
 ### Fixed

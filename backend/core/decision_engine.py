@@ -63,10 +63,10 @@ class DecisionEngine:
         self._loop_task: asyncio.Task[None] | None = None
 
     def _build_llm_provider(self) -> ClimateIQLLMProvider:
-        primary_provider = "openai"
-        primary_model = "gpt-4o-mini"
-        secondary_provider = "anthropic"
-        secondary_model = "claude-3-5-sonnet"
+        primary_provider = "anthropic"
+        primary_model = "claude-sonnet-4-6"
+        secondary_provider = "openai"
+        secondary_model = "gpt-4o-mini"
 
         primary = ProviderSettings(
             provider=primary_provider,
@@ -250,8 +250,8 @@ class DecisionEngine:
             return self._llm
         from backend.models.database import SystemConfig
 
-        primary_provider = "openai"
-        primary_model = "gpt-4o-mini"
+        primary_provider = "anthropic"
+        primary_model = "claude-sonnet-4-6"
 
         try:
             result = await self._session.execute(
@@ -270,9 +270,9 @@ class DecisionEngine:
             default_model=primary_model,
         )
         secondary = ProviderSettings(
-            provider="anthropic",
-            api_key=self._provider_api_key("anthropic"),
-            default_model="claude-3-5-sonnet",
+            provider="openai",
+            api_key=self._provider_api_key("openai"),
+            default_model="gpt-4o-mini",
         )
         return ClimateIQLLMProvider(primary=primary, secondary=secondary)
 

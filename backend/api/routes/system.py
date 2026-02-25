@@ -510,7 +510,7 @@ async def execute_quick_action(
             offset_c = 0.0
             priority_zone_name = None
             try:
-                adjusted_temp_c, offset_c, priority_zone_name = await apply_offset_compensation(
+                adjusted_temp_c, offset_c, priority_zone_name, *_ = await apply_offset_compensation(
                     db, _ha_client, climate_entity,
                     active_schedule.target_temp_c,
                     zone_ids=active_schedule.zone_ids or None,

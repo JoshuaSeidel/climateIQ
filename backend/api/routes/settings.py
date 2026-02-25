@@ -50,6 +50,7 @@ _KV_DEFAULTS: dict[str, Any] = {
     "sensor_entities": "",
     "energy_entity": "",
     "max_temp_offset_f": 8.0,  # Maximum temperature offset in Fahrenheit
+    "ai_advisor_enabled": True,
 }
 
 # ---------------------------------------------------------------------------
@@ -73,6 +74,7 @@ class SystemSettingsResponse(BaseModel):
     sensor_entities: str = ""
     energy_entity: str = ""
     max_temp_offset_f: float = 8.0
+    ai_advisor_enabled: bool = True
     home_assistant_url: str = ""
     home_assistant_token: str = ""
     llm_settings: dict[str, Any] = {}
@@ -95,6 +97,7 @@ class SystemSettingsUpdate(BaseModel):
     sensor_entities: str | None = None
     energy_entity: str | None = None
     max_temp_offset_f: float | None = None
+    ai_advisor_enabled: bool | None = None
 
 
 class HAEntityInfo(BaseModel):
@@ -204,6 +207,8 @@ async def _build_response(session: AsyncSession) -> SystemSettingsResponse:
         climate_entities=kv["climate_entities"],
         sensor_entities=kv["sensor_entities"],
         energy_entity=kv["energy_entity"],
+        max_temp_offset_f=float(kv["max_temp_offset_f"]),
+        ai_advisor_enabled=bool(kv["ai_advisor_enabled"]),
         home_assistant_url=ha_url,
         home_assistant_token=masked_token,
         llm_settings=dict(config.llm_settings or {}),

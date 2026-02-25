@@ -136,7 +136,7 @@ export const Settings = () => {
         />
       )}
       {activeTab === 'modes' && <ModesTab settings={settings} />}
-      {activeTab === 'logic' && <LogicTab sections={logicRef?.sections ?? []} />}
+      {activeTab === 'logic' && <LogicTab sections={logicRef?.sections ?? []} settings={settings} />}
       {activeTab === 'backup' && <BackupTab />}
       {activeTab === 'about' && <AboutTab health={healthData} version={versionData} />}
     </div>
@@ -1196,39 +1196,101 @@ function BackupTab() {
 // ============================================================================
 // Logic Tab
 // ============================================================================
-const LogicTab = ({ sections }: { sections: Array<{ id: string; title: string; description: string; details: string[] }> }) => (
-  <div className="space-y-4">
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <BookOpen className="h-5 w-5" />
-          Logic Reference
-        </CardTitle>
-        <CardDescription>
-          How ClimateIQ works — the logic and reasoning behind each feature. This same information is available to the AI chat assistant.
-        </CardDescription>
-      </CardHeader>
-    </Card>
-    {sections.map((section) => (
-      <Card key={section.id}>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">{section.title}</CardTitle>
-          <CardDescription>{section.description}</CardDescription>
+function LogicTab({
+  sections,
+  settings,
+}: {
+  sections: Array<{ id: string; title: string; description: string; details: string[] }>
+  settings?: SystemSettings
+}) {
+  const queryClient = useQueryClient()
+  const aiEnabled = settings?.ai_advisor_enabled ?? true
+
+  const toggleAdvisor = useMutation({
+    mutationFn: (enabled: boolean) => api.put<SystemSettings>('/settings', { ai_advisor_enabled: enabled }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+
+  return (
+    <div className="space-y-4">
+      {/* AI Decision Making card */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Brain className="h-5 w-5" />
+            AI Decision Making
+          </CardTitle>
+          <CardDescription>
+            When enabled, ClimateIQ uses the configured LLM to analyze temperature trends, zone thermal
+            profiles, and occupancy patterns before adjusting the thermostat. Disable to revert to
+            reactive formula-only mode.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <ul className="space-y-2 text-sm text-muted-foreground">
-            {section.details.map((detail, i) => (
-              <li key={i} className="flex gap-2">
-                <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary/60" />
-                <span>{detail}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">AI Advisor</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {aiEnabled
+                  ? 'LLM is making decisions. Formula is the fallback if LLM is unavailable.'
+                  : 'Running in reactive mode. Only formula-based offset compensation is applied.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={aiEnabled}
+              disabled={toggleAdvisor.isPending}
+              onClick={() => toggleAdvisor.mutate(!aiEnabled)}
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 ${
+                aiEnabled ? 'bg-primary' : 'bg-input'
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                  aiEnabled ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
         </CardContent>
       </Card>
-    ))}
-  </div>
-)
+
+      {/* Logic Reference header */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <BookOpen className="h-5 w-5" />
+            Logic Reference
+          </CardTitle>
+          <CardDescription>
+            How ClimateIQ works — the logic and reasoning behind each feature. This same information is available to the AI chat assistant.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+      {sections.map((section) => (
+        <Card key={section.id}>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">{section.title}</CardTitle>
+            <CardDescription>{section.description}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul className="space-y-2 text-sm text-muted-foreground">
+              {section.details.map((detail, i) => (
+                <li key={i} className="flex gap-2">
+                  <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary/60" />
+                  <span>{detail}</span>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  )
+}
 
 // ============================================================================
 // About Tab

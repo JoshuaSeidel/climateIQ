@@ -561,7 +561,7 @@ async def execute_schedules() -> None:
 
                             precond_temp_c = schedule.target_temp_c
                             try:
-                                precond_temp_c, _pre_offset, _pre_zone = await apply_offset_compensation(
+                                precond_temp_c, _pre_offset, _pre_zone, *_ = await apply_offset_compensation(
                                     db, ha_client, climate_entity,
                                     schedule.target_temp_c,
                                     zone_ids=schedule.zone_ids or None,
@@ -601,7 +601,7 @@ async def execute_schedules() -> None:
                 offset_c = 0.0
                 priority_zone_name = None
                 try:
-                    adjusted_temp_c, offset_c, priority_zone_name = await apply_offset_compensation(
+                    adjusted_temp_c, offset_c, priority_zone_name, *_ = await apply_offset_compensation(
                         db, ha_client, climate_entity,
                         schedule.target_temp_c,
                         zone_ids=schedule.zone_ids or None,
@@ -900,13 +900,18 @@ async def maintain_climate_offset() -> None:
                 zone_ids,
             )
 
-            # ── Apply offset compensation ───────────────────────────────
-            from backend.core.temp_compensation import apply_offset_compensation
+            # ── Apply offset compensation (dead-band + formula) ─────────
+            from backend.core.temp_compensation import (
+                apply_offset_compensation,
+                get_thermostat_reading_c,
+            )
 
-            adjusted_temp_c, offset_c, priority_zone_name = await apply_offset_compensation(
-                db, ha_client, climate_entity,
-                desired_temp_c,
-                zone_ids=zone_ids,
+            adjusted_temp_c, offset_c, priority_zone_name, avg_zone_c, hvac_mode = (
+                await apply_offset_compensation(
+                    db, ha_client, climate_entity,
+                    desired_temp_c,
+                    zone_ids=zone_ids,
+                )
             )
 
             logger.info(
@@ -919,31 +924,110 @@ async def maintain_climate_offset() -> None:
                 priority_zone_name,
             )
 
-            # ── Only update if the adjusted temp has drifted meaningfully
+            # ── LLM advisor: let the AI make or refine the timing decision ──
+            from backend.core.climate_advisor import ClimateAdvisor, SafetyProtocol
+            from backend.core.temp_compensation import get_max_offset_setting
+
             sched_key = str(active_schedule.id)
+
+            # Dead-band / no offset → skip advisor, use formula result as-is
+            if abs(offset_c) < 0.01 and abs(adjusted_temp_c - desired_temp_c) < 0.01:
+                final_adjusted_c = desired_temp_c
+                advisor_label = "dead-band"
+            else:
+                # Fetch supporting data for the advisor
+                from sqlalchemy.orm import selectinload as _selectinload
+                from backend.models.database import Zone as _Zone
+
+                zone_sensor_ids: list[Any] = []
+                zone_id_list: list[Any] = []
+                thermal_profile: dict[str, Any] = {}
+                if zone_ids:
+                    try:
+                        _zone_uuids = [uuid.UUID(str(zid)) for zid in zone_ids]
+                        _zr = await db.execute(
+                            sa_select(_Zone)
+                            .options(_selectinload(_Zone.sensors))
+                            .where(_Zone.id.in_(_zone_uuids), _Zone.is_active.is_(True))
+                        )
+                        _zones = list(_zr.scalars().unique().all())
+                        for _z in _zones:
+                            zone_id_list.append(_z.id)
+                            for _s in _z.sensors:
+                                zone_sensor_ids.append(_s.id)
+                        if _zones:
+                            thermal_profile = _zones[0].thermal_profile or {}
+                    except Exception as _ze:
+                        logger.debug("Could not fetch zone sensors for advisor: %s", _ze)
+
+                # Current thermostat reading (cheap — HA WS state is cached)
+                thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity)
+
+                decision = await ClimateAdvisor().advise(
+                    db=db,
+                    settings=settings_instance,
+                    schedule_id=sched_key,
+                    zone_sensor_ids=zone_sensor_ids,
+                    zone_ids=zone_id_list,
+                    current_avg_c=avg_zone_c if avg_zone_c is not None else desired_temp_c,
+                    desired_temp_c=desired_temp_c,
+                    formula_adjusted_c=adjusted_temp_c,
+                    hvac_mode=hvac_mode,
+                    thermostat_c=thermostat_c,
+                    current_setpoint_c=_last_offset_temp.get(sched_key) or desired_temp_c,
+                    zone_names=priority_zone_name,
+                    thermal_profile=thermal_profile,
+                )
+
+                # Safety vet (unconditional — catches physically impossible LLM outputs)
+                max_offset_f = await get_max_offset_setting(db)
+                vetted = SafetyProtocol.vet(decision, desired_temp_c, max_offset_f, hvac_mode)
+
+                # Respect wait decisions
+                if vetted.action == "wait":
+                    logger.info(
+                        "Climate maintenance: advisor says wait until %s — %s",
+                        vetted.wait_until,
+                        vetted.reasoning,
+                    )
+                    return
+
+                final_adjusted_c = vetted.setpoint_c
+                advisor_label = "LLM" if vetted.from_llm else "formula"
+                logger.info(
+                    "Climate maintenance: advisor [%s] action=%s → %.1f°C (%.0f°F) | %s",
+                    advisor_label,
+                    vetted.action,
+                    final_adjusted_c,
+                    final_adjusted_c * 9 / 5 + 32,
+                    vetted.reasoning,
+                )
+
+            # ── Only update if the adjusted temp has drifted meaningfully ──
             prev_temp = _last_offset_temp.get(sched_key)
-            if prev_temp is not None and abs(adjusted_temp_c - prev_temp) <= 0.5:
+            if prev_temp is not None and abs(final_adjusted_c - prev_temp) <= 0.5:
                 logger.info(
                     "Climate maintenance: no update needed "
                     "(adjusted=%.1f C, prev=%.1f C, delta=%.2f C)",
-                    adjusted_temp_c, prev_temp, abs(adjusted_temp_c - prev_temp),
+                    final_adjusted_c, prev_temp, abs(final_adjusted_c - prev_temp),
                 )
                 return
 
             # ── Convert and send ────────────────────────────────────────
-            target_for_ha = adjusted_temp_c
+            target_for_ha = final_adjusted_c
             if temp_unit == "F":
-                target_for_ha = round(adjusted_temp_c * 9 / 5 + 32, 1)
+                target_for_ha = round(final_adjusted_c * 9 / 5 + 32, 1)
 
             try:
                 await ha_client.set_temperature_with_hold(climate_entity, target_for_ha)
             except Exception:
                 await ha_client.set_temperature(climate_entity, target_for_ha)
 
-            _last_offset_temp[sched_key] = adjusted_temp_c
+            _last_offset_temp[sched_key] = final_adjusted_c
+            final_offset_c = final_adjusted_c - desired_temp_c
 
-            if abs(offset_c) > 0.1:
-                offset_f = round(offset_c * 9 / 5, 1)
+            if abs(final_offset_c) > 0.1:
+                offset_f = round(final_offset_c * 9 / 5, 1)
                 logger.info(
                     "Climate maintenance: %s -> %.1f°%s "
                     "(offset %+.1f°F targeting '%s', desired %.1f°%s)",
@@ -2439,6 +2523,11 @@ async def _handle_climate_state_change(change: object) -> None:
     # unconditionally re-send the correct value on the next maintenance tick.
     _last_offset_temp.clear()
 
+    # Also clear the LLM advisor cache so drift triggers a fresh analysis
+    # rather than returning a stale "wait" or "hold" decision.
+    from backend.core.climate_advisor import clear_advisor_cache
+    clear_advisor_cache()
+
     # Debounce: cancel any pending correction before scheduling a new one
     if _climate_correction_task and not _climate_correction_task.done():
         _climate_correction_task.cancel()
@@ -2619,6 +2708,24 @@ def init_scheduler() -> AsyncIOScheduler:
         IntervalTrigger(minutes=30, start_date=_stagger(35)),
         id="execute_pattern_learning",
         name="Occupancy & Thermal Pattern Learning",
+        replace_existing=True,
+    )
+
+    # Zone thermal profile + occupancy analytics - every 4 hours
+    async def _run_zone_analytics() -> None:
+        from backend.core.zone_analytics import run_zone_analytics
+        import backend.api.dependencies as _deps_za
+
+        _ha = _deps_za._ha_client
+        _sm = get_session_maker()
+        async with _sm() as _db:
+            await run_zone_analytics(_db, _ha)
+
+    scheduler.add_job(
+        _run_zone_analytics,
+        IntervalTrigger(hours=4, start_date=_stagger(90)),
+        id="run_zone_analytics",
+        name="Zone Thermal & Occupancy Analytics",
         replace_existing=True,
     )
 

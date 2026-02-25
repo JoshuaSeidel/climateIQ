@@ -429,13 +429,22 @@ async def get_max_offset_setting(db: Any) -> float:
     return 8.0
 
 
+async def _get_hvac_mode(ha_client: Any, climate_entity: str) -> str:
+    """Read the current HVAC mode from the climate entity ('heat', 'cool', 'off', etc.)."""
+    try:
+        state = await ha_client.get_state(climate_entity)
+        return (state.state or "").lower() if state else ""
+    except Exception:
+        return ""
+
+
 async def apply_offset_compensation(
     db: Any,
     ha_client: Any,
     climate_entity: str,
     desired_temp_c: float,
     zone_ids: list[str] | None = None,
-) -> tuple[float, float, str | None]:
+) -> tuple[float, float, str | None, float | None, str]:
     """High-level function: compute and return the adjusted setpoint.
 
     This is the main entry point for offset compensation. Call this
@@ -450,68 +459,60 @@ async def apply_offset_compensation(
                   None = all active zones (for Follow-Me / Active mode).
 
     Returns:
-        (adjusted_temp_c, offset_c, zone_names)
+        (adjusted_temp_c, offset_c, zone_names, avg_temp_c, hvac_mode)
         If compensation cannot be computed (missing data), returns
-        (desired_temp_c, 0.0, None) -- i.e. no adjustment.
+        (desired_temp_c, 0.0, None, None, "") -- i.e. no adjustment.
     """
+    import asyncio
+
     # Guard: if desired_temp_c is None (e.g. schedule has no target set), skip compensation.
     if desired_temp_c is None:
         logger.debug("desired_temp_c is None, skipping offset compensation")
-        return desired_temp_c, 0.0, None
+        return desired_temp_c, 0.0, None, None, ""
 
-    # 1. Get the average temperature across ALL schedule zones (live from HA)
-    avg_temp_c, zone_names = await get_avg_zone_temp_c(db, zone_ids, ha_client=ha_client)
+    # 1. Fetch HVAC mode and zone avg in parallel — both needed for the dead-band check.
+    hvac_mode, (avg_temp_c, zone_names) = await asyncio.gather(
+        _get_hvac_mode(ha_client, climate_entity),
+        get_avg_zone_temp_c(db, zone_ids, ha_client=ha_client),
+    )
+
     if avg_temp_c is None:
         logger.debug("No zone temperature available, skipping offset compensation")
-        return desired_temp_c, 0.0, None
+        return desired_temp_c, 0.0, None, None, hvac_mode
 
-    # 2. Get the thermostat's current reading
-    thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity)
+    # 2. Dead-band: if zones are within 1°F of the target in the self-correcting
+    #    direction, the deviation is sub-thermostat-resolution and will even out
+    #    naturally.  Skip the offset entirely so we don't chase noise.
+    #
+    #    Heat mode: rooms 0–1°F above target → environment will cool naturally.
+    #    Cool mode: rooms 0–1°F below target → environment will warm naturally.
+    zone_error_f = (desired_temp_c - avg_temp_c) * 9.0 / 5.0
+    in_dead_band = (
+        ("heat" in hvac_mode and -1.0 < zone_error_f < 0.0)
+        or (hvac_mode == "cool" and 0.0 < zone_error_f < 1.0)
+    )
+    if in_dead_band:
+        logger.debug(
+            "Dead-band: zone %.1f°F within 1°F of target %.1f°F (%s mode) — no offset",
+            avg_temp_c * 9 / 5 + 32,
+            desired_temp_c * 9 / 5 + 32,
+            hvac_mode or "unknown",
+        )
+        return desired_temp_c, 0.0, zone_names, avg_temp_c, hvac_mode
+
+    # 3. Fetch thermostat reading and max-offset setting in parallel.
+    thermostat_c, max_offset_f = await asyncio.gather(
+        get_thermostat_reading_c(ha_client, climate_entity),
+        get_max_offset_setting(db),
+    )
+
     if thermostat_c is None:
         logger.debug("No thermostat reading available, skipping offset compensation")
-        return desired_temp_c, 0.0, zone_names
+        return desired_temp_c, 0.0, zone_names, avg_temp_c, hvac_mode
 
-    # 3. Get the max offset setting
-    max_offset_f = await get_max_offset_setting(db)
-
-    # 4. Compute the adjusted setpoint using the zone average
+    # 4. Compute the adjusted setpoint using the zone average (pure formula, no clamp).
     adjusted_c, offset_c = await compute_adjusted_setpoint(
         desired_temp_c, thermostat_c, avg_temp_c, max_offset_f
     )
 
-    # 5. Safety clamp: the thermostat setpoint must never cross the schedule
-    #    target in the wrong direction.
-    #
-    #    Heat mode  → floor at desired_temp_c.
-    #      If the zone is already above target (zone_error < 0) the formula
-    #      produces adjusted < desired, which would push the thermostat BELOW
-    #      the schedule target.  In heat mode that means the HVAC won't restart
-    #      until the thermostat location drops below that lower setpoint — far
-    #      too late.  Instead, just hold at the target; the thermostat won't
-    #      fire because the room temp already exceeds its setpoint.
-    #
-    #    Cool mode  → ceiling at desired_temp_c (symmetric rule).
-    hvac_mode = ""
-    try:
-        _state = await ha_client.get_state(climate_entity)
-        if _state:
-            hvac_mode = (_state.state or "").lower()
-    except Exception:
-        pass
-
-    if "heat" in hvac_mode and adjusted_c < desired_temp_c:
-        logger.info(
-            "Offset clamp (heat): adjusted %.1f C below desired %.1f C — holding at desired",
-            adjusted_c, desired_temp_c,
-        )
-        adjusted_c = desired_temp_c
-        offset_c = 0.0
-    elif hvac_mode == "cool" and adjusted_c > desired_temp_c:
-        logger.info(
-            "Offset clamp (cool): adjusted %.1f C above desired %.1f C — holding at desired",
-            adjusted_c, desired_temp_c,
-        )
-        adjusted_c = desired_temp_c
-        offset_c = 0.0
-
-    return adjusted_c, offset_c, zone_names
+    return adjusted_c, offset_c, zone_names, avg_temp_c, hvac_mode
