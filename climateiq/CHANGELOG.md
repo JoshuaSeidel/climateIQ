@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.8] - 2026-02-25
+
+### Fixed
+- **DB crash on startup**: `column user_directives.embedding does not exist` — `init_db()` now applies the embedding column migration inline (same pattern as other column migrations). The `embedding vector(1536)` column and its ivfflat index are added via `ALTER TABLE … ADD COLUMN IF NOT EXISTS` on startup, so the column exists before SQLAlchemy's ORM emits any SELECT against `user_directives`.
+
 ## [1.0.7] - 2026-02-25
 
 ### Added

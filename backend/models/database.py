@@ -717,6 +717,24 @@ async def init_db() -> None:
         except Exception:
             _db_logger.warning("Could not add zone priority column")
 
+        # --- Migration: add embedding column to user_directives if missing ---
+        try:
+            await conn.execute(text(
+                "ALTER TABLE user_directives "
+                "ADD COLUMN IF NOT EXISTS embedding vector(1536)"
+            ))
+        except Exception:
+            _db_logger.warning("Could not add embedding column to user_directives")
+
+        try:
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_user_directives_embedding "
+                "ON user_directives USING ivfflat (embedding vector_cosine_ops) "
+                "WITH (lists = 100)"
+            ))
+        except Exception:
+            _db_logger.warning("Could not create ivfflat index on user_directives.embedding")
+
         # --- TimescaleDB hypertables (runs inside the transaction) -----------
         await _ensure_hypertables(conn)
 
