@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.1] - 2026-02-25
+
+### Fixed
+- **Thermostat overshooting target stops heat prematurely**: When the thermostat location was warmer than the schedule target (e.g. hallway thermostat at 71°F with a 69°F target), `compute_adjusted_setpoint` anchored the setpoint to `desired_temp_c` (69°F) + zone error (1°F) = 70°F — below the thermostat's own reading of 71°F. The thermostat considered itself satisfied and stopped heating, leaving zones stuck at 67.8°F. The formula now detects this case: when the thermostat has already passed the schedule target in the active HVAC direction (heat: thermostat > desired; cool: thermostat < desired), it uses the thermostat's current reading as the anchor so the adjusted setpoint stays ahead of where the thermostat currently is and keeps the HVAC running. In the example above: base = 71°F + zone error 1°F = 72°F → heat continues until zones reach 69°F. Total offset from the schedule target is still capped at `max_temp_offset_f` (default 8°F).
+
 ## [1.0.0] - 2026-02-25
 
 ### Added

@@ -310,6 +310,7 @@ async def compute_adjusted_setpoint(
     thermostat_reading_c: float,
     priority_zone_temp_c: float,
     max_offset_f: float = 8.0,
+    hvac_mode: str = "",
 ) -> tuple[float, float]:
     """Compute the adjusted setpoint to compensate for sensor location.
 
@@ -322,30 +323,39 @@ async def compute_adjusted_setpoint(
     When the zones are already at or above the target the offset is zero
     (or negative for cooling) so the system does not overshoot.
 
+    Anchor selection:
+        The thermostat compares its setpoint against its *own* sensor, not
+        the zone sensors.  If the thermostat location is already warmer than
+        the schedule target (common — hallway thermostats heat up faster than
+        bedrooms), anchoring the setpoint to desired_temp_c produces a value
+        the thermostat has already satisfied → HVAC stops, zones never reach
+        target.  When the thermostat has overshot the schedule target in the
+        active HVAC direction, we use the thermostat's current reading as the
+        anchor so the adjusted setpoint stays ahead of where the thermostat
+        currently is.
+
     Formula:
         zone_error  = desired - zone_avg          # > 0 when zones are cold
         offset      = clamp(zone_error, ±max)
-        adjusted    = desired + offset
+        base        = max(desired, thermostat)    # heat — ensures setpoint > thermostat
+                    = min(desired, thermostat)    # cool — ensures setpoint < thermostat
+        adjusted    = base + offset
 
     Ecobee (and most thermostats) move in 1°F increments and round at 0.5,
     so a sub-degree offset has no effect.  The offset is therefore rounded
     to the nearest whole °F *before* converting back to °C so every
     adjustment is guaranteed to cross the thermostat's rounding boundary.
 
-    The thermostat_reading is retained as a parameter for logging / future
-    use (e.g. safety checks) but is no longer the primary driver of the
-    offset so the system doesn't oscillate when the thermostat location
-    is warmer than the target zones.
-
     Args:
         desired_temp_c: The temperature we want in the priority zone (Celsius).
         thermostat_reading_c: What the thermostat currently reads (Celsius).
         priority_zone_temp_c: What the priority zone's sensor reads (Celsius).
-        max_offset_f: Maximum allowed offset in Fahrenheit.
+        max_offset_f: Maximum allowed total offset from desired (Fahrenheit).
+        hvac_mode: Current HVAC mode string ('heat', 'cool', 'heat_cool', …).
 
     Returns:
         (adjusted_temp_c, offset_c) -- the adjusted setpoint and the
-        offset that was applied (both in Celsius).
+        total offset from desired_temp_c (both in Celsius).
     """
     # How far are the zones from the target?
     # Positive = zones are below target (need more heating)
@@ -359,21 +369,43 @@ async def compute_adjusted_setpoint(
     clamped_offset_f = max(min(rounded_offset_f, max_offset_f), -max_offset_f)
     clamped_offset_c = clamped_offset_f * 5.0 / 9.0
 
-    adjusted_temp_c = desired_temp_c + clamped_offset_c
+    # Anchor: when the thermostat location has already passed the schedule
+    # target in the active HVAC direction, use its reading as the base so
+    # the adjusted setpoint is guaranteed to be on the "needs more" side of
+    # the thermostat's own sensor and keeps the HVAC running.
+    if "heat" in hvac_mode and thermostat_reading_c > desired_temp_c:
+        base_c = thermostat_reading_c
+    elif "cool" in hvac_mode and thermostat_reading_c < desired_temp_c:
+        base_c = thermostat_reading_c
+    else:
+        base_c = desired_temp_c
 
-    if abs(clamped_offset_f) >= 1:
+    adjusted_temp_c = base_c + clamped_offset_c
+    offset_c = adjusted_temp_c - desired_temp_c
+
+    # Cap total offset from desired at max_offset_f regardless of base.
+    max_offset_c = max_offset_f * 5.0 / 9.0
+    if offset_c > max_offset_c:
+        adjusted_temp_c = desired_temp_c + max_offset_c
+        offset_c = max_offset_c
+    elif offset_c < -max_offset_c:
+        adjusted_temp_c = desired_temp_c - max_offset_c
+        offset_c = -max_offset_c
+
+    thermostat_anchored = base_c != desired_temp_c
+    if abs(zone_error_f) >= 1 or thermostat_anchored:
         logger.info(
-            "Offset compensation: desired=%.1f C, thermostat=%.1f C, "
-            "zone=%.1f C, zone_error=%.1f F, rounded_offset=%+d F, adjusted=%.1f C",
-            desired_temp_c,
-            thermostat_reading_c,
-            priority_zone_temp_c,
+            "Offset compensation: desired=%.1f°F, thermostat=%.1f°F, "
+            "zone=%.1f°F, zone_error=%+.1f°F, base=%s, adjusted=%.1f°F",
+            desired_temp_c * 9 / 5 + 32,
+            thermostat_reading_c * 9 / 5 + 32,
+            priority_zone_temp_c * 9 / 5 + 32,
             zone_error_f,
-            int(clamped_offset_f),
-            adjusted_temp_c,
+            f"thermostat ({thermostat_reading_c * 9 / 5 + 32:.0f}°F)" if thermostat_anchored else "desired",
+            adjusted_temp_c * 9 / 5 + 32,
         )
 
-    return adjusted_temp_c, clamped_offset_c
+    return adjusted_temp_c, offset_c
 
 
 async def get_thermostat_reading_c(ha_client: Any, climate_entity: str) -> float | None:
@@ -512,7 +544,7 @@ async def apply_offset_compensation(
 
     # 4. Compute the adjusted setpoint using the zone average (pure formula, no clamp).
     adjusted_c, offset_c = await compute_adjusted_setpoint(
-        desired_temp_c, thermostat_c, avg_temp_c, max_offset_f
+        desired_temp_c, thermostat_c, avg_temp_c, max_offset_f, hvac_mode
     )
 
     return adjusted_c, offset_c, zone_names, avg_temp_c, hvac_mode
