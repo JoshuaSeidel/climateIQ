@@ -2433,6 +2433,12 @@ async def _handle_climate_state_change(change: object) -> None:
         drift_f,
     )
 
+    # Clear the cached setpoint so the maintenance loop's skip-guard ("no
+    # update needed") cannot fire when it is immediately called below.
+    # The thermostat drifted away from what ClimateIQ last set, so we must
+    # unconditionally re-send the correct value on the next maintenance tick.
+    _last_offset_temp.clear()
+
     # Debounce: cancel any pending correction before scheduling a new one
     if _climate_correction_task and not _climate_correction_task.done():
         _climate_correction_task.cancel()

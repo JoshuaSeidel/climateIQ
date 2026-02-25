@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.9.3] - 2026-02-25
+
+### Fixed
+- **Drift correction blocked by maintenance loop skip guard**: When the Ecobee's own schedule (e.g. away mode) changed the thermostat setpoint away from what ClimateIQ last set, the drift detector correctly triggered `maintain_climate_offset()` — but the maintenance loop's "no update needed" check compared the new adjusted setpoint against its own cached last-sent value (which was already correct). Since `adjusted == prev`, it skipped sending the correction and the thermostat stayed at the drifted value. `_handle_climate_state_change` now clears `_last_offset_temp` before triggering the correction, ensuring the maintenance loop always re-sends when drift is detected.
+
 ## [0.9.2] - 2026-02-24
 
 ### Fixed
