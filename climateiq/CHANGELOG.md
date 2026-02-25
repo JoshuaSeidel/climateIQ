@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.13] - 2026-02-25
+
+### Fixed
+- **LLM calling `save_memory` when asked to list memories**: When a user asked "what's in memory?", the LLM was calling `save_memory` 4 times (re-saving already-saved directives) instead of reading and listing from the `<user_directives>` block already in its context. The MEMORY SYSTEM prompt now explicitly separates READ (summarise from `<user_directives>`) from WRITE (`save_memory` tool, for NEW information only). The LLM is now instructed never to call `save_memory` to confirm, re-save, or list existing memories.
+- **No text response when all save attempts are duplicates**: The backend fallback message synthesis only fired when at least one memory was newly saved. When every attempt was a duplicate (`saved=False`), the fallback was skipped and the user saw no text response at all — only silent action chips. Added an `elif skipped` branch that generates "These memories are already saved — nothing new to add."
+
 ## [1.0.12] - 2026-02-25
 
 ### Fixed
