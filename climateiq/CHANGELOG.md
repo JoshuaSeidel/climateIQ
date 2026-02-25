@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.9.4] - 2026-02-25
+
+### Fixed
+- **Impossible temperature warning for Ecobee climate entities**: The WebSocket state parser was comparing `unit == "°F"` (exact match) when deciding whether to convert temperature attribute values from Fahrenheit to Celsius. Ecobee climate entities report `temperature_unit` as `"F"` (no degree symbol), so the exact match failed, and the raw Fahrenheit value (e.g. 69°F) was stored as 69°C — triggering a `WARNING - Dropping impossible temperature` log on every thermostat state change. Changed the check to `"F" in unit.upper()` (matching the pattern used in `_parse_temp_from_state`) so both `"°F"` and `"F"` are handled correctly.
+
 ## [0.9.3] - 2026-02-25
 
 ### Fixed

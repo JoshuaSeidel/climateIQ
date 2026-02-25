@@ -410,8 +410,9 @@ class HAWebSocketClient:
                 if domain == "sensor" and field_name in entity_id.lower():
                     with suppress(ValueError, TypeError):
                         val_f = float(state_val)
-                        # Convert F→C for temperature when unit indicates Fahrenheit
-                        if field_name == "temperature" and unit == "°F":
+                        # Convert F→C for temperature when unit indicates Fahrenheit.
+                        # Use "F" in upper() to accept both "°F" and bare "F".
+                        if field_name == "temperature" and "F" in unit.upper():
                             val_f = (val_f - 32) * 5 / 9
                         setattr(change, field_name, val_f)
                         continue
@@ -422,8 +423,10 @@ class HAWebSocketClient:
                     if val is not None:
                         with suppress(ValueError, TypeError):
                             val_f = float(val)
-                            # Convert F→C for temperature from attributes
-                            if field_name == "temperature" and unit == "°F":
+                            # Convert F→C for temperature from attributes.
+                            # Use "F" in upper() to accept both "°F" and bare "F"
+                            # (Ecobee climate entities report temperature_unit="F").
+                            if field_name == "temperature" and "F" in unit.upper():
                                 val_f = (val_f - 32) * 5 / 9
                             setattr(change, field_name, val_f)
                             break
