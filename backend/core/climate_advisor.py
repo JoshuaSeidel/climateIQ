@@ -140,10 +140,15 @@ async def _build_llm_provider(db: Any, settings: Any) -> Any:
         api_key=_api_key(primary_provider),
         default_model=primary_model,
     )
-    secondary = ProviderSettings(
-        provider=secondary_provider,
-        api_key=_api_key(secondary_provider),
-        default_model=secondary_model,
+    secondary_key = _api_key(secondary_provider)
+    secondary = (
+        ProviderSettings(
+            provider=secondary_provider,
+            api_key=secondary_key,
+            default_model=secondary_model,
+        )
+        if secondary_key
+        else None
     )
     return ClimateIQLLMProvider(primary=primary, secondary=secondary)
 

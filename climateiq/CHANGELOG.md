@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.6] - 2026-02-25
+
+### Fixed
+- **Skip secondary LLM provider when no API key configured**: All three `ClimateIQLLMProvider` builders (`decision_engine._build_llm_provider`, `decision_engine._get_configured_llm_provider`, `climate_advisor._build_llm_provider`) were unconditionally constructing a secondary OpenAI `ProviderSettings` even when no OpenAI key was set. This caused a wasted API attempt with an auth failure on every Anthropic overload event, plus a spurious WARNING log. Secondary is now only added when its key is actually present.
+
 ## [1.0.5] - 2026-02-25
 
 ### Fixed

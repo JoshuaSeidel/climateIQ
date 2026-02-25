@@ -73,10 +73,15 @@ class DecisionEngine:
             api_key=self._provider_api_key(primary_provider),
             default_model=primary_model,
         )
-        secondary = ProviderSettings(
-            provider=secondary_provider,
-            api_key=self._provider_api_key(secondary_provider),
-            default_model=secondary_model,
+        secondary_key = self._provider_api_key(secondary_provider)
+        secondary = (
+            ProviderSettings(
+                provider=secondary_provider,
+                api_key=secondary_key,
+                default_model=secondary_model,
+            )
+            if secondary_key
+            else None
         )
         return ClimateIQLLMProvider(primary=primary, secondary=secondary)
 
@@ -269,10 +274,15 @@ class DecisionEngine:
             api_key=self._provider_api_key(primary_provider),
             default_model=primary_model,
         )
-        secondary = ProviderSettings(
-            provider="openai",
-            api_key=self._provider_api_key("openai"),
-            default_model="gpt-4o-mini",
+        openai_key = self._provider_api_key("openai")
+        secondary = (
+            ProviderSettings(
+                provider="openai",
+                api_key=openai_key,
+                default_model="gpt-4o-mini",
+            )
+            if openai_key
+            else None
         )
         return ClimateIQLLMProvider(primary=primary, secondary=secondary)
 
