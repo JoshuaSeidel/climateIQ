@@ -1557,17 +1557,19 @@ async def send_chat_message(
         assistant_message = "I'm having trouble connecting right now. Please try again shortly."
         actions_taken = []
 
-    # Save conversation
-    conversation = Conversation(
-        session_id=session_id,
-        user_message=payload.message,
-        assistant_response=assistant_message,
-        metadata_={
-            "actions": actions_taken,
-            "context": payload.context,
-        },
-    )
-    db.add(conversation)
+    # Save conversation (skip dashboard utility calls — they pollute chat history)
+    is_dashboard_call = bool(payload.context and payload.context.get("source") == "dashboard")
+    if not is_dashboard_call:
+        conversation = Conversation(
+            session_id=session_id,
+            user_message=payload.message,
+            assistant_response=assistant_message,
+            metadata_={
+                "actions": actions_taken,
+                "context": payload.context,
+            },
+        )
+        db.add(conversation)
     await db.commit()
 
     # Extract directives from the conversation (fire-and-forget)

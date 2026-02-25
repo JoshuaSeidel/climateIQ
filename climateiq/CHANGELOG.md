@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.14] - 2026-02-25
+
+### Fixed
+- **Dashboard "What's Happening" calls polluting Chat history**: Every click of the refresh button on the dashboard summary card sent a POST to `/api/v1/chat`, which created a `Conversation` record that appeared as a session in the Chat sidebar. The dashboard now sends `context: { source: "dashboard" }` with its request, and the backend skips persisting any conversation where `context.source == "dashboard"`. The summary still works, but nothing is written to the `conversations` table.
+
 ## [1.0.13] - 2026-02-25
 
 ### Fixed

@@ -205,6 +205,7 @@ export const Dashboard = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: "Give me a brief summary of what's happening with the home climate right now. Be concise, 2-3 sentences max.",
+          context: { source: 'dashboard' },
         }),
       })
       if (!response.ok) throw new Error(`Failed to fetch LLM summary: ${response.status}`)
