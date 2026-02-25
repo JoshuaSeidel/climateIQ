@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.10] - 2026-02-25
+
+### Fixed
+- **Embedding provider falls back to Gemini when no OpenAI key**: All three embedding call sites (`_extract_directives`, `_get_relevant_directives`, `save_memory` tool handler) were gated on `openai_api_key`, so Anthropic-only users never got embeddings or semantic memory search. Extracted a `_get_embedding(text)` helper that tries OpenAI `text-embedding-3-small` (1536 dims) first, then Gemini `text-embedding-004` with `dimensions=1536` as fallback. Users with only Anthropic + Gemini now get full semantic memory search. Users with neither provider fall back to loading all memories (unchanged behaviour).
+
 ## [1.0.9] - 2026-02-25
 
 ### Added

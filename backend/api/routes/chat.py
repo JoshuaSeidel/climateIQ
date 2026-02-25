@@ -226,28 +226,57 @@ async def _extract_directives(
             await db.flush()  # get the id assigned
 
             # Generate and store embedding (best-effort; nullable column)
-            try:
-                import asyncio as _asyncio
-
-                import litellm as _litellm
-
-                from backend.config import SETTINGS as _SETTINGS
-                if _SETTINGS.openai_api_key:
-                    emb_resp = await _asyncio.to_thread(
-                        _litellm.embedding,
-                        model="text-embedding-3-small",
-                        input=directive_text,
-                        api_key=_SETTINGS.openai_api_key,
-                    )
-                    new_directive.embedding = emb_resp.data[0].embedding
-            except Exception:  # noqa: S110
-                pass
+            emb = await _get_embedding(directive_text)
+            if emb is not None:
+                new_directive.embedding = emb
 
         await db.commit()
         logger.info("Extracted %d directive(s) from conversation %s", len(directives), conversation_id)
 
     except Exception as e:
         logger.debug("Directive extraction failed (non-critical): %s", e)
+
+
+async def _get_embedding(text: str) -> list[float] | None:
+    """Return a 1536-dim embedding for text, trying OpenAI then Gemini.
+
+    Anthropic has no embedding API. We try providers in order:
+      1. OpenAI text-embedding-3-small  → native 1536 dims
+      2. Gemini text-embedding-004      → request 1536 via output_dimensionality
+    Returns None if no embedding provider is configured.
+    """
+    import asyncio as _asyncio
+
+    import litellm as _litellm
+
+    from backend.config import SETTINGS as _SETTINGS
+
+    if _SETTINGS.openai_api_key:
+        try:
+            resp = await _asyncio.to_thread(
+                _litellm.embedding,
+                model="text-embedding-3-small",
+                input=text,
+                api_key=_SETTINGS.openai_api_key,
+            )
+            return resp.data[0].embedding  # type: ignore[no-any-return]
+        except Exception:  # noqa: S110
+            pass
+
+    if _SETTINGS.gemini_api_key:
+        try:
+            resp = await _asyncio.to_thread(
+                _litellm.embedding,
+                model="gemini/text-embedding-004",
+                input=text,
+                api_key=_SETTINGS.gemini_api_key,
+                dimensions=1536,
+            )
+            return resp.data[0].embedding  # type: ignore[no-any-return]
+        except Exception:  # noqa: S110
+            pass
+
+    return None
 
 
 async def _get_active_directives(db: AsyncSession) -> str:
@@ -290,30 +319,19 @@ async def _get_relevant_directives(
 ) -> str:
     """Return the most semantically relevant active directives for a given context.
 
-    Uses pgvector cosine similarity when an OpenAI key is available and
+    Uses pgvector cosine similarity when an embedding key is available and
     embeddings have been generated. Falls back to loading all active
     directives (the behaviour of _get_active_directives) if similarity
     search is unavailable.
     """
-    import asyncio as _asyncio
     import html
 
     from sqlalchemy import text as _text
 
-    from backend.config import SETTINGS as _SETTINGS
 
     try:
-        if _SETTINGS.openai_api_key:
-            import litellm as _litellm
-
-            emb_resp = await _asyncio.to_thread(
-                _litellm.embedding,
-                model="text-embedding-3-small",
-                input=context_text,
-                api_key=_SETTINGS.openai_api_key,
-            )
-            vec = emb_resp.data[0].embedding
-
+        vec = await _get_embedding(context_text)
+        if vec is not None:
             rows = await db.execute(
                 _text("""
                     SELECT d.directive, d.category, z.name AS zone_name
@@ -1425,22 +1443,9 @@ async def _execute_tool_call(
         await db.flush()
 
         # Generate embedding (best-effort)
-        try:
-            import asyncio as _asyncio
-
-            import litellm as _litellm
-
-            from backend.config import SETTINGS as _SETTINGS
-            if _SETTINGS.openai_api_key:
-                emb_resp = await _asyncio.to_thread(
-                    _litellm.embedding,
-                    model="text-embedding-3-small",
-                    input=directive_text,
-                    api_key=_SETTINGS.openai_api_key,
-                )
-                new_directive.embedding = emb_resp.data[0].embedding
-        except Exception:  # noqa: S110
-            pass
+        emb = await _get_embedding(directive_text)
+        if emb is not None:
+            new_directive.embedding = emb
 
         await db.commit()
         return {"success": True, "saved": True, "directive": directive_text, "category": category}
