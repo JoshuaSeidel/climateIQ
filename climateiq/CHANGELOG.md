@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.3] - 2026-02-25
+
+### Added
+- **HVAC status indicator on Avg Temp card**: The card now shows whether the system is currently **▲ Heating** (orange), **▼ Cooling** (blue), or **— Idle** (muted) below the "Set:" temperature. The thermometer icon and its background glow also update to match — orange when heating, blue when cooling, neutral when idle. Status is derived from `hvac_mode`, `current_temp` (thermostat reading), and `target_temp` (active setpoint) already present in `overrideStatus`; no backend changes required.
+
 ## [1.0.2] - 2026-02-25
 
 ### Fixed

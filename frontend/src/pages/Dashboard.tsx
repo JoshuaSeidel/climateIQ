@@ -366,28 +366,57 @@ export const Dashboard = () => {
       {/* Stats Grid */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {/* Average Temperature + Set Temp */}
-        <Card>
-          <CardContent className="flex items-center justify-between p-4">
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Avg Temp</p>
-              <p className="text-3xl font-black text-foreground">
-                {/* Prefer schedule-zone avg when a schedule is active — avoids
-                    showing the all-rooms average when only one zone is targeted */}
-                {overrideStatus?.schedule_avg_temp != null
-                  ? `${overrideStatus.schedule_avg_temp}${tempUnitLabel(unitKey)}`
-                  : stats.avgTemp > 0 ? formatTemperature(stats.avgTemp, unitKey) : '--'}
-              </p>
-              {overrideStatus?.schedule_target_temp != null && (
-                <p className="text-xs text-muted-foreground">
-                  Set: {Math.round(overrideStatus.schedule_target_temp)}{tempUnitLabel(unitKey)}
-                </p>
-              )}
-            </div>
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-orange-500/10 dark:bg-orange-500/15 dark:shadow-[0_0_12px_rgba(249,115,22,0.15)]">
-              <Thermometer className="h-6 w-6 text-orange-500" />
-            </div>
-          </CardContent>
-        </Card>
+        {(() => {
+          // Derive current HVAC action from thermostat reading vs setpoint.
+          // current_temp = thermostat sensor; target_temp = active setpoint.
+          const mode = overrideStatus?.hvac_mode ?? ''
+          const cur = overrideStatus?.current_temp
+          const tgt = overrideStatus?.target_temp
+          const isHeating = mode.includes('heat') && cur != null && tgt != null && cur < tgt
+          const isCooling = (mode === 'cool' || mode === 'heat_cool') && cur != null && tgt != null && cur > tgt
+          const action = isHeating ? 'heating' : isCooling ? 'cooling' : 'idle'
+
+          const iconBg = isHeating
+            ? 'bg-orange-500/10 dark:bg-orange-500/15 dark:shadow-[0_0_12px_rgba(249,115,22,0.15)]'
+            : isCooling
+            ? 'bg-blue-500/10 dark:bg-blue-500/15 dark:shadow-[0_0_12px_rgba(59,130,246,0.15)]'
+            : 'bg-muted/40'
+          const iconColor = isHeating ? 'text-orange-500' : isCooling ? 'text-blue-500' : 'text-muted-foreground'
+          const badgeColor = isHeating
+            ? 'text-orange-500'
+            : isCooling
+            ? 'text-blue-500'
+            : 'text-muted-foreground'
+          const badgeLabel = isHeating ? '▲ Heating' : isCooling ? '▼ Cooling' : '— Idle'
+
+          return (
+            <Card>
+              <CardContent className="flex items-center justify-between p-4">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Avg Temp</p>
+                  <p className="text-3xl font-black text-foreground">
+                    {/* Prefer schedule-zone avg when a schedule is active — avoids
+                        showing the all-rooms average when only one zone is targeted */}
+                    {overrideStatus?.schedule_avg_temp != null
+                      ? `${overrideStatus.schedule_avg_temp}${tempUnitLabel(unitKey)}`
+                      : stats.avgTemp > 0 ? formatTemperature(stats.avgTemp, unitKey) : '--'}
+                  </p>
+                  {overrideStatus?.schedule_target_temp != null && (
+                    <p className="text-xs text-muted-foreground">
+                      Set: {Math.round(overrideStatus.schedule_target_temp)}{tempUnitLabel(unitKey)}
+                    </p>
+                  )}
+                  {mode && mode !== 'off' && (
+                    <p className={`text-xs font-medium mt-0.5 ${badgeColor}`}>{badgeLabel}</p>
+                  )}
+                </div>
+                <div className={`flex h-12 w-12 items-center justify-center rounded-full ${iconBg}`}>
+                  <Thermometer className={`h-6 w-6 ${iconColor}`} />
+                </div>
+              </CardContent>
+            </Card>
+          )
+        })()}
 
         {/* Average Humidity */}
         <Card>
