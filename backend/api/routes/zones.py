@@ -343,7 +343,7 @@ async def _enrich_zone_response(
             .limit(1)
         )
 
-        async def _fetch_col(col_attr: object) -> SensorReading | None:
+        async def _fetch_col(col_attr: Any) -> SensorReading | None:
             result = await db.execute(base.where(col_attr.isnot(None)))  # type: ignore[union-attr]
             return result.scalars().first()
 

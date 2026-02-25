@@ -97,20 +97,20 @@ async def _seed_initial_reading(db: AsyncSession, sensor: Sensor) -> None:
         # Also try attribute-based extraction as fallback
         if temperature_c is None:
             for key in ("temperature", "current_temperature"):
-                val = attrs.get(key)
-                if val is not None:
+                attr_val = attrs.get(key)
+                if attr_val is not None:
                     try:
-                        val_f = float(val)
+                        val_f = float(attr_val)
                         temperature_c = (val_f - 32) * 5 / 9 if unit == "°F" else val_f
                         break
                     except (ValueError, TypeError):
                         pass
         if humidity is None:
             for key in ("humidity", "current_humidity"):
-                val = attrs.get(key)
-                if val is not None:
+                attr_val = attrs.get(key)
+                if attr_val is not None:
                     try:
-                        humidity = float(val)
+                        humidity = float(attr_val)
                         break
                     except (ValueError, TypeError):
                         pass

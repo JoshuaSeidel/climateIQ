@@ -1292,8 +1292,8 @@ async def debug_offset_calculation(
     try:
         from backend.config import SETTINGS as _cfg
 
-        ha_url = _cfg.ha_url
-        ha_token = _cfg.ha_token
+        ha_url = str(_cfg.home_assistant_url)
+        ha_token = _cfg.home_assistant_token
         if ha_url and ha_token:
             ha_client = HAClient(ha_url, ha_token)
     except Exception as exc:
@@ -1334,8 +1334,8 @@ async def debug_offset_calculation(
     current_dow = now_local.weekday()
     cur_t = now_local.time()
 
-    result = await db.execute(select(Schedule).where(Schedule.is_enabled == True))  # noqa: E712
-    schedules = list(result.scalars().all())
+    sched_result = await db.execute(select(Schedule).where(Schedule.is_enabled == True))  # noqa: E712
+    schedules = list(sched_result.scalars().all())
 
     active_schedule: Schedule | None = None
     for schedule in schedules:

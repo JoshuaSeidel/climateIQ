@@ -1414,7 +1414,7 @@ async def _execute_tool_call(
             category = "preference"
 
         # Resolve optional zone name → zone_id
-        zone_id: uuid.UUID | None = None
+        mem_zone_id: uuid.UUID | None = None
         zone_name_arg = func_args.get("zone_name")
         if zone_name_arg:
             zone_result = await db.execute(
@@ -1422,7 +1422,7 @@ async def _execute_tool_call(
             )
             zone = zone_result.scalar_one_or_none()
             if zone:
-                zone_id = zone.id
+                mem_zone_id = zone.id
 
         # Deduplicate
         existing = await db.execute(
@@ -1436,7 +1436,7 @@ async def _execute_tool_call(
 
         new_directive = UserDirective(
             directive=directive_text,
-            zone_id=zone_id,
+            zone_id=mem_zone_id,
             category=category,
         )
         db.add(new_directive)

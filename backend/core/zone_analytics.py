@@ -339,7 +339,9 @@ class ZoneAnalytics:
         for h in range(24):
             scores: list[float] = []
             if hour_present[h]:
-                scores.append(_safe_mean(hour_present[h]) * _OCC_PRESENCE_WEIGHT)  # type: ignore[arg-type]
+                present_avg = _safe_mean(hour_present[h])
+                if present_avg is not None:
+                    scores.append(present_avg * _OCC_PRESENCE_WEIGHT)
             if hour_lux[h]:
                 lux_avg = _safe_mean(hour_lux[h])
                 if lux_avg is not None:

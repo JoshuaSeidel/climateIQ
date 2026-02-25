@@ -2209,7 +2209,7 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
     zone_uuid = uuid.UUID(str(zone_id)) if not isinstance(zone_id, uuid.UUID) else zone_id
 
     # Gather sensor IDs for this zone
-    sensor_result = await db.execute(  # type: ignore[union-attr]
+    sensor_result = await db.execute(  # type: ignore[union-attr, attr-defined]
         sa_select(_Sensor.id).where(_Sensor.zone_id == zone_uuid)
     )
     sensor_ids = [row[0] for row in sensor_result.all()]
@@ -2218,7 +2218,7 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
 
     reading_cutoff = datetime.now(UTC) - _td(minutes=15)
 
-    r_result = await db.execute(  # type: ignore[union-attr]
+    r_result = await db.execute(  # type: ignore[union-attr, attr-defined]
         sa_select(SensorReading)
         .where(
             SensorReading.sensor_id.in_(sensor_ids),
@@ -2271,7 +2271,7 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
         slot = now.hour * 12 + now.minute // 5
         key = f"{day_str}:{slot}"
 
-        pattern_result = await db.execute(  # type: ignore[union-attr]
+        pattern_result = await db.execute(  # type: ignore[union-attr, attr-defined]
             sa_select(OccupancyPattern)
             .where(
                 OccupancyPattern.zone_id == zone_uuid,

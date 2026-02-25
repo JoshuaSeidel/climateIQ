@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -236,8 +237,8 @@ class TestCheckScheduleOverlap:
 
 
 class TestScheduleCreateValidation:
-    def _make_payload(self, **overrides: object) -> dict[str, object]:
-        base: dict[str, object] = {
+    def _make_payload(self, **overrides: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
             "name": "Test Schedule",
             "start_time": "08:00",
             "target_temp_c": 22.0,
