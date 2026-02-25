@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.2] - 2026-02-25
+
+### Fixed
+- **LLM advisor blind to whether HVAC is actually running**: The LLM prompt showed thermostat reading and current setpoint as separate numbers but never stated their relationship — whether the HVAC was actively firing. In the observed case (thermostat 71°F, setpoint 70°F, heat mode) the LLM reasoned "the heating rate of +1.2°F/hour should close the gap" and returned `hold`, not realising that `thermostat > setpoint` means heat is OFF and the positive trend rate was historical, not current. Added an explicit `HVAC currently:` field to the prompt (e.g. `NO — thermostat (71°F) is at or above setpoint (70°F); heat will not run until setpoint > 71°F`) and a NOTE under the trend rate warning that the rate reflects recent history, not the current HVAC state. Added an IMPORTANT instruction in the decision section: if HVAC is currently idle, `hold`/`wait` means zones drift toward ambient — only use them when zones are already at or past target.
+
 ## [1.0.1] - 2026-02-25
 
 ### Fixed

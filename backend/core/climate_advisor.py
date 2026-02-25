@@ -368,18 +368,49 @@ def _build_prompt(
 
     zone_label = f"  Zones: {zone_names}" if zone_names else ""
 
+    # Compute whether the HVAC is actually running right now.
+    # The thermostat satisfies itself against its own sensor, not zone sensors.
+    # Heat runs only while thermostat reading < setpoint; cool runs only while
+    # thermostat reading > setpoint.  If the relationship is inverted the HVAC
+    # is idle — any trend rate in the data reflects recent history, not current.
+    if thermostat_c is not None:
+        t_f = float(thermostat_f)
+        if "heat" in hvac_mode:
+            if t_f < setpoint_f:
+                hvac_running = f"YES — thermostat ({thermostat_f}°F) is below setpoint ({setpoint_f}°F), heat is firing"
+            else:
+                hvac_running = (
+                    f"NO — thermostat ({thermostat_f}°F) is at or above setpoint ({setpoint_f}°F); "
+                    f"heat will not run until setpoint > {thermostat_f}°F"
+                )
+        elif "cool" in hvac_mode:
+            if t_f > setpoint_f:
+                hvac_running = f"YES — thermostat ({thermostat_f}°F) is above setpoint ({setpoint_f}°F), AC is firing"
+            else:
+                hvac_running = (
+                    f"NO — thermostat ({thermostat_f}°F) is at or below setpoint ({setpoint_f}°F); "
+                    f"AC will not run until setpoint < {thermostat_f}°F"
+                )
+        else:
+            hvac_running = "unknown (mode is off or heat_cool)"
+    else:
+        hvac_running = "unknown (thermostat reading unavailable)"
+
     return f"""─── CURRENT STATE ────────────────────────────────────────────────
 HVAC mode:          {hvac_mode or 'unknown'}
 Schedule target:    {target_f}°F ({desired_temp_c:.1f}°C)
 Zone average:       {avg_f}°F ({delta_sign}°F vs target){zone_label}
 Thermostat reads:   {thermostat_f}°F  (location offset from zones: {loc_delta}°F)
 Current setpoint:   {setpoint_f}°F  (last changed {last_setpoint_changed_minutes} min ago)
+HVAC currently:     {hvac_running}
 Formula says:       {formula_f}°F  ({formula_f - target_f:+.0f}°F vs target)
 Outdoor now:        {outdoor_str}
 
 ─── TEMPERATURE TREND (5-min, last 1h) ────────────────────────
 {trend_rows}Rate of change: {rate_fph:+.1f}°F/hour  ({direction})
 Estimated time to reach target: {eta_str}
+NOTE: rate of change reflects recent sensor history — if HVAC is currently
+idle (see above) the trend may not continue without a setpoint adjustment.
 
 {profile_header}
 {profile_lines}
@@ -390,6 +421,11 @@ Analyze the full picture. Consider whether to apply the formula's setpoint
 now, modify it based on thermal trends and occupancy, or wait for the
 environment to self-correct. The thermostat moves in 1°F steps — sub-degree
 adjustments have no effect.
+
+IMPORTANT: If HVAC is currently idle (see "HVAC currently" above), a "hold"
+or "wait" decision means zones will drift toward ambient — only use hold/wait
+when zones are already at or past target.  To resume heating/cooling, the
+setpoint must cross the thermostat's current reading.
 
 Return JSON only (no prose):
 {{
