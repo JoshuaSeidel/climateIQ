@@ -1454,6 +1454,7 @@ async def get_override_status(
             "current_temp": None,
             "target_temp": None,
             "hvac_mode": None,
+            "hvac_action": None,
             "preset_mode": None,
             "is_override_active": False,
         }
@@ -1477,6 +1478,7 @@ async def get_override_status(
             "current_temp": None,
             "target_temp": None,
             "hvac_mode": None,
+            "hvac_action": None,
             "preset_mode": None,
             "is_override_active": False,
         }
@@ -1489,6 +1491,7 @@ async def get_override_status(
         target_temp_raw = attrs.get("temperature")
         hvac_mode = state.state if hasattr(state, "state") else None
         preset_mode = attrs.get("preset_mode")
+        hvac_action = attrs.get("hvac_action")
 
         # Get the HA temperature unit
         ha_config = await _ha_client.get_config()
@@ -1670,6 +1673,7 @@ async def get_override_status(
             "current_temp": display_current_temp,
             "target_temp": display_target_temp,
             "hvac_mode": hvac_mode,
+            "hvac_action": hvac_action,
             "preset_mode": preset_mode,
             "is_override_active": is_override,
             "offset_info": offset_info,
@@ -1685,6 +1689,7 @@ async def get_override_status(
             "current_temp": None,
             "target_temp": None,
             "hvac_mode": None,
+            "hvac_action": None,
             "preset_mode": None,
             "is_override_active": False,
             "offset_info": {},

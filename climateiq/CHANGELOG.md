@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.4] - 2026-02-25
+
+### Fixed
+- **HVAC status uses actual `hvac_action` from Home Assistant**: The heating/cooling/idle indicator on the Avg Temp card was previously derived by comparing the thermostat reading against the setpoint — a thermostat in `heat` mode but already satisfied would incorrectly show "— Idle" or vice versa. HA climate entities expose a dedicated `hvac_action` attribute (`heating`, `cooling`, `idle`, `off`, `fan`) that reflects what the system is actually doing right now. The backend now reads `attrs.get("hvac_action")` from the thermostat state and includes it in the `OverrideStatus` response; the Dashboard consumes it directly.
+
 ## [1.0.3] - 2026-02-25
 
 ### Added

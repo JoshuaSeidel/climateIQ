@@ -367,14 +367,12 @@ export const Dashboard = () => {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {/* Average Temperature + Set Temp */}
         {(() => {
-          // Derive current HVAC action from thermostat reading vs setpoint.
-          // current_temp = thermostat sensor; target_temp = active setpoint.
+          // Use hvac_action from HA — the actual running state, not the mode.
+          // Values: "heating", "cooling", "idle", "off", "fan"
+          const action = overrideStatus?.hvac_action ?? null
           const mode = overrideStatus?.hvac_mode ?? ''
-          const cur = overrideStatus?.current_temp
-          const tgt = overrideStatus?.target_temp
-          const isHeating = mode.includes('heat') && cur != null && tgt != null && cur < tgt
-          const isCooling = (mode === 'cool' || mode === 'heat_cool') && cur != null && tgt != null && cur > tgt
-          const action = isHeating ? 'heating' : isCooling ? 'cooling' : 'idle'
+          const isHeating = action === 'heating'
+          const isCooling = action === 'cooling'
 
           const iconBg = isHeating
             ? 'bg-orange-500/10 dark:bg-orange-500/15 dark:shadow-[0_0_12px_rgba(249,115,22,0.15)]'
@@ -406,7 +404,7 @@ export const Dashboard = () => {
                       Set: {Math.round(overrideStatus.schedule_target_temp)}{tempUnitLabel(unitKey)}
                     </p>
                   )}
-                  {mode && mode !== 'off' && (
+                  {action && action !== 'off' && (
                     <p className={`text-xs font-medium mt-0.5 ${badgeColor}`}>{badgeLabel}</p>
                   )}
                 </div>

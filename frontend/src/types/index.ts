@@ -427,6 +427,7 @@ export type OverrideStatus = {
   current_temp: number | null
   target_temp: number | null
   hvac_mode: string | null
+  hvac_action: string | null
   preset_mode: string | null
   is_override_active: boolean
   offset_info?: OffsetInfo
