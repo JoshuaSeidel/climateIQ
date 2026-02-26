@@ -265,6 +265,168 @@ async def _get_trend_data(
 
 
 # ---------------------------------------------------------------------------
+# Extra context loader
+# ---------------------------------------------------------------------------
+
+
+async def _get_advisor_extra_context(
+    db: Any,
+    zone_ids: list[Any],
+    sensor_ids: list[Any],
+) -> dict[str, str]:
+    """Load live occupancy, user feedback, upcoming schedules, and sensor health."""
+    live_occ_lines: list[str] = []
+    feedback_lines: list[str] = []
+    schedule_lines: list[str] = []
+    sensor_lines: list[str] = []
+
+    # ── 1. Live occupancy (latest presence reading per zone, last 30 min) ────
+    try:
+        from sqlalchemy import select as _sel
+
+        from backend.models.database import Sensor, SensorReading, Zone
+
+        now_utc = datetime.now(UTC)
+        cutoff_occ = now_utc - timedelta(minutes=30)
+
+        if zone_ids:
+            z_result = await db.execute(_sel(Zone).where(Zone.id.in_(zone_ids)))
+            for zone in z_result.scalars().all():
+                s_result = await db.execute(_sel(Sensor).where(Sensor.zone_id == zone.id))
+                sids = [s.id for s in s_result.scalars().all()]
+                presence: bool | None = None
+                age_mins: int | None = None
+                if sids:
+                    pr_result = await db.execute(
+                        _sel(SensorReading)
+                        .where(
+                            SensorReading.sensor_id.in_(sids),
+                            SensorReading.recorded_at >= cutoff_occ,
+                            SensorReading.presence.isnot(None),
+                        )
+                        .order_by(SensorReading.recorded_at.desc())
+                        .limit(1)
+                    )
+                    pr = pr_result.scalar_one_or_none()
+                    if pr is not None:
+                        presence = pr.presence
+                        age_mins = int((now_utc - pr.recorded_at).total_seconds() / 60)
+                if presence is not None and age_mins is not None:
+                    status = "occupied" if presence else "unoccupied"
+                    live_occ_lines.append(f"  {zone.name}: {status} ({age_mins} min ago)")
+                else:
+                    live_occ_lines.append(f"  {zone.name}: no recent presence data")
+    except Exception as exc:
+        logger.debug("ClimateAdvisor: live occupancy query failed: %s", exc)
+
+    # ── 2. Recent comfort feedback (last 48h) ────────────────────────────────
+    try:
+        from collections import Counter as _Counter
+
+        from sqlalchemy import select as _sel
+
+        from backend.models.database import UserFeedback, Zone
+
+        if zone_ids:
+            fb_start = datetime.now(UTC) - timedelta(hours=48)
+            fb_result = await db.execute(
+                _sel(UserFeedback)
+                .where(
+                    UserFeedback.zone_id.in_(zone_ids),
+                    UserFeedback.created_at >= fb_start,
+                )
+                .order_by(UserFeedback.created_at.desc())
+                .limit(30)
+            )
+            feedbacks = fb_result.scalars().all()
+            if feedbacks:
+                zn_result = await db.execute(_sel(Zone).where(Zone.id.in_(zone_ids)))
+                zn_map = {z.id: z.name for z in zn_result.scalars().all()}
+                by_zone: dict[str, list[str]] = {}
+                for fb in feedbacks:
+                    zname = zn_map.get(fb.zone_id, str(fb.zone_id))
+                    by_zone.setdefault(zname, []).append(str(fb.feedback_type))
+                for zname, types in by_zone.items():
+                    counts = _Counter(types)
+                    summary = ", ".join(f"{v}x {k}" for k, v in counts.most_common())
+                    feedback_lines.append(f"  {zname}: {summary}")
+            else:
+                feedback_lines.append("  No comfort feedback in the last 48 hours.")
+    except Exception as exc:
+        logger.debug("ClimateAdvisor: feedback query failed: %s", exc)
+
+    # ── 3. Upcoming schedule changes (next 2 hours, current day) ────────────
+    try:
+        from sqlalchemy import select as _sel
+
+        from backend.models.database import Schedule
+
+        now_local = datetime.now()
+        current_dow = now_local.weekday()  # 0 = Mon
+        now_mins = now_local.hour * 60 + now_local.minute
+
+        sched_result = await db.execute(
+            _sel(Schedule).where(Schedule.is_enabled.is_(True))
+        )
+        upcoming: list[tuple[int, str]] = []
+        for sched in sched_result.scalars().all():
+            days = sched.days_of_week or []
+            if current_dow not in days or not sched.start_time:
+                continue
+            try:
+                h, m = int(sched.start_time[:2]), int(sched.start_time[3:5])
+                sched_mins = h * 60 + m
+                diff_mins = sched_mins - now_mins
+                if 0 < diff_mins <= 120:
+                    target_f = round(sched.target_temp_c * 9 / 5 + 32, 1)
+                    upcoming.append((
+                        diff_mins,
+                        f"  in {diff_mins} min ({sched.start_time}): "
+                        f"'{sched.name}' → {target_f}°F "
+                        f"({sched.hvac_mode}, priority {sched.priority})",
+                    ))
+            except (ValueError, IndexError):
+                pass
+        upcoming.sort()
+        schedule_lines = [line for _, line in upcoming]
+        if not schedule_lines:
+            schedule_lines.append("  No schedule changes in the next 2 hours.")
+    except Exception as exc:
+        logger.debug("ClimateAdvisor: upcoming schedule query failed: %s", exc)
+
+    # ── 4. Sensor health (stale = last_seen > 30 min ago) ────────────────────
+    try:
+        from sqlalchemy import select as _sel
+
+        from backend.models.database import Sensor
+
+        if sensor_ids:
+            now_utc = datetime.now(UTC)
+            stale_mins = 30
+            s_result = await db.execute(_sel(Sensor).where(Sensor.id.in_(sensor_ids)))
+            for s in s_result.scalars().all():
+                if s.last_seen is None:
+                    sensor_lines.append(
+                        f"  NEVER SEEN: {s.name} (entity: {s.ha_entity_id or 'unset'})"
+                    )
+                else:
+                    age = int((now_utc - s.last_seen).total_seconds() / 60)
+                    if age > stale_mins:
+                        sensor_lines.append(f"  STALE ({age} min): {s.name}")
+                    else:
+                        sensor_lines.append(f"  OK ({age} min): {s.name}")
+    except Exception as exc:
+        logger.debug("ClimateAdvisor: sensor health query failed: %s", exc)
+
+    return {
+        "live_occupancy": "\n".join(live_occ_lines) if live_occ_lines else "  (not available)",
+        "recent_feedback": "\n".join(feedback_lines) if feedback_lines else "  (not available)",
+        "upcoming_schedule": "\n".join(schedule_lines) if schedule_lines else "  (not available)",
+        "sensor_health": "\n".join(sensor_lines) if sensor_lines else "  (not available)",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Prompt builder
 # ---------------------------------------------------------------------------
 
@@ -288,6 +450,10 @@ def _build_prompt(
     last_setpoint_changed_minutes: int,
     temp_unit: str,
     memories: str = "",
+    live_occupancy: str = "",
+    recent_feedback: str = "",
+    upcoming_schedule: str = "",
+    sensor_health: str = "",
 ) -> str:
     """Assemble the full LLM decision prompt."""
     target_f = round(_c_to_f(desired_temp_c))
@@ -422,6 +588,18 @@ idle (see above) the trend may not continue without a setpoint adjustment.
 {profile_lines}
 ─── RECENT THERMOSTAT ACTIONS ─────────────────────────────────
 {actions_str}
+─── LIVE ZONE OCCUPANCY ────────────────────────────────────────
+{live_occupancy if live_occupancy else "  (not available)"}
+
+─── RECENT COMFORT FEEDBACK (last 48h) ─────────────────────────
+{recent_feedback if recent_feedback else "  (not available)"}
+
+─── UPCOMING SCHEDULE CHANGES ──────────────────────────────────
+{upcoming_schedule if upcoming_schedule else "  No schedule changes in next 2 hours."}
+
+─── SENSOR HEALTH ──────────────────────────────────────────────
+{sensor_health if sensor_health else "  (not available)"}
+
 ─── HOUSE KNOWLEDGE / USER PREFERENCES ─────────────────────────
 {memories if memories else "No stored house knowledge yet."}
 
@@ -614,7 +792,10 @@ class ClimateAdvisor:
         except Exception:  # noqa: S110
             pass
 
-        # ── 8. Build prompt and call LLM ─────────────────────────────────────
+        # ── 8. Load extra context (occupancy, feedback, schedules, sensors) ──
+        extra_ctx = await _get_advisor_extra_context(db, zone_ids, zone_sensor_ids)
+
+        # ── 9. Build prompt and call LLM ─────────────────────────────────────
         prompt = _build_prompt(
             hvac_mode=hvac_mode,
             desired_temp_c=desired_temp_c,
@@ -630,6 +811,10 @@ class ClimateAdvisor:
             last_setpoint_changed_minutes=mins_since_change,
             temp_unit=temp_unit,
             memories=memories,
+            live_occupancy=extra_ctx["live_occupancy"],
+            recent_feedback=extra_ctx["recent_feedback"],
+            upcoming_schedule=extra_ctx["upcoming_schedule"],
+            sensor_health=extra_ctx["sensor_health"],
         )
 
         try:
@@ -656,7 +841,7 @@ class ClimateAdvisor:
             logger.warning("ClimateAdvisor: LLM call failed (%s) — using formula", exc)
             return formula_decision
 
-        # ── 8. Cache and return ──────────────────────────────────────────────
+        # ── 10. Cache and return ─────────────────────────────────────────────
         _state[schedule_id] = _AdvisorState(
             decision=decision,
             decided_at=datetime.now(UTC),

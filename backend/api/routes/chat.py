@@ -157,6 +157,24 @@ async def _extract_directives(
         return
 
     try:
+        # Load existing directives so the LLM skips re-extracting duplicates
+        existing_result = await db.execute(
+            select(UserDirective)
+            .where(UserDirective.is_active.is_(True))
+            .order_by(UserDirective.created_at.asc())
+            .limit(50)
+        )
+        existing_directives = existing_result.scalars().all()
+        if existing_directives:
+            import html as _html
+            existing_block = "\n".join(
+                f"- [{d.category}] {_html.unescape(d.directive[:120])}"
+                for d in existing_directives
+            )
+            existing_note = f"\n\nALREADY SAVED (do NOT extract these again):\n{existing_block}"
+        else:
+            existing_note = ""
+
         response = await llm.chat(
             messages=[
                 {
@@ -164,7 +182,8 @@ async def _extract_directives(
                     "content": DIRECTIVE_EXTRACTION_PROMPT.format(
                         user_message=user_message,
                         assistant_response=assistant_response,
-                    ),
+                    )
+                    + existing_note,
                 }
             ],
             system="You extract user preferences from HVAC conversations. Return only valid JSON.",

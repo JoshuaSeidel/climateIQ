@@ -176,11 +176,18 @@ class DecisionEngine:
             await self._learn_from_zone(zone)
 
         llm_provider = await self._get_configured_llm_provider()
-        prompt = f"Zone {zone.name} needs attention. Temp={zone.temperature_c}C target={zone.metrics.get('target_temperature_c')}"
+        prompt = self._build_zone_prompt(zone)
         response = await asyncio.to_thread(
             llm_provider.chat,
             messages=[
-                {"role": "system", "content": "You are ClimateIQ"},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are the ClimateIQ HVAC control engine. "
+                        "Analyze zone climate data and decide the correct action. "
+                        "Return only valid JSON — no prose, no markdown."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
         )
@@ -307,16 +314,68 @@ class DecisionEngine:
         ]
         await self._pattern_engine.learn_occupancy_patterns(str(zone.zone_id), readings)
 
+    def _build_zone_prompt(self, zone: ZoneState) -> str:
+        """Build a rich context prompt for the zone-level LLM decision."""
+        target_c = zone.metrics.get("target_temperature_c")
+        hvac_mode = zone.metrics.get("hvac_mode", "unknown")
+
+        def _f(c: object) -> str:
+            try:
+                return f"{float(c):.1f}°C ({float(c) * 9 / 5 + 32:.1f}°F)"  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return "unknown"
+
+        delta_str = "unknown"
+        if zone.temperature_c is not None and target_c is not None:
+            try:
+                delta_c = float(zone.temperature_c) - float(target_c)  # type: ignore[arg-type]
+                sign = "+" if delta_c >= 0 else ""
+                delta_str = f"{sign}{delta_c:.1f}°C ({sign}{delta_c * 9 / 5:.1f}°F)"
+            except (TypeError, ValueError):
+                pass
+
+        lines = [
+            f"Zone: {zone.name}",
+            f"Current temperature: {_f(zone.temperature_c)}",
+            f"Target temperature:  {_f(target_c)}",
+            f"Delta (current-target): {delta_str}",
+            f"HVAC mode: {hvac_mode}",
+            f"Humidity: {zone.humidity if zone.humidity is not None else 'unknown'}%",
+            f"Occupied: {zone.occupancy}",
+        ]
+
+        # Extra metrics if available
+        extra_keys = {"setpoint_c", "outdoor_temp_c", "outdoor_condition"}
+        for k in extra_keys:
+            v = zone.metrics.get(k)
+            if v is not None:
+                lines.append(f"{k}: {v}")
+
+        lines += [
+            "",
+            "Decide what HVAC action to take. Return JSON only:",
+            '{"action": "heat" | "cool" | "hold" | "off", "reason": "<one sentence>"}',
+            "",
+            "Rules:",
+            "- heat: zone is below target and needs warming",
+            "- cool: zone is above target and needs cooling",
+            "- hold: zone is near target — no change needed",
+            "- off: zone is unoccupied and no comfort risk",
+        ]
+        return "\n".join(lines)
+
     def _translate_llm_response(
         self, zone: ZoneState, response: dict[str, object]
     ) -> ControlAction | None:
+        import json as _json
+
         try:
             content = response["choices"][0]["message"]["content"]  # type: ignore[index]
         except Exception:
             logger.warning("Failed to parse LLM response structure: %s", response)
             return None
 
-        text = str(content).lower()
+        text = str(content)
         device = next(iter(zone.devices.values()), None)
         if not device:
             logger.warning("No device in zone %s to act on", zone.name)
@@ -325,20 +384,70 @@ class DecisionEngine:
         device_id = str(device.device_id)
         zone_id = str(zone.zone_id)
 
-        # Check for negation/stop patterns first
+        # ── Try JSON response first ──────────────────────────────────────────
+        json_action: str | None = None
+        json_reason: str = "llm_decision"
+        try:
+            raw = text.strip()
+            if raw.startswith("```"):
+                raw = "\n".join(line for line in raw.splitlines() if not line.startswith("```"))
+            data = _json.loads(raw)
+            json_action = str(data.get("action", "")).lower()
+            json_reason = str(data.get("reason", "llm_decision"))[:200]
+        except (ValueError, KeyError, TypeError):
+            pass
+
+        if json_action in ("heat",):
+            target = zone.metrics.get("target_temperature_c", SETTINGS.default_comfort_temp_min_c)
+            temperature = (
+                float(target)  # type: ignore[arg-type]
+                if isinstance(target, (int, float)) and not isinstance(target, bool)
+                else SETTINGS.default_comfort_temp_min_c
+            )
+            return ControlAction(
+                zone_id=zone_id,
+                device_id=device_id,
+                action_type=ActionType.set_temperature,
+                triggered_by=TriggerType.llm_decision,
+                parameters={"temperature": temperature},
+                reason=json_reason,
+            )
+        if json_action in ("cool",):
+            target = zone.metrics.get("target_temperature_c", SETTINGS.default_comfort_temp_max_c)
+            temperature = (
+                float(target)  # type: ignore[arg-type]
+                if isinstance(target, (int, float)) and not isinstance(target, bool)
+                else SETTINGS.default_comfort_temp_max_c
+            )
+            return ControlAction(
+                zone_id=zone_id,
+                device_id=device_id,
+                action_type=ActionType.set_temperature,
+                triggered_by=TriggerType.llm_decision,
+                parameters={"temperature": temperature},
+                reason=json_reason,
+            )
+        if json_action in ("off",):
+            return ControlAction(
+                zone_id=zone_id,
+                device_id=device_id,
+                action_type=ActionType.turn_off,
+                triggered_by=TriggerType.llm_decision,
+                parameters={},
+                reason=json_reason,
+            )
+        if json_action in ("hold",):
+            logger.info("DecisionEngine LLM: hold — no action for zone %s. %s", zone.name, json_reason)
+            return None
+
+        # ── Fallback: keyword matching on raw text ───────────────────────────
+        text_lower = text.lower()
         negation_patterns = [
-            "don't heat",
-            "don't cool",
-            "no need to heat",
-            "no need to cool",
-            "stop heating",
-            "stop cooling",
-            "turn off",
-            "shut off",
-            "shut down",
+            "don't heat", "don't cool", "no need to heat", "no need to cool",
+            "stop heating", "stop cooling", "turn off", "shut off", "shut down",
         ]
         for pattern in negation_patterns:
-            if pattern in text:
+            if pattern in text_lower:
                 return ControlAction(
                     zone_id=zone_id,
                     device_id=device_id,
@@ -348,11 +457,10 @@ class DecisionEngine:
                     reason="llm_turn_off",
                 )
 
-        # Check for heating
-        if any(kw in text for kw in ("heat", "warm", "raise temperature", "increase temperature")):
+        if any(kw in text_lower for kw in ("heat", "warm", "raise temperature", "increase temperature")):
             target = zone.metrics.get("target_temperature_c", SETTINGS.default_comfort_temp_min_c)
             temperature = (
-                float(target)
+                float(target)  # type: ignore[arg-type]
                 if isinstance(target, (int, float)) and not isinstance(target, bool)
                 else SETTINGS.default_comfort_temp_min_c
             )
@@ -365,14 +473,10 @@ class DecisionEngine:
                 reason="llm_heat",
             )
 
-        # Check for cooling
-        if any(
-            kw in text
-            for kw in ("cool", "lower temperature", "decrease temperature", "reduce temperature")
-        ):
+        if any(kw in text_lower for kw in ("cool", "lower temperature", "decrease temperature", "reduce temperature")):
             target = zone.metrics.get("target_temperature_c", SETTINGS.default_comfort_temp_max_c)
             temperature = (
-                float(target)
+                float(target)  # type: ignore[arg-type]
                 if isinstance(target, (int, float)) and not isinstance(target, bool)
                 else SETTINGS.default_comfort_temp_max_c
             )
@@ -385,8 +489,7 @@ class DecisionEngine:
                 reason="llm_cool",
             )
 
-        # Check for turn on
-        if "turn on" in text:
+        if "turn on" in text_lower:
             return ControlAction(
                 zone_id=zone_id,
                 device_id=device_id,

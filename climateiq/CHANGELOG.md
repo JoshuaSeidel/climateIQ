@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.20] - 2026-02-26
+
+### Improved
+- **Climate Advisor LLM context**: Advisor prompt now includes live zone occupancy (last 30 min), recent comfort feedback (last 48h), upcoming schedule changes (next 2h), and sensor health (stale sensor flags). Decisions are now aware of who is home, how comfortable people have been, and what the schedule is about to do.
+- **Decision Engine LLM prompt**: Rebuilt from a one-line placeholder into a structured prompt with zone name, current/target temps in both C and F, delta, HVAC mode, humidity, occupancy, and extra metrics. LLM now returns structured JSON (`{"action": "...", "reason": "..."}`); keyword matching is kept as fallback.
+- **Directive extraction deduplication**: Before mining a conversation for new house facts, the extractor now loads all existing active directives and appends them to the prompt as "ALREADY SAVED" — preventing the LLM from re-extracting information already in memory.
+
 ## [1.0.19] - 2026-02-26
 
 ### Added
