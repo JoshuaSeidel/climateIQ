@@ -85,6 +85,7 @@ class HAWebSocketClient:
         token: str,
         *,
         entity_filter: set[str] | None = None,
+        ha_temp_unit: str = "C",
     ) -> None:
         # Convert HTTP URL to WebSocket URL
         base = url.rstrip("/")
@@ -97,6 +98,11 @@ class HAWebSocketClient:
 
         self._token = token
         self._entity_filter = entity_filter  # If set, only these entity_ids
+        # Configured HA temperature unit ("F" or "C") used as fallback when an
+        # entity's attributes don't include unit_of_measurement/temperature_unit.
+        # Climate entities (e.g. Ecobee) never include a unit attribute yet always
+        # report temperatures in the HA system unit.
+        self._ha_temp_unit = ha_temp_unit.upper().strip("°")
         self._ws: ClientConnection | None = None
         self._connected = asyncio.Event()
         self._stop = False
@@ -372,7 +378,14 @@ class HAWebSocketClient:
 
         device_class = attrs.get("device_class", "")
         device_class = device_class.lower() if isinstance(device_class, str) else ""
-        unit = attrs.get("unit_of_measurement", "") or attrs.get("temperature_unit", "") or ""
+        # Prefer explicit unit attributes; fall back to the HA-configured system
+        # unit when both are absent (e.g. climate entities like Ecobee never carry
+        # unit_of_measurement and may omit temperature_unit from their attributes).
+        unit = (
+            attrs.get("unit_of_measurement", "")
+            or attrs.get("temperature_unit", "")
+            or self._ha_temp_unit
+        )
 
         # ----- Device-class / unit-based extraction (most reliable) -----
         _dc_matched = False

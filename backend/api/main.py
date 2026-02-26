@@ -2870,6 +2870,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     url=str(settings.home_assistant_url),
                     token=settings.home_assistant_token,
                     entity_filter=entity_filter,
+                    ha_temp_unit="F" if settings.temperature_unit == "F" else "C",
                 )
                 ha_ws.add_callback(_handle_ha_state_change)
                 ha_ws.add_callback(_handle_climate_state_change)

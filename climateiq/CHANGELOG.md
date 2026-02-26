@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.16] - 2026-02-26
+
+### Fixed
+- **Impossible temperature warnings from thermostat entity**: `climate.thermostat` (Ecobee) never includes `unit_of_measurement` or `temperature_unit` in its HA attributes, so the WebSocket parser had no unit signal and treated 68°F as 68°C — which was then correctly dropped as "impossible". Fixed by passing the system-configured HA temperature unit (`ha_temp_unit`) to `HAWebSocketClient` at startup. When an entity's attributes carry no explicit unit, the parser now falls back to the configured HA unit instead of assuming Celsius.
+- **Chat tool calls returning no data**: When the LLM called a data-fetching tool like `get_zone_status` or `get_weather`, the results were collected internally but never fed back to the LLM. The LLM had nothing to formulate a response from, so it silently stopped. Implemented proper multi-turn tool calling: after executing tool results, if the LLM returned no text content, a follow-up call is made with the tool results appended so the LLM can produce a natural-language answer. Affects both the REST and WebSocket chat paths.
+
 ## [1.0.15] - 2026-02-25
 
 ### Fixed

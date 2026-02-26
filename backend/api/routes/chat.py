@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -1453,6 +1454,93 @@ async def _execute_tool_call(
     return {"success": False, "error": f"Unknown tool: {func_name}"}
 
 
+async def _run_llm_with_tools(
+    llm: LLMProvider,
+    messages: list[dict[str, Any]],
+    system_prompt: str,
+    db: AsyncSession,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Single LLM turn with automatic tool execution and follow-up.
+
+    If the LLM responds with only tool calls and no text, this executes
+    the tools and makes a second call (without tools) so the LLM can
+    produce a natural-language response using the tool results.
+
+    Returns (assistant_message, actions_taken).
+    """
+    response = await llm.chat(
+        messages=messages,
+        system=system_prompt,
+        tools=get_climate_tools(),
+    )
+
+    assistant_message: str = response.get("content", "") or ""
+    tool_calls: list[dict[str, Any]] = response.get("tool_calls", [])
+    actions_taken: list[dict[str, Any]] = []
+
+    for tc in tool_calls:
+        func_info = tc.get("function", {})
+        func_name = func_info.get("name", "")
+        func_args = _parse_tool_args(func_info.get("arguments"))
+        tool_result: dict[str, Any] = {"tool": func_name, "args": func_args}
+        try:
+            tool_result.update(await _execute_tool_call(func_name, func_args, db))
+        except Exception as tool_exc:
+            tool_result["error"] = str(tool_exc)
+        actions_taken.append(tool_result)
+
+    # If the LLM returned tool calls but no text, feed results back for a follow-up
+    if tool_calls and not assistant_message:
+        followup_messages = list(messages)
+        # Reconstruct the assistant tool-call turn
+        followup_messages.append({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": tc.get("id", f"call_{i}"),
+                    "type": "function",
+                    "function": tc.get("function", {}),
+                }
+                for i, tc in enumerate(tool_calls)
+            ],
+        })
+        # Append each tool result
+        for i, (tc, action) in enumerate(zip(tool_calls, actions_taken, strict=False)):
+            result_payload = {k: v for k, v in action.items() if k not in ("tool", "args")}
+            followup_messages.append({
+                "role": "tool",
+                "tool_call_id": tc.get("id", f"call_{i}"),
+                "content": json.dumps(result_payload),
+            })
+        try:
+            followup = await llm.chat(
+                messages=followup_messages,
+                system=system_prompt,
+                # No tools — force a plain text response
+            )
+            assistant_message = (followup.get("content", "") or "").strip()
+        except Exception:
+            logger.debug("Follow-up LLM call failed; falling through to synthesis", exc_info=True)
+
+    # Fallback synthesis for save_memory-only responses (no text from LLM at all)
+    if not assistant_message and actions_taken:
+        saved = [a for a in actions_taken if a.get("tool") == "save_memory" and a.get("saved")]
+        skipped = [a for a in actions_taken if a.get("tool") == "save_memory" and a.get("saved") is False]
+        if saved:
+            lines = ["I've saved the following to memory:"]
+            for a in saved:
+                cat = str(a.get("category", "")).replace("_", " ")
+                lines.append(f"* {a['directive']} [{cat}]")
+            if skipped:
+                lines.append(f"\n{len(skipped)} item(s) were already saved and skipped.")
+            assistant_message = "\n".join(lines)
+        elif skipped:
+            assistant_message = "These memories are already saved - nothing new to add."
+
+    return assistant_message, actions_taken
+
+
 # ============================================================================
 # Routes
 # ============================================================================
@@ -1513,45 +1601,11 @@ async def send_chat_message(
     messages.append({"role": "user", "content": payload.message})
 
     try:
-        # Get response from LLM
-        response = await llm.chat(
-            messages=messages,
-            system=system_prompt,
-            tools=get_climate_tools(),
+        assistant_message, actions_taken = await _run_llm_with_tools(
+            llm, messages, system_prompt, db
         )
-
-        assistant_message = response.get("content", "I'm not sure how to help with that.")
-        tool_calls = response.get("tool_calls", [])
-        actions_taken: list[dict[str, Any]] = []
-
-        # Execute any tool calls the LLM requested
-        for tc in tool_calls:
-            func_info = tc.get("function", {})
-            func_name = func_info.get("name", "")
-            func_args = _parse_tool_args(func_info.get("arguments"))
-
-            tool_result: dict[str, Any] = {"tool": func_name, "args": func_args}
-            try:
-                tool_result.update(await _execute_tool_call(func_name, func_args, db))
-            except Exception as tool_exc:
-                tool_result["error"] = str(tool_exc)
-            actions_taken.append(tool_result)
-
-        # If the LLM returned only tool calls with no text, synthesize a summary
-        if not assistant_message and actions_taken:
-            saved = [a for a in actions_taken if a.get("tool") == "save_memory" and a.get("saved")]
-            skipped = [a for a in actions_taken if a.get("tool") == "save_memory" and a.get("saved") is False]
-            if saved:
-                lines = ["I've saved the following to memory:"]
-                for a in saved:
-                    cat = str(a.get("category", "")).replace("_", " ")
-                    lines.append(f"* {a['directive']} [{cat}]")
-                if skipped:
-                    lines.append(f"\n{len(skipped)} item(s) were already saved and skipped.")
-                assistant_message = "\n".join(lines)
-            elif skipped:
-                assistant_message = "These memories are already saved — nothing new to add."
-
+        if not assistant_message:
+            assistant_message = "I'm not sure how to help with that."
     except Exception as e:
         logger.error("LLM request failed for session %s: %s", session_id, e, exc_info=True)
         assistant_message = "I'm having trouble connecting right now. Please try again shortly."
@@ -2007,36 +2061,23 @@ async def chat_websocket(
 
                     directives_ctx = await _get_active_directives(db)
 
-                    response = await llm.chat(
-                        messages=[{"role": "user", "content": user_message}],
-                        system=SYSTEM_PROMPT.format(
-                            logic_reference=_get_logic_reference_text(),
-                            directives=directives_ctx,
-                            system_state=await _get_live_system_context(
-                                db, settings.temperature_unit
-                            ),
-                            zones=zone_context,
-                            conditions=conditions_context,
+                    ws_system_prompt = SYSTEM_PROMPT.format(
+                        logic_reference=_get_logic_reference_text(),
+                        directives=directives_ctx,
+                        system_state=await _get_live_system_context(
+                            db, settings.temperature_unit
                         ),
-                        tools=get_climate_tools(),
+                        zones=zone_context,
+                        conditions=conditions_context,
                     )
-
-                    assistant_message = response.get(
-                        "content", "I'm not sure how to help with that."
+                    assistant_message, actions_taken = await _run_llm_with_tools(
+                        llm,
+                        [{"role": "user", "content": user_message}],
+                        ws_system_prompt,
+                        db,
                     )
-                    tool_calls = response.get("tool_calls", [])
-                    actions_taken: list[dict[str, Any]] = []
-
-                    for tc in tool_calls:
-                        func_info = tc.get("function", {})
-                        func_name = func_info.get("name", "")
-                        func_args = _parse_tool_args(func_info.get("arguments"))
-                        tool_result: dict[str, Any] = {"tool": func_name, "args": func_args}
-                        try:
-                            tool_result.update(await _execute_tool_call(func_name, func_args, db))
-                        except Exception as tool_exc:
-                            tool_result["error"] = str(tool_exc)
-                        actions_taken.append(tool_result)
+                    if not assistant_message:
+                        assistant_message = "I'm not sure how to help with that."
 
                     conversation_ws = Conversation(
                         session_id=session_id,
