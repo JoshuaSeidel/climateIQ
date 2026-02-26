@@ -204,10 +204,72 @@ def save_memory_tool() -> dict[str, Any]:
     }
 
 
+def get_zone_history_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_zone_history",
+            "description": (
+                "Get historical temperature and humidity data for a zone over a time window. "
+                "Use this to answer questions about overnight temperature maintenance, drift, "
+                "trends, how stable a room was, or any question involving past readings. "
+                "Returns aggregate stats (avg/min/max) plus an hourly breakdown."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "zone_id": {"type": "string", "description": "Unique zone identifier"},
+                    "hours_ago": {
+                        "type": "integer",
+                        "description": (
+                            "How many hours back to look from now. "
+                            "Use 8 for 'last night', 24 for 'yesterday/last day', "
+                            "1 for 'last hour'. Defaults to 8."
+                        ),
+                    },
+                },
+                "required": ["zone_id"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def get_device_actions_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_device_actions",
+            "description": (
+                "Get HVAC thermostat commands and actions taken for a zone over a time window. "
+                "Use this to see what setpoints were commanded, why, and when — useful for "
+                "understanding what the system did overnight or in response to temperature changes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "zone_id": {
+                        "type": "string",
+                        "description": "Unique zone identifier (optional — omit for all zones)",
+                    },
+                    "hours_ago": {
+                        "type": "integer",
+                        "description": "How many hours back to look. Defaults to 8.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 TOOLS: list[dict[str, Any]] = [
     set_zone_temperature_tool(),
     set_device_state_tool(),
     get_zone_status_tool(),
+    get_zone_history_tool(),
+    get_device_actions_tool(),
     get_weather_tool(),
     create_schedule_tool(),
     save_memory_tool(),

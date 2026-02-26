@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.17] - 2026-02-26
+
+### Added
+- **`get_zone_history` chat tool**: LLM can now query historical temperature and humidity for any zone over a configurable time window (default 8 hours). Returns avg/min/max temps, drift (variation), and an hourly breakdown in the user's display unit. Answers questions like "how well was the bedroom maintained overnight?" or "was there a temperature swing last night?"
+- **`get_device_actions` chat tool**: LLM can now query recent HVAC thermostat commands for any zone (or all zones). Returns action type, trigger reason, setpoint commanded, timestamp, and the AI's reasoning — giving full visibility into what the system did and why.
+
+### Changed
+- **`get_zone_status` enriched**: Now returns zone name, temperature in display unit (°F/°C), humidity, presence, last reading timestamp, and the most recent HVAC action with its setpoint and reasoning — instead of raw Celsius-only values.
+
 ## [1.0.16] - 2026-02-26
 
 ### Fixed
