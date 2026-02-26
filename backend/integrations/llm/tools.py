@@ -210,15 +210,18 @@ def get_zone_history_tool() -> dict[str, Any]:
         "function": {
             "name": "get_zone_history",
             "description": (
-                "Get historical temperature and humidity data for a zone over a time window. "
+                "Get historical temperature and humidity data for one zone or all zones over a time window. "
                 "Use this to answer questions about overnight temperature maintenance, drift, "
-                "trends, how stable a room was, or any question involving past readings. "
-                "Returns aggregate stats (avg/min/max) plus an hourly breakdown."
+                "trends, how stable rooms were, or any question involving past readings. "
+                "Omit zone_id to get all zones at once (e.g. to compare rooms overnight)."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "zone_id": {"type": "string", "description": "Unique zone identifier"},
+                    "zone_id": {
+                        "type": "string",
+                        "description": "Zone identifier. Omit to query ALL active zones at once.",
+                    },
                     "hours_ago": {
                         "type": "integer",
                         "description": (
@@ -228,7 +231,151 @@ def get_zone_history_tool() -> dict[str, Any]:
                         ),
                     },
                 },
-                "required": ["zone_id"],
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def get_schedules_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_schedules",
+            "description": (
+                "Get all configured temperature schedules. Returns each schedule's name, "
+                "target temperature, HVAC mode, days of week, start/end times, priority, "
+                "and which zones it applies to. Use this to answer questions about what "
+                "the scheduled temperatures are, what runs at night, etc."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "zone_id": {
+                        "type": "string",
+                        "description": "Optional: filter to schedules that include this zone.",
+                    },
+                    "enabled_only": {
+                        "type": "boolean",
+                        "description": "If true, only return enabled schedules. Default false.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def get_user_feedback_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_user_feedback",
+            "description": (
+                "Get user comfort feedback history: too_hot, too_cold, too_humid, too_dry, "
+                "or comfortable ratings per zone. Use this to understand recurring comfort "
+                "issues, patterns of discomfort, and whether zones are meeting user needs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "zone_id": {
+                        "type": "string",
+                        "description": "Optional: filter to a specific zone.",
+                    },
+                    "hours_ago": {
+                        "type": "integer",
+                        "description": "How many hours back to look. Default 168 (1 week).",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def get_sensor_status_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_sensor_status",
+            "description": (
+                "Get sensor health details: which sensors are configured per zone, their "
+                "last_seen timestamp (to detect offline/stale sensors), HA entity ID, "
+                "type, and calibration offsets. Use this to diagnose missing data or "
+                "sensor problems."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "zone_id": {
+                        "type": "string",
+                        "description": "Optional: filter to a specific zone.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def get_occupancy_patterns_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_occupancy_patterns",
+            "description": (
+                "Get learned occupancy patterns per zone — when rooms are typically occupied "
+                "by time of day, day of week, and season. Use this to understand routines "
+                "and make scheduling recommendations."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "zone_id": {
+                        "type": "string",
+                        "description": "Optional: filter to a specific zone.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def get_ai_decisions_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_ai_decisions",
+            "description": (
+                "Get the AI climate advisor's recent decision log: what setpoints were "
+                "commanded, why (full reasoning), what triggered each action, and what "
+                "the outcome was. Use this to audit system behavior or explain what "
+                "happened and why."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "zone_id": {
+                        "type": "string",
+                        "description": "Optional: filter to a specific zone.",
+                    },
+                    "hours_ago": {
+                        "type": "integer",
+                        "description": "How many hours back to look. Default 24.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max decisions to return. Default 20, max 100.",
+                    },
+                },
+                "required": [],
                 "additionalProperties": False,
             },
         },
@@ -270,6 +417,11 @@ TOOLS: list[dict[str, Any]] = [
     get_zone_status_tool(),
     get_zone_history_tool(),
     get_device_actions_tool(),
+    get_schedules_tool(),
+    get_user_feedback_tool(),
+    get_sensor_status_tool(),
+    get_occupancy_patterns_tool(),
+    get_ai_decisions_tool(),
     get_weather_tool(),
     create_schedule_tool(),
     save_memory_tool(),

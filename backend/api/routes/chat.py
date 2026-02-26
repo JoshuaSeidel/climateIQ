@@ -1324,98 +1324,321 @@ async def _execute_tool_call(
 
         from backend.models.database import Zone
 
-        zone_id = func_args.get("zone_id")
-        if not zone_id:
-            return {"success": False, "error": "Missing zone_id"}
-
-        hours_ago = max(1, min(168, int(func_args.get("hours_ago", 8))))  # cap at 1 week
-        zone_uuid = uuid.UUID(str(zone_id))
+        zone_id_arg = func_args.get("zone_id")
+        hours_ago = max(1, min(168, int(func_args.get("hours_ago", 8))))
         now_utc = datetime.now(UTC)
         period_start = now_utc - timedelta(hours=hours_ago)
 
-        # Zone name
-        zone_row = await db.execute(select(Zone).where(Zone.id == zone_uuid))
-        zone_obj = zone_row.scalar_one_or_none()
-        zone_name = zone_obj.name if zone_obj else str(zone_id)
-
-        # Sensors for this zone
-        sensor_stmt = select(Sensor).where(Sensor.zone_id == zone_uuid)
-        sensor_result = await db.execute(sensor_stmt)
-        sensors = list(sensor_result.scalars().all())
-        sensor_ids = [s.id for s in sensors]
-        if not sensor_ids:
-            return {"success": False, "error": f"No sensors found for zone '{zone_name}'"}
-
-        # All readings in the window
-        reading_stmt = (
-            select(SensorReading)
-            .where(
-                SensorReading.sensor_id.in_(sensor_ids),
-                SensorReading.recorded_at >= period_start,
-                SensorReading.recorded_at <= now_utc,
-            )
-            .order_by(SensorReading.recorded_at.asc())
-        )
-        reading_result = await db.execute(reading_stmt)
-        readings = list(reading_result.scalars().all())
-
-        if not readings:
-            return {
-                "success": True,
-                "zone_name": zone_name,
-                "period_hours": hours_ago,
-                "readings_count": 0,
-                "message": "No readings found in this time window.",
-            }
-
-        def _c_disp(c: float) -> float:
+        def _c_disp_h(c: float) -> float:
             if settings.temperature_unit == "F":
                 return round(c * 9 / 5 + 32, 1)
             return round(c, 1)
 
-        temps_c = [r.temperature_c for r in readings if r.temperature_c is not None]
-        humids = [r.humidity for r in readings if r.humidity is not None]
-
-        # Hourly breakdown
-        buckets: dict[str, list[float]] = {}
-        for r in readings:
-            if r.temperature_c is None:
-                continue
-            bucket_key = r.recorded_at.strftime("%Y-%m-%d %H:00")
-            buckets.setdefault(bucket_key, []).append(r.temperature_c)
-
-        hourly = [
-            {
-                "hour": k,
-                f"avg_{settings.temperature_unit}": _c_disp(sum(v) / len(v)),
-                f"min_{settings.temperature_unit}": _c_disp(min(v)),
-                f"max_{settings.temperature_unit}": _c_disp(max(v)),
-            }
-            for k, v in sorted(buckets.items())
-        ]
-
-        hist_result: dict[str, Any] = {
-            "success": True,
-            "zone_name": zone_name,
-            "period_hours": hours_ago,
-            "period_start": period_start.isoformat(),
-            "temperature_unit": settings.temperature_unit,
-            "readings_count": len(temps_c),
-        }
-        if temps_c:
+        async def _history_for_zone(z_id: uuid.UUID, z_name: str) -> dict[str, Any]:
+            s_result = await db.execute(select(Sensor).where(Sensor.zone_id == z_id))
+            s_ids = [s.id for s in s_result.scalars().all()]
+            if not s_ids:
+                return {"zone_name": z_name, "readings_count": 0, "message": "No sensors"}
+            r_stmt = (
+                select(SensorReading)
+                .where(
+                    SensorReading.sensor_id.in_(s_ids),
+                    SensorReading.recorded_at >= period_start,
+                    SensorReading.recorded_at <= now_utc,
+                )
+                .order_by(SensorReading.recorded_at.asc())
+            )
+            r_result = await db.execute(r_stmt)
+            readings = list(r_result.scalars().all())
+            temps_c = [r.temperature_c for r in readings if r.temperature_c is not None]
+            humids = [r.humidity for r in readings if r.humidity is not None]
+            if not temps_c:
+                return {"zone_name": z_name, "readings_count": 0, "message": "No readings in window"}
+            buckets_h: dict[str, list[float]] = {}
+            for r in readings:
+                if r.temperature_c is None:
+                    continue
+                bk = r.recorded_at.strftime("%Y-%m-%d %H:00")
+                buckets_h.setdefault(bk, []).append(r.temperature_c)
+            hourly = [
+                {
+                    "hour": k,
+                    f"avg_{settings.temperature_unit}": _c_disp_h(sum(v) / len(v)),
+                    f"min_{settings.temperature_unit}": _c_disp_h(min(v)),
+                    f"max_{settings.temperature_unit}": _c_disp_h(max(v)),
+                }
+                for k, v in sorted(buckets_h.items())
+            ]
             avg_c = sum(temps_c) / len(temps_c)
-            hist_result.update({
-                f"avg_temp_{settings.temperature_unit}": _c_disp(avg_c),
-                f"min_temp_{settings.temperature_unit}": _c_disp(min(temps_c)),
-                f"max_temp_{settings.temperature_unit}": _c_disp(max(temps_c)),
+            out: dict[str, Any] = {
+                "zone_name": z_name,
+                "readings_count": len(temps_c),
+                f"avg_temp_{settings.temperature_unit}": _c_disp_h(avg_c),
+                f"min_temp_{settings.temperature_unit}": _c_disp_h(min(temps_c)),
+                f"max_temp_{settings.temperature_unit}": _c_disp_h(max(temps_c)),
                 f"temp_variation_{settings.temperature_unit}": round(
-                    _c_disp(max(temps_c)) - _c_disp(min(temps_c)), 1
+                    _c_disp_h(max(temps_c)) - _c_disp_h(min(temps_c)), 1
                 ),
                 "hourly_breakdown": hourly,
+            }
+            if humids:
+                out["avg_humidity_pct"] = round(sum(humids) / len(humids), 1)
+            return out
+
+        if zone_id_arg:
+            zone_uuid = uuid.UUID(str(zone_id_arg))
+            zone_row = await db.execute(select(Zone).where(Zone.id == zone_uuid))
+            zone_obj = zone_row.scalar_one_or_none()
+            zone_name = zone_obj.name if zone_obj else str(zone_id_arg)
+            hist = await _history_for_zone(zone_uuid, zone_name)
+            return {"success": True, "period_hours": hours_ago, "period_start": period_start.isoformat(),
+                    "temperature_unit": settings.temperature_unit, **hist}
+        else:
+            all_zones_r = await db.execute(select(Zone).where(Zone.is_active.is_(True)))
+            all_zones = list(all_zones_r.scalars().all())
+            zone_results = []
+            for z in all_zones:
+                zh = await _history_for_zone(z.id, z.name)
+                zone_results.append(zh)
+            return {
+                "success": True,
+                "period_hours": hours_ago,
+                "period_start": period_start.isoformat(),
+                "temperature_unit": settings.temperature_unit,
+                "zones": zone_results,
+            }
+
+    elif func_name == "get_schedules":
+        from backend.models.database import Schedule, Zone
+
+        zone_id_arg = func_args.get("zone_id")
+        enabled_only = bool(func_args.get("enabled_only", False))
+
+        sched_stmt = select(Schedule).order_by(Schedule.priority.desc(), Schedule.name)
+        if enabled_only:
+            sched_stmt = sched_stmt.where(Schedule.is_enabled.is_(True))
+        sched_result = await db.execute(sched_stmt)
+        schedules = list(sched_result.scalars().all())
+
+        if zone_id_arg:
+            zone_id_str = str(uuid.UUID(str(zone_id_arg)))
+            schedules = [s for s in schedules if not s.zone_ids or zone_id_str in [str(z) for z in (s.zone_ids or [])]]
+
+        # Resolve zone names
+        all_zone_ids: set[uuid.UUID] = set()
+        for s in schedules:
+            for zid_str in (s.zone_ids or []):
+                try:
+                    all_zone_ids.add(uuid.UUID(str(zid_str)))
+                except ValueError:
+                    pass
+        zone_name_map_s: dict[str, str] = {}
+        if all_zone_ids:
+            zr = await db.execute(select(Zone).where(Zone.id.in_(all_zone_ids)))
+            for z in zr.scalars().all():
+                zone_name_map_s[str(z.id)] = z.name
+
+        def _target_disp(c: float) -> float:
+            if settings.temperature_unit == "F":
+                return round(c * 9 / 5 + 32, 1)
+            return round(c, 1)
+
+        _dow_names: dict[int, str] = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+        sched_list = []
+        for s in schedules:
+            days = [_dow_names.get(d, str(d)) for d in (s.days_of_week or [])]
+            zone_names = [zone_name_map_s.get(str(zid), str(zid)) for zid in (s.zone_ids or [])]
+            sched_list.append({
+                "id": str(s.id),
+                "name": s.name,
+                "zones": zone_names or ["all zones"],
+                "days": days,
+                "start_time": s.start_time,
+                "end_time": s.end_time,
+                f"target_temp_{settings.temperature_unit}": _target_disp(s.target_temp_c),
+                "hvac_mode": s.hvac_mode,
+                "priority": s.priority,
+                "enabled": s.is_enabled,
             })
-        if humids:
-            hist_result["avg_humidity_pct"] = round(sum(humids) / len(humids), 1)
-        return hist_result
+
+        return {"success": True, "schedules_count": len(sched_list), "schedules": sched_list}
+
+    elif func_name == "get_user_feedback":
+        from datetime import timedelta
+
+        from backend.models.database import UserFeedback, Zone
+
+        zone_id_arg = func_args.get("zone_id")
+        hours_ago = max(1, min(720, int(func_args.get("hours_ago", 168))))
+        now_utc = datetime.now(UTC)
+        period_start = now_utc - timedelta(hours=hours_ago)
+
+        fb_stmt = (
+            select(UserFeedback)
+            .where(UserFeedback.created_at >= period_start)
+            .order_by(UserFeedback.created_at.desc())
+            .limit(100)
+        )
+        if zone_id_arg:
+            fb_stmt = fb_stmt.where(UserFeedback.zone_id == uuid.UUID(str(zone_id_arg)))
+        fb_result = await db.execute(fb_stmt)
+        feedbacks = list(fb_result.scalars().all())
+
+        zone_ids_fb = {f.zone_id for f in feedbacks if f.zone_id}
+        zone_name_map_fb: dict[uuid.UUID, str] = {}
+        if zone_ids_fb:
+            zr = await db.execute(select(Zone).where(Zone.id.in_(zone_ids_fb)))
+            for z in zr.scalars().all():
+                zone_name_map_fb[z.id] = z.name
+
+        fb_list = [
+            {
+                "at": f.created_at.isoformat(),
+                "zone": zone_name_map_fb.get(f.zone_id, str(f.zone_id)) if f.zone_id else "global",
+                "feedback": str(f.feedback_type),
+                "comment": f.comment,
+            }
+            for f in feedbacks
+        ]
+
+        # Summarize by type
+        from collections import Counter
+        by_type: dict[str, int] = dict(Counter(str(f["feedback"]) for f in fb_list))
+
+        return {
+            "success": True,
+            "period_hours": hours_ago,
+            "feedback_count": len(fb_list),
+            "summary_by_type": by_type,
+            "feedback": fb_list,
+        }
+
+    elif func_name == "get_sensor_status":
+        from backend.models.database import Zone
+
+        zone_id_arg = func_args.get("zone_id")
+        now_utc = datetime.now(UTC)
+
+        sensor_stmt = select(Sensor).order_by(Sensor.zone_id, Sensor.name)
+        if zone_id_arg:
+            sensor_stmt = sensor_stmt.where(Sensor.zone_id == uuid.UUID(str(zone_id_arg)))
+        sensor_result = await db.execute(sensor_stmt)
+        sensors_list = list(sensor_result.scalars().all())
+
+        zone_ids_s = {sns.zone_id for sns in sensors_list if sns.zone_id}
+        zone_name_map_sensor: dict[uuid.UUID, str] = {}
+        if zone_ids_s:
+            zr = await db.execute(select(Zone).where(Zone.id.in_(zone_ids_s)))
+            for z in zr.scalars().all():
+                zone_name_map_sensor[z.id] = z.name
+
+        sensor_out = []
+        for sns in sensors_list:
+            age_mins: float | None = None
+            if sns.last_seen:
+                age_mins = round((now_utc - sns.last_seen).total_seconds() / 60, 1)
+            sensor_out.append({
+                "name": sns.name,
+                "zone": zone_name_map_sensor.get(sns.zone_id, str(sns.zone_id)) if sns.zone_id else "unassigned",
+                "type": str(sns.type),
+                "ha_entity_id": sns.ha_entity_id,
+                "last_seen": sns.last_seen.isoformat() if sns.last_seen else None,
+                "minutes_since_last_seen": age_mins,
+                "is_active": sns.is_active,
+                "calibration_offsets": sns.calibration_offsets or {},
+            })
+
+        return {"success": True, "sensors_count": len(sensor_out), "sensors": sensor_out}
+
+    elif func_name == "get_occupancy_patterns":
+        from backend.models.database import OccupancyPattern, Zone
+
+        zone_id_arg = func_args.get("zone_id")
+
+        occ_stmt = select(OccupancyPattern).order_by(OccupancyPattern.zone_id)
+        if zone_id_arg:
+            occ_stmt = occ_stmt.where(OccupancyPattern.zone_id == uuid.UUID(str(zone_id_arg)))
+        occ_result = await db.execute(occ_stmt)
+        patterns = list(occ_result.scalars().all())
+
+        zone_ids_occ = {p.zone_id for p in patterns}
+        zone_name_map_occ: dict[uuid.UUID, str] = {}
+        if zone_ids_occ:
+            zr = await db.execute(select(Zone).where(Zone.id.in_(zone_ids_occ)))
+            for z in zr.scalars().all():
+                zone_name_map_occ[z.id] = z.name
+
+        pattern_list = [
+            {
+                "zone": zone_name_map_occ.get(p.zone_id, str(p.zone_id)),
+                "pattern_type": str(p.pattern_type),
+                "season": str(p.season),
+                "confidence": p.confidence,
+                "schedule": p.schedule,
+                "created_at": p.created_at.isoformat(),
+            }
+            for p in patterns
+        ]
+
+        return {"success": True, "patterns_count": len(pattern_list), "patterns": pattern_list}
+
+    elif func_name == "get_ai_decisions":
+        from datetime import timedelta
+
+        from backend.models.database import DeviceAction, Zone
+
+        zone_id_arg = func_args.get("zone_id")
+        hours_ago = max(1, min(720, int(func_args.get("hours_ago", 24))))
+        limit = max(1, min(100, int(func_args.get("limit", 20))))
+        now_utc = datetime.now(UTC)
+        period_start = now_utc - timedelta(hours=hours_ago)
+
+        dec_stmt = (
+            select(DeviceAction)
+            .where(DeviceAction.created_at >= period_start)
+            .order_by(DeviceAction.created_at.desc())
+            .limit(limit)
+        )
+        if zone_id_arg:
+            dec_stmt = dec_stmt.where(DeviceAction.zone_id == uuid.UUID(str(zone_id_arg)))
+        dec_result = await db.execute(dec_stmt)
+        decisions = list(dec_result.scalars().all())
+
+        zone_ids_dec = {d.zone_id for d in decisions if d.zone_id}
+        zone_name_map_dec: dict[uuid.UUID, str] = {}
+        if zone_ids_dec:
+            zr = await db.execute(select(Zone).where(Zone.id.in_(zone_ids_dec)))
+            for z in zr.scalars().all():
+                zone_name_map_dec[z.id] = z.name
+
+        def _c_disp_dec(c: float | None) -> float | None:
+            if c is None:
+                return None
+            if settings.temperature_unit == "F":
+                return round(c * 9 / 5 + 32, 1)
+            return round(c, 1)
+
+        dec_list = []
+        for d in decisions:
+            params = d.parameters or {}
+            target_raw = params.get("target_temp_c") or params.get("temperature")
+            dec_list.append({
+                "at": d.created_at.isoformat(),
+                "zone": zone_name_map_dec.get(d.zone_id, str(d.zone_id)) if d.zone_id else "global",
+                "action": str(d.action_type),
+                "trigger": str(d.triggered_by),
+                f"setpoint_{settings.temperature_unit}": _c_disp_dec(float(target_raw)) if target_raw is not None else None,
+                "reasoning": d.reasoning,
+                "result": d.result,
+            })
+
+        return {
+            "success": True,
+            "period_hours": hours_ago,
+            "decisions_count": len(dec_list),
+            "temperature_unit": settings.temperature_unit,
+            "decisions": dec_list,
+        }
 
     elif func_name == "get_device_actions":
         from datetime import timedelta

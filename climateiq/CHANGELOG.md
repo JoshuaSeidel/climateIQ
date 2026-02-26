@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.18] - 2026-02-26
+
+### Added
+- **`get_zone_history` now supports all zones**: `zone_id` is now optional. Omitting it returns history for every active zone in a single call, eliminating the need for N sequential calls to compare rooms (e.g. "how did all zones do overnight?").
+- **`get_schedules` chat tool**: LLM can now query all configured temperature schedules — name, target temp in display unit, HVAC mode, days of week, start/end times, priority, and which zones they apply to. Answers questions like "what's my sleeping schedule?" or "what runs at night?"
+- **`get_user_feedback` chat tool**: LLM can now query comfort feedback history (too_hot, too_cold, too_humid, too_dry, comfortable) per zone with a summary by type. Reveals recurring comfort issues the system should address.
+- **`get_sensor_status` chat tool**: LLM can now inspect all sensors — zone assignment, HA entity ID, `last_seen` timestamp, minutes since last reading, active status, and calibration offsets. Useful for diagnosing stale/offline sensors affecting data quality.
+- **`get_occupancy_patterns` chat tool**: LLM can now access learned occupancy patterns per zone (pattern type, season, confidence, schedule data), enabling smarter scheduling recommendations.
+- **`get_ai_decisions` chat tool**: LLM can now read the AI advisor's full decision log — action taken, trigger reason, setpoint commanded, and complete reasoning text. Lets users ask "why did the system do X?" and get a real answer.
+
 ## [1.0.17] - 2026-02-26
 
 ### Added
