@@ -2392,13 +2392,15 @@ async def _run_llm_with_tools(
             tool_result["error"] = str(tool_exc)
         actions_taken.append(tool_result)
 
-    # If the LLM returned tool calls but no text, feed results back for a follow-up
-    if tool_calls and not assistant_message:
+    # If the LLM used any tools, always feed results back for a follow-up analysis.
+    # Even when the LLM returned preamble text ("I'll check...") alongside tool calls,
+    # that text is not the final answer — the tool results haven't been analyzed yet.
+    if tool_calls:
         followup_messages = list(messages)
         # Reconstruct the assistant tool-call turn
         followup_messages.append({
             "role": "assistant",
-            "content": "",
+            "content": assistant_message,  # include any preamble text from the first turn
             "tool_calls": [
                 {
                     "id": tc.get("id", f"call_{i}"),

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.21] - 2026-02-26
+
+### Fixed
+- **Chat tool-call follow-up**: When Claude returned preamble text ("I'll check...") alongside tool calls, the follow-up analysis was never made — the user saw only the preamble with no actual answer. The follow-up LLM call is now always made whenever any tools were used, regardless of whether the first turn included text. The preamble is correctly passed as the assistant's `content` in the follow-up context.
+
 ## [1.0.20] - 2026-02-26
 
 ### Improved
