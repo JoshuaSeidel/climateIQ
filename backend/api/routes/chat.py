@@ -1872,6 +1872,469 @@ async def _execute_tool_call(
         await db.commit()
         return {"success": True, "saved": True, "directive": directive_text, "category": category}
 
+    elif func_name == "get_zones":
+        from sqlalchemy.orm import selectinload
+
+        from backend.models.database import SensorReading, Zone
+
+        zone_id_arg = func_args.get("zone_id")
+        include_inactive = bool(func_args.get("include_inactive", False))
+
+        zone_stmt = select(Zone).options(
+            selectinload(Zone.sensors), selectinload(Zone.devices)
+        )
+        if not include_inactive:
+            zone_stmt = zone_stmt.where(Zone.is_active.is_(True))
+        if zone_id_arg:
+            zone_stmt = zone_stmt.where(Zone.id == uuid.UUID(str(zone_id_arg)))
+        zone_result = await db.execute(zone_stmt)
+        zones_list = list(zone_result.scalars().unique().all())
+
+        def _c_to_disp_z(c: float | None) -> float | None:
+            if c is None:
+                return None
+            if settings.temperature_unit == "F":
+                return round(c * 9 / 5 + 32, 1)
+            return round(c, 1)
+
+        zone_out = []
+        for z in zones_list:
+            sensor_ids = [s.id for s in (z.sensors or [])]
+            temp_c: float | None = None
+            humidity: float | None = None
+            presence: bool | None = None
+            last_reading_at: str | None = None
+            if sensor_ids:
+                r_stmt = (
+                    select(SensorReading)
+                    .where(SensorReading.sensor_id.in_(sensor_ids))
+                    .order_by(SensorReading.recorded_at.desc())
+                    .limit(20)
+                )
+                r_result = await db.execute(r_stmt)
+                for r in r_result.scalars().all():
+                    if temp_c is None and r.temperature_c is not None:
+                        temp_c = _validate_temp_c(r.temperature_c)
+                        last_reading_at = r.recorded_at.isoformat()
+                    if humidity is None and r.humidity is not None:
+                        humidity = r.humidity
+                    if presence is None and r.presence is not None:
+                        presence = r.presence
+                    if temp_c is not None and humidity is not None and presence is not None:
+                        break
+            zone_out.append({
+                "id": str(z.id),
+                "name": z.name,
+                "floor": z.floor,
+                "is_active": z.is_active,
+                f"current_temp_{settings.temperature_unit}": _c_to_disp_z(temp_c),
+                "humidity_pct": humidity,
+                "is_occupied": presence,
+                "last_reading_at": last_reading_at,
+                "sensor_count": len(z.sensors or []),
+                "device_count": len(z.devices or []),
+                "sensors": [
+                    {"id": str(s.id), "name": s.name, "ha_entity_id": s.ha_entity_id}
+                    for s in (z.sensors or [])
+                ],
+                "devices": [
+                    {"id": str(d.id), "name": d.name, "type": str(d.type), "ha_entity_id": d.ha_entity_id, "is_primary": d.is_primary}
+                    for d in (z.devices or [])
+                ],
+            })
+
+        return {
+            "success": True,
+            "zones_count": len(zone_out),
+            "temperature_unit": settings.temperature_unit,
+            "zones": zone_out,
+        }
+
+    elif func_name == "get_devices":
+        from backend.models.database import Device, Zone
+
+        zone_id_arg = func_args.get("zone_id")
+
+        dev_stmt = select(Device).order_by(Device.zone_id, Device.name)
+        if zone_id_arg:
+            dev_stmt = dev_stmt.where(Device.zone_id == uuid.UUID(str(zone_id_arg)))
+        dev_result = await db.execute(dev_stmt)
+        devices_list = list(dev_result.scalars().all())
+
+        zone_ids_dev = {d.zone_id for d in devices_list if d.zone_id}
+        zone_name_map_dev: dict[uuid.UUID, str] = {}
+        if zone_ids_dev:
+            zr = await db.execute(select(Zone).where(Zone.id.in_(zone_ids_dev)))
+            for z in zr.scalars().all():
+                zone_name_map_dev[z.id] = z.name
+
+        dev_out = [
+            {
+                "id": str(dev_item.id),
+                "name": dev_item.name,
+                "zone": zone_name_map_dev.get(dev_item.zone_id, str(dev_item.zone_id)),
+                "type": str(dev_item.type),
+                "ha_entity_id": dev_item.ha_entity_id,
+                "is_primary": dev_item.is_primary,
+                "capabilities": dev_item.capabilities or {},
+            }
+            for dev_item in devices_list
+        ]
+
+        return {"success": True, "devices_count": len(dev_out), "devices": dev_out}
+
+    elif func_name == "get_energy_data":
+        from datetime import timedelta
+
+        from backend.models.database import Device, DeviceAction, Zone
+
+        zone_id_arg = func_args.get("zone_id")
+        hours_ago_e = max(1, min(720, int(func_args.get("hours_ago", 24))))
+        cost_per_kwh = float(func_args.get("cost_per_kwh", 0.12))
+        now_utc = datetime.now(UTC)
+        period_start = now_utc - timedelta(hours=hours_ago_e)
+
+        # Wattage estimates by device type
+        wattage_by_type: dict[str, float] = {
+            "thermostat": 3000.0,  # central HVAC
+            "space_heater": 1500.0,
+            "mini_split": 1200.0,
+            "fan": 50.0,
+            "humidifier": 200.0,
+            "dehumidifier": 300.0,
+        }
+
+        energy_stmt = (
+            select(DeviceAction)
+            .where(DeviceAction.created_at >= period_start)
+            .order_by(DeviceAction.zone_id, DeviceAction.created_at)
+        )
+        if zone_id_arg:
+            energy_stmt = energy_stmt.where(DeviceAction.zone_id == uuid.UUID(str(zone_id_arg)))
+        energy_result = await db.execute(energy_stmt)
+        energy_actions = list(energy_result.scalars().all())
+
+        # Resolve zone names and device types
+        zone_ids_e = {a.zone_id for a in energy_actions if a.zone_id}
+        device_ids_e = {a.device_id for a in energy_actions if a.device_id}
+        zone_name_map_e: dict[uuid.UUID, str] = {}
+        device_type_map_e: dict[uuid.UUID, str] = {}
+        if zone_ids_e:
+            zr = await db.execute(select(Zone).where(Zone.id.in_(zone_ids_e)))
+            for z in zr.scalars().all():
+                zone_name_map_e[z.id] = z.name
+        if device_ids_e:
+            dr = await db.execute(select(Device).where(Device.id.in_(device_ids_e)))
+            for dev_e in dr.scalars().all():
+                device_type_map_e[dev_e.id] = str(dev_e.type)
+
+        # Aggregate by zone
+        from collections import defaultdict
+        zone_actions: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for a in energy_actions:
+            z_key = str(a.zone_id) if a.zone_id else "global"
+            d_type = device_type_map_e.get(a.device_id, "thermostat") if a.device_id else "thermostat"
+            zone_actions[z_key].append({
+                "device_type": d_type,
+                "zone_name": zone_name_map_e.get(a.zone_id, z_key) if a.zone_id else "global",
+            })
+
+        # Build zone-level estimates (each action assumed ~15 min run time)
+        zone_energy_list = []
+        total_kwh = 0.0
+        for _z_key, actions_e in zone_actions.items():
+            zone_name_e = actions_e[0]["zone_name"]
+            action_count_e = len(actions_e)
+            # Use wattage of most common device type
+            from collections import Counter as _Counter
+            type_counts = _Counter(ae["device_type"] for ae in actions_e)
+            primary_type = type_counts.most_common(1)[0][0]
+            watts = wattage_by_type.get(primary_type, 3000.0)
+            kwh = round(action_count_e * watts * 0.25 / 1000, 3)  # 15min per action
+            cost = round(kwh * cost_per_kwh, 4)
+            total_kwh += kwh
+            zone_energy_list.append({
+                "zone": zone_name_e,
+                "action_count": action_count_e,
+                "primary_device_type": primary_type,
+                "estimated_kwh": kwh,
+                "estimated_cost_usd": cost,
+            })
+
+        return {
+            "success": True,
+            "period_hours": hours_ago_e,
+            "cost_per_kwh": cost_per_kwh,
+            "total_estimated_kwh": round(total_kwh, 3),
+            "total_estimated_cost_usd": round(total_kwh * cost_per_kwh, 4),
+            "zones": zone_energy_list,
+        }
+
+    elif func_name == "get_comfort_scores":
+        from datetime import timedelta
+
+        from backend.models.database import SensorReading, Zone
+
+        zone_id_arg = func_args.get("zone_id")
+        hours_ago_c = max(1, min(720, int(func_args.get("hours_ago", 24))))
+        now_utc = datetime.now(UTC)
+        period_start = now_utc - timedelta(hours=hours_ago_c)
+
+        # Comfort boundaries (Celsius)
+        TEMP_MIN_C = 19.0  # ~66°F
+        TEMP_MAX_C = 25.0  # ~77°F
+        HUMID_MIN = 30.0
+        HUMID_MAX = 70.0
+
+        zone_stmt_c = select(Zone).where(Zone.is_active.is_(True))
+        if zone_id_arg:
+            zone_stmt_c = zone_stmt_c.where(Zone.id == uuid.UUID(str(zone_id_arg)))
+        from sqlalchemy.orm import selectinload as _sil
+        zone_stmt_c = zone_stmt_c.options(_sil(Zone.sensors))
+        z_result_c = await db.execute(zone_stmt_c)
+        zones_c = list(z_result_c.scalars().unique().all())
+
+        comfort_zones = []
+        overall_scores: list[float] = []
+        for z in zones_c:
+            sensor_ids_c = [s.id for s in (z.sensors or [])]
+            if not sensor_ids_c:
+                continue
+            r_stmt_c = (
+                select(SensorReading)
+                .where(
+                    SensorReading.sensor_id.in_(sensor_ids_c),
+                    SensorReading.recorded_at >= period_start,
+                )
+                .order_by(SensorReading.recorded_at.asc())
+            )
+            r_result_c = await db.execute(r_stmt_c)
+            readings_c = list(r_result_c.scalars().all())
+            if not readings_c:
+                continue
+
+            temps_c_list = [r.temperature_c for r in readings_c if r.temperature_c is not None]
+            humids_c_list = [r.humidity for r in readings_c if r.humidity is not None]
+
+            temp_score = 0.0
+            humid_score = 0.0
+            if temps_c_list:
+                in_range_t = sum(1 for t in temps_c_list if TEMP_MIN_C <= t <= TEMP_MAX_C)
+                temp_score = in_range_t / len(temps_c_list) * 100
+            if humids_c_list:
+                in_range_h = sum(1 for h in humids_c_list if HUMID_MIN <= h <= HUMID_MAX)
+                humid_score = in_range_h / len(humids_c_list) * 100
+
+            if temps_c_list and humids_c_list:
+                comfort_score = round(0.6 * temp_score + 0.4 * humid_score, 1)
+            elif temps_c_list:
+                comfort_score = round(temp_score, 1)
+            else:
+                comfort_score = round(humid_score, 1)
+
+            avg_t_c = sum(temps_c_list) / len(temps_c_list) if temps_c_list else None
+
+            def _c_to_disp_cf(c: float | None) -> float | None:
+                if c is None:
+                    return None
+                if settings.temperature_unit == "F":
+                    return round(c * 9 / 5 + 32, 1)
+                return round(c, 1)
+
+            overall_scores.append(comfort_score)
+            comfort_zones.append({
+                "zone": z.name,
+                "comfort_score": comfort_score,
+                f"avg_temp_{settings.temperature_unit}": _c_to_disp_cf(avg_t_c),
+                "avg_humidity_pct": round(sum(humids_c_list) / len(humids_c_list), 1) if humids_c_list else None,
+                "temp_in_range_pct": round(temp_score, 1),
+                "humidity_in_range_pct": round(humid_score, 1) if humids_c_list else None,
+                "readings_count": len(readings_c),
+            })
+
+        overall = round(sum(overall_scores) / len(overall_scores), 1) if overall_scores else 0.0
+        temp_min_d, _temp_unit_d = _format_temp_for_display(TEMP_MIN_C, settings.temperature_unit)
+        temp_max_d, _ = _format_temp_for_display(TEMP_MAX_C, settings.temperature_unit)
+        return {
+            "success": True,
+            "period_hours": hours_ago_c,
+            "comfort_boundaries": {
+                f"temp_min_{settings.temperature_unit}": round(temp_min_d, 1),
+                f"temp_max_{settings.temperature_unit}": round(temp_max_d, 1),
+                "humidity_min_pct": HUMID_MIN,
+                "humidity_max_pct": HUMID_MAX,
+            },
+            "overall_comfort_score": overall,
+            "zones": comfort_zones,
+        }
+
+    elif func_name == "set_system_mode":
+        from backend.models.database import SystemConfig
+        from backend.models.enums import SystemMode
+
+        mode_str = str(func_args.get("mode", "")).lower()
+        valid_modes = {m.value for m in SystemMode}
+        if mode_str not in valid_modes:
+            return {"success": False, "error": f"Invalid mode '{mode_str}'. Valid: {sorted(valid_modes)}"}
+
+        new_mode = SystemMode(mode_str)
+        result_sc = await db.execute(select(SystemConfig).limit(1))
+        config_sc = result_sc.scalar_one_or_none()
+        old_mode: str | None = config_sc.current_mode.value if config_sc else None
+        if config_sc is None:
+            config_sc = SystemConfig(current_mode=new_mode)
+            db.add(config_sc)
+        else:
+            config_sc.current_mode = new_mode
+
+        await db.commit()
+        return {
+            "success": True,
+            "previous_mode": old_mode,
+            "new_mode": mode_str,
+        }
+
+    elif func_name == "set_override":
+        from backend.models.database import SystemSetting
+
+        temperature = func_args.get("temperature")
+        if temperature is None:
+            return {"success": False, "error": "Missing temperature"}
+
+        try:
+            temp_display = float(temperature)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "Invalid temperature value"}
+
+        # Convert display unit → Celsius → HA unit
+        temp_c_ov = temp_display if settings.temperature_unit != "F" else (temp_display - 32) * 5 / 9
+        temp_c_ov = max(settings.safety_min_temp_c, min(settings.safety_max_temp_c, temp_c_ov))
+
+        if not settings.home_assistant_token:
+            return {"success": False, "error": "Home Assistant not configured"}
+
+        # Get climate entity
+        ov_result = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "climate_entities")
+        )
+        ov_setting = ov_result.scalar_one_or_none()
+        climate_entity_ov = (
+            ov_setting.value.get("value", "") if ov_setting and ov_setting.value else ""
+        ) or settings.climate_entities or ""
+        if isinstance(climate_entity_ov, str):
+            climate_entity_ov = climate_entity_ov.strip().split(",")[0].strip()
+        if not climate_entity_ov:
+            return {"success": False, "error": "No climate entity configured"}
+
+        # Determine HA unit from system settings
+        ha_unit_ov_result = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "ha_temperature_unit")
+        )
+        ha_unit_setting = ha_unit_ov_result.scalar_one_or_none()
+        ha_unit_ov = (
+            ha_unit_setting.value.get("value", "C") if ha_unit_setting and ha_unit_setting.value else "C"
+        )
+        temp_ha_ov = temp_c_ov * 9 / 5 + 32 if ha_unit_ov.upper() == "F" else temp_c_ov
+
+        async with HAClient(str(settings.home_assistant_url), settings.home_assistant_token) as ha:
+            try:
+                await ha.set_temperature_with_hold(climate_entity_ov, temp_ha_ov)
+            except Exception as ha_err:
+                return {"success": False, "error": f"HA call failed: {ha_err}"}
+
+        return {
+            "success": True,
+            f"temperature_set_{settings.temperature_unit}": round(temp_display, 1),
+            "temperature_c": round(temp_c_ov, 2),
+            "climate_entity": climate_entity_ov,
+        }
+
+    elif func_name == "cancel_override":
+        from backend.models.database import SystemSetting
+
+        if not settings.home_assistant_token:
+            return {"success": False, "error": "Home Assistant not configured"}
+
+        # Get climate entity
+        co_result = await db.execute(
+            select(SystemSetting).where(SystemSetting.key == "climate_entities")
+        )
+        co_setting = co_result.scalar_one_or_none()
+        climate_entity_co = (
+            co_setting.value.get("value", "") if co_setting and co_setting.value else ""
+        ) or settings.climate_entities or ""
+        if isinstance(climate_entity_co, str):
+            climate_entity_co = climate_entity_co.strip().split(",")[0].strip()
+        if not climate_entity_co:
+            return {"success": False, "error": "No climate entity configured"}
+
+        async with HAClient(str(settings.home_assistant_url), settings.home_assistant_token) as ha:
+            try:
+                await ha.resume_ecobee_program(climate_entity_co, resume_all=True)
+            except Exception:
+                # Fallback for non-Ecobee thermostats
+                try:
+                    await ha.set_preset_mode(climate_entity_co, "none")
+                except Exception as preset_err:
+                    return {"success": False, "error": f"Could not cancel override: {preset_err}"}
+
+        return {"success": True, "message": "Override canceled — thermostat returned to schedule."}
+
+    elif func_name == "delete_schedule":
+        from backend.models.database import Schedule
+
+        schedule_id_str = str(func_args.get("schedule_id", ""))
+        if not schedule_id_str:
+            return {"success": False, "error": "Missing schedule_id"}
+
+        try:
+            schedule_uuid = uuid.UUID(schedule_id_str)
+        except ValueError:
+            return {"success": False, "error": "Invalid schedule_id format"}
+
+        sched_to_delete = await db.execute(select(Schedule).where(Schedule.id == schedule_uuid))
+        schedule_obj = sched_to_delete.scalar_one_or_none()
+        if not schedule_obj:
+            return {"success": False, "error": "Schedule not found"}
+
+        schedule_name = schedule_obj.name
+        await db.delete(schedule_obj)
+        await db.commit()
+        return {"success": True, "deleted_schedule": schedule_name, "id": schedule_id_str}
+
+    elif func_name == "delete_directive":
+        from backend.models.database import UserDirective
+
+        dir_id_str = str(func_args.get("directive_id", "")).strip()
+        dir_text = str(func_args.get("directive_text", "")).strip()
+
+        if not dir_id_str and not dir_text:
+            return {"success": False, "error": "Provide directive_id or directive_text"}
+
+        dd_obj: UserDirective | None = None
+        if dir_id_str:
+            try:
+                dir_uuid = uuid.UUID(dir_id_str)
+                dd_result = await db.execute(
+                    select(UserDirective).where(UserDirective.id == dir_uuid)
+                )
+                dd_obj = dd_result.scalar_one_or_none()
+            except ValueError:
+                return {"success": False, "error": "Invalid directive_id format"}
+        else:
+            dd_result = await db.execute(
+                select(UserDirective).where(UserDirective.directive == dir_text)
+            )
+            dd_obj = dd_result.scalar_one_or_none()
+
+        if not dd_obj:
+            return {"success": False, "error": "Directive not found"}
+
+        deleted_text = dd_obj.directive
+        dd_obj.is_active = False
+        await db.commit()
+        return {"success": True, "deleted_directive": deleted_text}
+
     return {"success": False, "error": f"Unknown tool: {func_name}"}
 
 

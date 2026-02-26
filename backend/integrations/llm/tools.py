@@ -411,10 +411,269 @@ def get_device_actions_tool() -> dict[str, Any]:
     }
 
 
+def get_zones_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_zones",
+            "description": (
+                "Get all configured zones (rooms) with their current temperature, "
+                "humidity, occupancy, sensor count, and device count. Use this to "
+                "understand what rooms are configured, which are active, and their "
+                "current conditions at a glance."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "zone_id": {
+                        "type": "string",
+                        "description": "Optional: filter to a single zone by ID.",
+                    },
+                    "include_inactive": {
+                        "type": "boolean",
+                        "description": "If true, include inactive zones. Default false.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def get_devices_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_devices",
+            "description": (
+                "Get all HVAC/thermostat devices configured in the system. Returns "
+                "device type, Home Assistant entity ID, zone assignment, primary status, "
+                "and capabilities. Use to understand what hardware is available and how "
+                "it is wired to zones."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "zone_id": {
+                        "type": "string",
+                        "description": "Optional: filter to devices in a specific zone.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def get_energy_data_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_energy_data",
+            "description": (
+                "Get estimated HVAC energy usage based on device action history. "
+                "Returns kWh estimates and cost per zone. Use this for questions about "
+                "energy efficiency, cost, or which zones use the most energy."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hours_ago": {
+                        "type": "integer",
+                        "description": "Lookback window in hours. Default 24, max 720.",
+                    },
+                    "zone_id": {
+                        "type": "string",
+                        "description": "Optional: filter to a specific zone.",
+                    },
+                    "cost_per_kwh": {
+                        "type": "number",
+                        "description": "Electricity cost per kWh for cost estimates. Default 0.12.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def get_comfort_scores_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_comfort_scores",
+            "description": (
+                "Get comfort scores (0-100) for each zone based on how well temperature "
+                "and humidity stayed in the comfortable range. A score of 100 means "
+                "always in range. Use this for questions about how comfortable zones "
+                "are, which rooms need improvement, or comfort trends over time."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hours_ago": {
+                        "type": "integer",
+                        "description": "Lookback window in hours. Default 24, max 720.",
+                    },
+                    "zone_id": {
+                        "type": "string",
+                        "description": "Optional: filter to a specific zone.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def set_system_mode_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "set_system_mode",
+            "description": (
+                "Change the ClimateIQ operating mode. "
+                "learn = observe only, no changes; "
+                "scheduled = follow user-defined schedules; "
+                "follow_me = track occupancy, heat only occupied zones; "
+                "active = full AI control every 5 minutes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["learn", "scheduled", "follow_me", "active"],
+                        "description": "The operating mode to switch to.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Short rationale for the mode change.",
+                    },
+                },
+                "required": ["mode"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def set_override_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "set_override",
+            "description": (
+                "Set a manual temperature override on the thermostat. The hold persists "
+                "until canceled or the next scheduled event. Use this when the user "
+                "asks to set the temperature right now to a specific value."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "temperature": {
+                        "type": "number",
+                        "description": "Target temperature in the user's display unit (°F or °C).",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Short rationale for the override.",
+                    },
+                },
+                "required": ["temperature"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def cancel_override_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "cancel_override",
+            "description": (
+                "Cancel any active manual temperature override, returning the thermostat "
+                "to its normal schedule. Use when the user asks to cancel a hold, resume "
+                "the schedule, or stop a manual override."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def delete_schedule_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "delete_schedule",
+            "description": (
+                "Delete a schedule by its ID. First call get_schedules to find the "
+                "schedule ID you want to delete. This permanently removes the schedule."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schedule_id": {
+                        "type": "string",
+                        "description": "UUID of the schedule to delete.",
+                    },
+                },
+                "required": ["schedule_id"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def delete_directive_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "delete_directive",
+            "description": (
+                "Delete a saved memory/directive. You can identify it by directive_id "
+                "(preferred, from get_schedules or the memory panel) or by exact "
+                "directive_text. Use when the user asks to forget or remove a specific "
+                "memory."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "directive_id": {
+                        "type": "string",
+                        "description": "UUID of the directive to delete.",
+                    },
+                    "directive_text": {
+                        "type": "string",
+                        "description": "Exact text of the directive to delete (used if ID not known).",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 TOOLS: list[dict[str, Any]] = [
     set_zone_temperature_tool(),
     set_device_state_tool(),
+    set_override_tool(),
+    cancel_override_tool(),
+    set_system_mode_tool(),
     get_zone_status_tool(),
+    get_zones_tool(),
+    get_devices_tool(),
     get_zone_history_tool(),
     get_device_actions_tool(),
     get_schedules_tool(),
@@ -422,9 +681,13 @@ TOOLS: list[dict[str, Any]] = [
     get_sensor_status_tool(),
     get_occupancy_patterns_tool(),
     get_ai_decisions_tool(),
+    get_energy_data_tool(),
+    get_comfort_scores_tool(),
     get_weather_tool(),
     create_schedule_tool(),
+    delete_schedule_tool(),
     save_memory_tool(),
+    delete_directive_tool(),
 ]
 
 

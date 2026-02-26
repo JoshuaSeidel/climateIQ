@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.19] - 2026-02-26
+
+### Added
+- **`get_zones` chat tool**: LLM can now list all configured zones with current temperature, humidity, occupancy, floor, sensor count, device count, and last reading timestamp — all in one call.
+- **`get_devices` chat tool**: LLM can now query all HVAC/thermostat devices — type, HA entity ID, zone assignment, primary status, and capabilities.
+- **`get_energy_data` chat tool**: LLM can now estimate HVAC energy usage (kWh and cost) from device action history, broken down per zone. Useful for energy efficiency questions.
+- **`get_comfort_scores` chat tool**: LLM can now compute comfort scores (0–100) per zone based on how often temperature and humidity stayed in the comfort range over a given window.
+- **`set_system_mode` chat tool**: LLM can now switch the ClimateIQ operating mode (learn, scheduled, follow_me, active) with a reason.
+- **`set_override` chat tool**: LLM can now set a manual temperature override directly on the thermostat. Temperature is provided in the user's display unit; the tool handles conversion.
+- **`cancel_override` chat tool**: LLM can now cancel any active manual hold, returning the thermostat to its normal schedule (uses Ecobee `resume_program` with non-Ecobee fallback).
+- **`delete_schedule` chat tool**: LLM can now delete a schedule by ID (use `get_schedules` first to find the ID).
+- **`delete_directive` chat tool**: LLM can now delete a saved memory/directive by ID or exact text — lets users ask the assistant to forget specific facts.
+
 ## [1.0.18] - 2026-02-26
 
 ### Added
