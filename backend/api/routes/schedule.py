@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, time, timedelta
 from typing import Annotated, Any
@@ -16,6 +17,35 @@ from backend.api.dependencies import get_db
 from backend.models.database import Schedule, Zone
 
 router = APIRouter()
+
+
+_log = __import__("logging").getLogger(__name__)
+_bg_tasks: set[asyncio.Task[None]] = set()
+
+
+def _fire_apply_now(schedule: Schedule) -> None:
+    """Create a background task for immediate schedule application.
+
+    Keeps a reference in _bg_tasks so the event loop doesn't GC the task
+    before it completes (satisfies RUF006).
+    """
+    task = asyncio.create_task(_apply_schedule_now_bg(schedule))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
+async def _apply_schedule_now_bg(schedule: Schedule) -> None:
+    """Fire-and-forget wrapper: immediately apply a schedule after it is saved.
+
+    Uses a lazy import of apply_schedule_now from main to avoid circular
+    imports at module load time.
+    """
+    try:
+        from backend.api.main import apply_schedule_now  # lazy import — safe at call time
+
+        await apply_schedule_now(schedule)
+    except Exception as _err:
+        _log.debug("_apply_schedule_now_bg (non-critical): %s", _err)
 
 
 # ============================================================================
@@ -660,6 +690,10 @@ async def create_schedule(
     await db.commit()
     await db.refresh(schedule)
 
+    # Apply immediately if the schedule is currently active
+    if schedule.is_enabled:
+        _fire_apply_now(schedule)
+
     zone_uuids = _parse_zone_ids(schedule)
     zone_map = await _build_zone_map(db, zone_uuids)
 
@@ -712,6 +746,10 @@ async def update_schedule(
     await db.commit()
     await db.refresh(schedule)
 
+    # Apply immediately if the updated schedule is currently active
+    if schedule.is_enabled:
+        _fire_apply_now(schedule)
+
     zone_uuids = _parse_zone_ids(schedule)
     zone_map = await _build_zone_map(db, zone_uuids)
 
@@ -757,6 +795,9 @@ async def enable_schedule(
 
     await db.commit()
     await db.refresh(schedule)
+
+    # Apply immediately if the now-enabled schedule is currently active
+    _fire_apply_now(schedule)
 
     zone_uuids = _parse_zone_ids(schedule)
     zone_map = await _build_zone_map(db, zone_uuids)

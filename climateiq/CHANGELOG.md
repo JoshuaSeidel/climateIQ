@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.22] - 2026-02-26
+
+### Fixed
+- **Immediate schedule application**: When a schedule is created, updated, or enabled, the thermostat is now set immediately if the schedule is currently active (correct day, current time is within the schedule window). Previously the system waited up to 60 s for the next `execute_schedules()` tick. The new `apply_schedule_now()` function runs as a fire-and-forget background task so the API response is still instant.
+
 ## [1.0.21] - 2026-02-26
 
 ### Fixed

@@ -14,6 +14,10 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backend.models.database import Schedule as _Schedule
 
 import redis.asyncio as redis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
@@ -763,6 +767,171 @@ async def execute_schedules() -> None:
 
     except Exception as e:
         logger.error("Error in schedule execution: %s", e)
+
+
+# ============================================================================
+# Immediate Schedule Application
+# ============================================================================
+
+
+async def apply_schedule_now(schedule: _Schedule) -> None:
+    """Immediately apply a schedule to the thermostat if it is currently active.
+
+    Called after a schedule is created, updated, or enabled so the thermostat
+    reflects the change right away — without waiting up to 60 s for the next
+    execute_schedules() tick.
+
+    Silently returns if the schedule is not currently active (wrong day, not
+    yet started, past end_time, no HA client, etc.).
+    """
+    global _last_offset_temp
+
+    if not getattr(schedule, "is_enabled", False):
+        return
+
+    import backend.api.dependencies as _deps
+
+    ha_client = _deps._ha_client
+    if ha_client is None:
+        return
+
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import select as sa_select
+
+    from backend.models.database import SystemSetting
+
+    try:
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            # --- Resolve user timezone ---
+            user_tz = ZoneInfo("UTC")
+            try:
+                tz_result = await db.execute(
+                    sa_select(SystemSetting).where(SystemSetting.key == "timezone")
+                )
+                tz_row = tz_result.scalar_one_or_none()
+                if tz_row and tz_row.value:
+                    tz_val = (
+                        tz_row.value.get("value", "")
+                        if isinstance(tz_row.value, dict)
+                        else str(tz_row.value)
+                    )
+                    if tz_val:
+                        user_tz = ZoneInfo(tz_val)
+            except Exception:  # noqa: S110
+                pass
+
+            if str(user_tz) == "UTC":
+                try:
+                    ha_config = await ha_client.get_config()
+                    ha_tz_str = ha_config.get("time_zone", "")
+                    if ha_tz_str:
+                        user_tz = ZoneInfo(ha_tz_str)
+                except Exception:  # noqa: S110
+                    pass
+
+            now_local = datetime.now(user_tz)
+
+            # --- Day-of-week check ---
+            if now_local.weekday() not in (schedule.days_of_week or []):
+                return
+
+            # --- Time window: must have started, not yet ended ---
+            try:
+                sched_hour, sched_min = map(int, schedule.start_time.split(":"))
+            except (ValueError, AttributeError):
+                return
+
+            sched_start = now_local.replace(
+                hour=sched_hour, minute=sched_min, second=0, microsecond=0
+            )
+            if now_local < sched_start:
+                return  # schedule hasn't started yet
+
+            if schedule.end_time:
+                try:
+                    end_h, end_m = map(int, schedule.end_time.split(":"))
+                    sched_end = now_local.replace(
+                        hour=end_h, minute=end_m, second=0, microsecond=0
+                    )
+                    if now_local > sched_end:
+                        return  # schedule already ended
+                except (ValueError, AttributeError):
+                    pass
+
+            # --- Resolve climate entity ---
+            climate_entity: str | None = None
+            setting_result = await db.execute(
+                sa_select(SystemSetting).where(SystemSetting.key == "climate_entities")
+            )
+            setting_row = setting_result.scalar_one_or_none()
+            if setting_row and setting_row.value:
+                val = setting_row.value.get("value", "")
+                if isinstance(val, str) and val.strip():
+                    climate_entity = val.strip().split(",")[0].strip()
+
+            if not climate_entity:
+                _cfg = settings_instance.climate_entities.strip()
+                if _cfg:
+                    climate_entity = _cfg.split(",")[0].strip()
+
+            if not climate_entity:
+                return
+
+            temp_unit = settings_instance.temperature_unit.upper()
+
+            # --- Offset compensation ---
+            from backend.core.temp_compensation import apply_offset_compensation
+
+            adjusted_temp_c: float = schedule.target_temp_c
+            offset_c = 0.0
+            priority_zone_name: str | None = None
+            try:
+                adjusted_temp_c, offset_c, priority_zone_name, *_ = (
+                    await apply_offset_compensation(
+                        db,
+                        ha_client,
+                        climate_entity,
+                        schedule.target_temp_c,
+                        zone_ids=schedule.zone_ids or None,
+                    )
+                )
+            except Exception as comp_err:
+                logger.debug("apply_schedule_now offset compensation (non-critical): %s", comp_err)
+
+            target_temp = adjusted_temp_c
+            if temp_unit == "F":
+                target_temp = round(adjusted_temp_c * 9 / 5 + 32, 1)
+
+            # --- Apply to thermostat ---
+            try:
+                await ha_client.set_temperature_with_hold(climate_entity, target_temp)
+            except Exception:
+                await ha_client.set_temperature(climate_entity, target_temp)
+
+            _last_offset_temp[str(schedule.id)] = adjusted_temp_c
+
+            temp_display = f"{target_temp:.1f}°{'F' if temp_unit == 'F' else 'C'}"
+            logger.info(
+                "Schedule immediately applied: '%s' → %s (entity: %s)",
+                schedule.name,
+                temp_display,
+                climate_entity,
+            )
+            if offset_c and abs(offset_c) > 0.1:
+                logger.info(
+                    "Offset compensation: +%.1f °F for zone '%s'",
+                    round(offset_c * 9 / 5, 1),
+                    priority_zone_name or "unknown",
+                )
+
+    except Exception as err:
+        logger.warning(
+            "apply_schedule_now failed for '%s': %s",
+            getattr(schedule, "name", "?"),
+            err,
+        )
 
 
 # ============================================================================
