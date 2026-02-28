@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.23] - 2026-02-27
+
+### Fixed
+- **Offset compensation overshoot bug**: When zone sensors were already above the schedule target in heat mode, the thermostat anchor logic was pushing the setpoint *higher* than desired (e.g. schedule=68°F, zones=69.8°F, thermostat hallway=72°F → adjusted=70°F). The anchor used the thermostat reading as the base (72°F) and only subtracted the small zone error (-2°F), landing at 70°F instead of ≤68°F. Fixed by adding a fast-path in `compute_adjusted_setpoint`: when zones are at or above target in heat mode (or at/below in cool mode), the setpoint is immediately clamped to `min(desired, thermostat_reading)` — guaranteeing the thermostat is already satisfied and HVAC stops. This also handles the edge case where the thermostat sensor itself reads below the target in a warm room (sets setpoint = thermostat's current reading → immediately satisfied → no further heating).
+
 ## [1.0.22] - 2026-02-26
 
 ### Fixed

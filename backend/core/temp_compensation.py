@@ -362,6 +362,37 @@ async def compute_adjusted_setpoint(
     # Negative = zones are above target (need more cooling / less heating)
     zone_error_c = desired_temp_c - priority_zone_temp_c
 
+    # Fast path: zones already at or past the target — HVAC should not run.
+    #
+    # Heat mode, zones ≥ target: set to min(desired, thermostat) so the
+    # thermostat is immediately satisfied regardless of where its sensor reads.
+    # This prevents the anchor-base logic below from pushing the setpoint *above*
+    # the desired value (e.g. base=72°F + offset=-2°F → 70°F) when the rooms
+    # are already warm.
+    #
+    # Cool mode: symmetric — set to max(desired, thermostat).
+    if "heat" in hvac_mode and zone_error_c <= 0:
+        no_heat_c = min(desired_temp_c, thermostat_reading_c)
+        logger.info(
+            "Offset compensation: zones %.1f°F at/above target %.1f°F "
+            "in heat mode — clamping setpoint to %.1f°F so HVAC stays off",
+            priority_zone_temp_c * 9 / 5 + 32,
+            desired_temp_c * 9 / 5 + 32,
+            no_heat_c * 9 / 5 + 32,
+        )
+        return no_heat_c, no_heat_c - desired_temp_c
+
+    if "cool" in hvac_mode and zone_error_c >= 0:
+        no_cool_c = max(desired_temp_c, thermostat_reading_c)
+        logger.info(
+            "Offset compensation: zones %.1f°F at/below target %.1f°F "
+            "in cool mode — clamping setpoint to %.1f°F so HVAC stays off",
+            priority_zone_temp_c * 9 / 5 + 32,
+            desired_temp_c * 9 / 5 + 32,
+            no_cool_c * 9 / 5 + 32,
+        )
+        return no_cool_c, no_cool_c - desired_temp_c
+
     # Work in °F so we can round to whole-degree increments that the
     # thermostat will actually act on (Ecobee rounds at 0.5°F).
     zone_error_f = zone_error_c * 9.0 / 5.0
