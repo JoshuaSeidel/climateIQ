@@ -457,6 +457,46 @@ async def _switch_hvac_mode_if_needed(
         logger.warning("%s: could not set HVAC mode to '%s': %s", context, target_mode, _me)
 
 
+async def _auto_select_hvac_mode(
+    ha_client: Any,
+    climate_entity: str,
+    desired_temp_c: float,
+) -> str | None:
+    """Auto-select heat or cool based on current temperature vs desired target.
+
+    Used when schedule.hvac_mode is 'auto' (default) — the system picks the
+    best mode rather than leaving the thermostat in whatever mode it's already in.
+
+    Returns "heat", "cool", "heat_cool", or None (near target / error / unsupported).
+    """
+    try:
+        state = await ha_client.get_state(climate_entity)
+        if not state:
+            return None
+        supported = {m.lower() for m in (state.attributes.get("hvac_modes") or [])}
+        from backend.core.temp_compensation import get_thermostat_reading_c
+
+        current_c = await get_thermostat_reading_c(ha_client, climate_entity)
+        if current_c is None:
+            return None
+        error_c = desired_temp_c - current_c  # positive = need heat, negative = need cool
+        _HEAT_DEADBAND = 0.3  # ~0.5°F — avoid oscillation near target
+        if error_c > _HEAT_DEADBAND:
+            if "heat" in supported:
+                return "heat"
+            if "heat_cool" in supported:
+                return "heat_cool"
+        elif error_c < -_HEAT_DEADBAND:
+            if "cool" in supported:
+                return "cool"
+            if "heat_cool" in supported:
+                return "heat_cool"
+        return None  # near target — no mode change needed
+    except Exception as _ae:
+        logger.debug("_auto_select_hvac_mode failed (non-critical): %s", _ae)
+        return None
+
+
 # ============================================================================
 # Schedule Execution
 # ============================================================================
@@ -643,8 +683,12 @@ async def execute_schedules() -> None:
                 if exec_key in _last_executed_schedules:
                     continue
 
-                # Switch HVAC mode if the schedule specifies one (before setting temp)
+                # Switch HVAC mode — explicit schedule mode or auto-select based on temp need
                 sched_hvac_mode = _resolve_schedule_hvac_mode(schedule.hvac_mode)
+                if sched_hvac_mode is None:
+                    sched_hvac_mode = await _auto_select_hvac_mode(
+                        ha_client, climate_entity, schedule.target_temp_c
+                    )
                 if sched_hvac_mode:
                     await _switch_hvac_mode_if_needed(
                         ha_client, climate_entity, sched_hvac_mode,
@@ -935,8 +979,12 @@ async def apply_schedule_now(schedule: _Schedule) -> None:
 
             temp_unit = settings_instance.temperature_unit.upper()
 
-            # --- Switch HVAC mode if the schedule specifies one (before setting temp) ---
+            # --- Switch HVAC mode — explicit schedule mode or auto-select ---
             sched_hvac_mode = _resolve_schedule_hvac_mode(getattr(schedule, "hvac_mode", None))
+            if sched_hvac_mode is None:
+                sched_hvac_mode = await _auto_select_hvac_mode(
+                    ha_client, climate_entity, schedule.target_temp_c
+                )
             if sched_hvac_mode:
                 await _switch_hvac_mode_if_needed(
                     ha_client, climate_entity, sched_hvac_mode,
@@ -1132,8 +1180,12 @@ async def maintain_climate_offset() -> None:
                 zone_ids,
             )
 
-            # ── Switch HVAC mode if the schedule specifies one ──────────
+            # ── Switch HVAC mode — explicit schedule mode or auto-select ──
             sched_hvac_mode = _resolve_schedule_hvac_mode(active_schedule.hvac_mode)
+            if sched_hvac_mode is None:
+                sched_hvac_mode = await _auto_select_hvac_mode(
+                    ha_client, climate_entity, desired_temp_c
+                )
             if sched_hvac_mode:
                 await _switch_hvac_mode_if_needed(
                     ha_client, climate_entity, sched_hvac_mode,

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.25] - 2026-03-08
+
+### Changed
+- **Automatic HVAC mode selection**: When a schedule's `hvac_mode` is `"auto"` (the default), the system now automatically switches the thermostat to `heat` or `cool` based on whether the current temperature is below or above the target — rather than leaving it in whatever mode it happened to be in. A ±0.3 °C (~0.5 °F) dead-band prevents oscillation when the thermostat is near the target. If only `heat_cool` is supported (no dedicated heat/cool modes), that is used as the fallback. Explicit schedule modes (`heat`, `cool`, `heat_cool`, `off`) continue to work as before.
+
 ## [1.0.24] - 2026-03-08
 
 ### Added
