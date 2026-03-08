@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.26] - 2026-03-08
+
+### Changed
+- **Weather-aware HVAC mode via AI advisor**: The climate advisor LLM now receives an optional `hvac_mode` field in its JSON response schema. When outdoor conditions make a mode switch clearly beneficial (e.g. very cold outside with zones drifting below target → recommend `"heat"`; warm outside with zones climbing → recommend `"cool"`), the advisor includes it and the system switches the thermostat accordingly. This overrides the initial rule-based auto-selection so the AI — which already has full outdoor temperature and condition context — makes the final call. The rule-based `_auto_select_hvac_mode` remains as a fallback for ticks where the advisor is skipped (dead-band path). Omitting `hvac_mode` leaves the current thermostat mode unchanged.
+
 ## [1.0.25] - 2026-03-08
 
 ### Changed

@@ -1277,6 +1277,13 @@ async def maintain_climate_offset() -> None:
                 max_offset_f = await get_max_offset_setting(db)
                 vetted = SafetyProtocol.vet(decision, desired_temp_c, max_offset_f, hvac_mode)
 
+                # Apply AI-recommended mode change (overrides the initial auto-select)
+                if vetted.hvac_mode:
+                    await _switch_hvac_mode_if_needed(
+                        ha_client, climate_entity, vetted.hvac_mode,
+                        f"Climate maintenance (advisor, schedule '{active_schedule.name}')",
+                    )
+
                 # Respect wait decisions
                 if vetted.action == "wait":
                     logger.info(

@@ -70,6 +70,7 @@ class AdvisorDecision:
     wait_until: datetime | None  # only when action=="wait"
     reasoning: str
     from_llm: bool              # False = formula passthrough (LLM skipped or failed)
+    hvac_mode: str | None = None  # optional AI-recommended mode change (heat/cool/heat_cool)
 
 
 @dataclass
@@ -614,11 +615,20 @@ or "wait" decision means zones will drift toward ambient — only use hold/wait
 when zones are already at or past target.  To resume heating/cooling, the
 setpoint must cross the thermostat's current reading.
 
+HVAC MODE: You may optionally recommend switching the thermostat's hvac_mode
+when outdoor conditions make it clearly beneficial — e.g. switch to "heat"
+when it is very cold outside and the zone is drifting below target, or to
+"cool" when it is warm outside and the zone is climbing above target.  Only
+include "hvac_mode" when a switch is genuinely warranted; omit it otherwise
+so the current mode is left unchanged.  Valid values: "heat", "cool",
+"heat_cool".
+
 Return JSON only (no prose):
 {{
   "action": "adjust" | "hold" | "wait",
   "setpoint_f": <integer 55-90, required only if action=adjust>,
   "wait_minutes": <integer 5-30, required only if action=wait>,
+  "hvac_mode": "heat" | "cool" | "heat_cool" (optional — omit if no change needed),
   "reasoning": "<2 sentences max>"
 }}"""
 
@@ -675,6 +685,7 @@ class SafetyProtocol:
                     wait_until=cap,
                     reasoning=decision.reasoning,
                     from_llm=decision.from_llm,
+                    hvac_mode=decision.hvac_mode,
                 )
                 logger.warning(
                     "SafetyProtocol: wait_until capped at %d minutes", _MAX_WAIT_MINUTES
@@ -694,6 +705,7 @@ class SafetyProtocol:
                 wait_until=decision.wait_until,
                 reasoning=decision.reasoning,
                 from_llm=decision.from_llm,
+                hvac_mode=decision.hvac_mode,
             )
 
         return decision
@@ -957,6 +969,11 @@ class ClimateAdvisor:
 
         reasoning = str(data.get("reasoning", "")).strip()[:300]
 
+        # Optional mode recommendation — validate against allowed values
+        _VALID_MODES = {"heat", "cool", "heat_cool"}
+        raw_mode = str(data.get("hvac_mode", "") or "").lower().strip()
+        advisor_hvac_mode: str | None = raw_mode if raw_mode in _VALID_MODES else None
+
         if action == "wait":
             wait_minutes = int(data.get("wait_minutes", 10))
             wait_minutes = max(5, min(wait_minutes, _MAX_WAIT_MINUTES))
@@ -966,6 +983,7 @@ class ClimateAdvisor:
                 wait_until=datetime.now(UTC) + timedelta(minutes=wait_minutes),
                 reasoning=reasoning or f"LLM: wait {wait_minutes} minutes",
                 from_llm=True,
+                hvac_mode=advisor_hvac_mode,
             )
 
         if action == "hold":
@@ -975,6 +993,7 @@ class ClimateAdvisor:
                 wait_until=None,
                 reasoning=reasoning or "LLM: hold current setpoint",
                 from_llm=True,
+                hvac_mode=advisor_hvac_mode,
             )
 
         # action == "adjust"
@@ -986,4 +1005,5 @@ class ClimateAdvisor:
             wait_until=None,
             reasoning=reasoning or f"LLM: set to {setpoint_f:.0f}°F",
             from_llm=True,
+            hvac_mode=advisor_hvac_mode,
         )
