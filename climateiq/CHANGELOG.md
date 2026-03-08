@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.27] - 2026-03-08
+
+### Fixed
+- **Auto HVAC mode selection now uses zone sensor average**: `_auto_select_hvac_mode` was comparing the schedule target against the thermostat's own sensor (hallway/return), which can read warmer than the actual zones being targeted. If the Ecobee hallway read at or above the schedule target while bedroom sensors were below it, `error_c` would be ≤0 and the function would return `None` — leaving the thermostat in whatever mode it was already in even though heat was needed. Fixed by passing `db` and `zone_ids` to the function so it reads the zone sensor average (same source used by offset compensation) and falls back to the thermostat reading only when zone sensors are unavailable.
+
 ## [1.0.26] - 2026-03-08
 
 ### Changed

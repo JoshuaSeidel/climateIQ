@@ -461,11 +461,16 @@ async def _auto_select_hvac_mode(
     ha_client: Any,
     climate_entity: str,
     desired_temp_c: float,
+    *,
+    db: Any = None,
+    zone_ids: list[Any] | None = None,
 ) -> str | None:
     """Auto-select heat or cool based on current temperature vs desired target.
 
-    Used when schedule.hvac_mode is 'auto' (default) — the system picks the
-    best mode rather than leaving the thermostat in whatever mode it's already in.
+    Compares zone sensor average (preferred) or thermostat reading (fallback)
+    against desired_temp_c.  Zone sensors are used when available because the
+    thermostat's own sensor (hallway/return) can read warmer/cooler than the
+    zones the schedule is targeting.
 
     Returns "heat", "cool", "heat_cool", or None (near target / error / unsupported).
     """
@@ -474,11 +479,22 @@ async def _auto_select_hvac_mode(
         if not state:
             return None
         supported = {m.lower() for m in (state.attributes.get("hvac_modes") or [])}
-        from backend.core.temp_compensation import get_thermostat_reading_c
+        from backend.core.temp_compensation import get_avg_zone_temp_c, get_thermostat_reading_c
 
-        current_c = await get_thermostat_reading_c(ha_client, climate_entity)
+        current_c: float | None = None
+
+        # Prefer zone sensor average — thermostat hallway can diverge significantly
+        if db is not None and zone_ids:
+            zone_avg, _ = await get_avg_zone_temp_c(db, zone_ids, ha_client)
+            if zone_avg is not None:
+                current_c = zone_avg
+
+        # Fall back to thermostat reading
+        if current_c is None:
+            current_c = await get_thermostat_reading_c(ha_client, climate_entity)
         if current_c is None:
             return None
+
         error_c = desired_temp_c - current_c  # positive = need heat, negative = need cool
         _HEAT_DEADBAND = 0.3  # ~0.5°F — avoid oscillation near target
         if error_c > _HEAT_DEADBAND:
@@ -687,7 +703,8 @@ async def execute_schedules() -> None:
                 sched_hvac_mode = _resolve_schedule_hvac_mode(schedule.hvac_mode)
                 if sched_hvac_mode is None:
                     sched_hvac_mode = await _auto_select_hvac_mode(
-                        ha_client, climate_entity, schedule.target_temp_c
+                        ha_client, climate_entity, schedule.target_temp_c,
+                        db=db, zone_ids=schedule.zone_ids or None,
                     )
                 if sched_hvac_mode:
                     await _switch_hvac_mode_if_needed(
@@ -983,7 +1000,8 @@ async def apply_schedule_now(schedule: _Schedule) -> None:
             sched_hvac_mode = _resolve_schedule_hvac_mode(getattr(schedule, "hvac_mode", None))
             if sched_hvac_mode is None:
                 sched_hvac_mode = await _auto_select_hvac_mode(
-                    ha_client, climate_entity, schedule.target_temp_c
+                    ha_client, climate_entity, schedule.target_temp_c,
+                    db=db, zone_ids=getattr(schedule, "zone_ids", None) or None,
                 )
             if sched_hvac_mode:
                 await _switch_hvac_mode_if_needed(
@@ -1184,7 +1202,8 @@ async def maintain_climate_offset() -> None:
             sched_hvac_mode = _resolve_schedule_hvac_mode(active_schedule.hvac_mode)
             if sched_hvac_mode is None:
                 sched_hvac_mode = await _auto_select_hvac_mode(
-                    ha_client, climate_entity, desired_temp_c
+                    ha_client, climate_entity, desired_temp_c,
+                    db=db, zone_ids=zone_ids,
                 )
             if sched_hvac_mode:
                 await _switch_hvac_mode_if_needed(
