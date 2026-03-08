@@ -465,35 +465,30 @@ async def _auto_select_hvac_mode(
     db: Any = None,
     zone_ids: list[Any] | None = None,
 ) -> str | None:
-    """Auto-select heat or cool based on current temperature vs desired target.
+    """Auto-select heat or cool based on zone sensor average vs desired target.
 
-    Compares zone sensor average (preferred) or thermostat reading (fallback)
-    against desired_temp_c.  Zone sensors are used when available because the
-    thermostat's own sensor (hallway/return) can read warmer/cooler than the
-    zones the schedule is targeting.
+    Only zone sensors are used for the heat/cool decision — the thermostat's
+    own sensor (hallway/return air) is only valid for offset compensation and
+    must never stand in for zone temperature.  Returns None when zone readings
+    are unavailable so the current mode is left unchanged.
 
-    Returns "heat", "cool", "heat_cool", or None (near target / error / unsupported).
+    Returns "heat", "cool", "heat_cool", or None (near target / no data / unsupported).
     """
     try:
         state = await ha_client.get_state(climate_entity)
         if not state:
             return None
         supported = {m.lower() for m in (state.attributes.get("hvac_modes") or [])}
-        from backend.core.temp_compensation import get_avg_zone_temp_c, get_thermostat_reading_c
+        from backend.core.temp_compensation import get_avg_zone_temp_c
 
-        current_c: float | None = None
+        if db is None or not zone_ids:
+            return None  # no zone data — don't guess from thermostat sensor
 
-        # Prefer zone sensor average — thermostat hallway can diverge significantly
-        if db is not None and zone_ids:
-            zone_avg, _ = await get_avg_zone_temp_c(db, zone_ids, ha_client)
-            if zone_avg is not None:
-                current_c = zone_avg
+        zone_avg, _ = await get_avg_zone_temp_c(db, zone_ids, ha_client)
+        if zone_avg is None:
+            return None  # sensors offline — leave mode unchanged
 
-        # Fall back to thermostat reading
-        if current_c is None:
-            current_c = await get_thermostat_reading_c(ha_client, climate_entity)
-        if current_c is None:
-            return None
+        current_c = zone_avg
 
         error_c = desired_temp_c - current_c  # positive = need heat, negative = need cool
         _HEAT_DEADBAND = 0.3  # ~0.5°F — avoid oscillation near target

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.28] - 2026-03-08
+
+### Fixed
+- **Thermostat sensor never used as zone temperature**: `_auto_select_hvac_mode` no longer falls back to the Ecobee's own sensor when zone readings are unavailable. The thermostat sensor is only valid for offset compensation (computing how far to push the setpoint) — it must not stand in for actual zone temperatures. If zone sensor data is absent, the function now returns `None` and leaves the current HVAC mode unchanged rather than making a potentially wrong decision based on the hallway/return-air sensor.
+
 ## [1.0.27] - 2026-03-08
 
 ### Fixed
