@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.29] - 2026-03-08
+
+### Added
+- **Mode switch cooldown**: `_switch_hvac_mode_if_needed` now enforces a 30-minute cooldown between mode reversals (e.g. heat → cool or cool → heat). Switching to the same mode is always allowed (idempotent). When a reversal is blocked, the suppression and remaining cooldown are logged at INFO level. This applies to both the rule-based auto-select path and the AI advisor recommendation path.
+- **Wider auto-select dead-band**: The threshold in `_auto_select_hvac_mode` for triggering a mode switch was increased from 0.3 °C (~0.5 °F) to 0.6 °C (~1 °F). Zones must be at least 1 °F below target before switching to heat, or 1 °F above before switching to cool, preventing switches near the target temperature.
+
 ## [1.0.28] - 2026-03-08
 
 ### Fixed

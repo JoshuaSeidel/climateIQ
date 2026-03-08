@@ -418,6 +418,14 @@ async def check_sensor_health() -> None:
 
 # Schedule hvac_mode values that map to an explicit HA climate mode.
 # "auto" means "don't touch the current thermostat mode" — only set the temp.
+# Tracks the last HVAC mode switch per climate entity so we can enforce a
+# cooldown and prevent rapid heat↔cool oscillation.
+_last_mode_switch: dict[str, tuple[str, datetime]] = {}
+
+# Minimum seconds between mode reversals (e.g. heat → cool or cool → heat).
+# Switching to the *same* mode again always passes (idempotent).
+_MODE_SWITCH_COOLDOWN_S: int = 30 * 60  # 30 minutes
+
 _SCHED_MODE_ALIASES: dict[str, str] = {
     "heat": "heat",
     "heating": "heat",
@@ -451,7 +459,23 @@ async def _switch_hvac_mode_if_needed(
         current = (state.state or "").lower() if state else ""
         if current == target_mode:
             return
+
+        # Cooldown: block rapid reversals (e.g. heat → cool → heat within minutes)
+        last = _last_mode_switch.get(climate_entity)
+        if last is not None:
+            last_mode, last_time = last
+            elapsed_s = (datetime.now(UTC) - last_time).total_seconds()
+            if last_mode != target_mode and elapsed_s < _MODE_SWITCH_COOLDOWN_S:
+                logger.info(
+                    "%s: mode switch %s → %s suppressed — last switch %d min ago "
+                    "(cooldown %d min)",
+                    context, current or "unknown", target_mode,
+                    int(elapsed_s / 60), _MODE_SWITCH_COOLDOWN_S // 60,
+                )
+                return
+
         await ha_client.set_hvac_mode(climate_entity, target_mode)
+        _last_mode_switch[climate_entity] = (target_mode, datetime.now(UTC))
         logger.info("%s: thermostat mode %s → %s", context, current or "unknown", target_mode)
     except Exception as _me:
         logger.warning("%s: could not set HVAC mode to '%s': %s", context, target_mode, _me)
@@ -491,7 +515,7 @@ async def _auto_select_hvac_mode(
         current_c = zone_avg
 
         error_c = desired_temp_c - current_c  # positive = need heat, negative = need cool
-        _HEAT_DEADBAND = 0.3  # ~0.5°F — avoid oscillation near target
+        _HEAT_DEADBAND = 0.6  # ~1°F — wide enough to avoid oscillation near target
         if error_c > _HEAT_DEADBAND:
             if "heat" in supported:
                 return "heat"
