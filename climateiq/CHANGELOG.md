@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.24] - 2026-03-08
+
+### Added
+- **Schedule-driven HVAC mode switching**: The thermostat's heat/cool/heat_cool/off mode is now switched to match the schedule's `hvac_mode` before the temperature setpoint is applied. Previously the `hvac_mode` field was stored in the database and returned in API responses but never actually sent to the thermostat. Mode switching is wired into `execute_schedules()`, `apply_schedule_now()`, and `maintain_climate_offset()`. A schedule set to `"auto"` continues to leave the thermostat's current mode unchanged (only the temperature is adjusted). The switch only issues an HA service call when the thermostat is not already in the target mode, avoiding unnecessary traffic on every 60-second tick.
+- `apply_offset_compensation()` now accepts an optional `hvac_mode` parameter so callers that have just switched the mode can pass the known target mode directly, avoiding a stale thermostat state read from HA immediately after the switch.
+
 ## [1.0.23] - 2026-02-27
 
 ### Fixed

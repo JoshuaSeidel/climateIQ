@@ -507,6 +507,7 @@ async def apply_offset_compensation(
     climate_entity: str,
     desired_temp_c: float,
     zone_ids: list[str] | None = None,
+    hvac_mode: str | None = None,
 ) -> tuple[float, float, str | None, float | None, str]:
     """High-level function: compute and return the adjusted setpoint.
 
@@ -520,6 +521,10 @@ async def apply_offset_compensation(
         desired_temp_c: What we want the priority zone to be (Celsius)
         zone_ids: Optional zone IDs to consider (from schedule).
                   None = all active zones (for Follow-Me / Active mode).
+        hvac_mode: If provided, use this mode for dead-band logic instead
+                   of reading the thermostat state.  Pass the schedule's
+                   hvac_mode here when the caller has just issued a mode
+                   switch so stale HA state is not used.
 
     Returns:
         (adjusted_temp_c, offset_c, zone_names, avg_temp_c, hvac_mode)
@@ -533,15 +538,20 @@ async def apply_offset_compensation(
         logger.debug("desired_temp_c is None, skipping offset compensation")
         return desired_temp_c, 0.0, None, None, ""
 
-    # 1. Fetch HVAC mode and zone avg in parallel — both needed for the dead-band check.
-    hvac_mode, (avg_temp_c, zone_names) = await asyncio.gather(
-        _get_hvac_mode(ha_client, climate_entity),
-        get_avg_zone_temp_c(db, zone_ids, ha_client=ha_client),
-    )
+    # 1. Fetch HVAC mode and zone avg.  When the caller already switched the mode,
+    #    use the provided value so we don't read potentially stale thermostat state.
+    if hvac_mode is None:
+        hvac_mode, (avg_temp_c, zone_names) = await asyncio.gather(
+            _get_hvac_mode(ha_client, climate_entity),
+            get_avg_zone_temp_c(db, zone_ids, ha_client=ha_client),
+        )
+    else:
+        avg_temp_c, zone_names = await get_avg_zone_temp_c(db, zone_ids, ha_client=ha_client)
+    hvac_mode_str: str = hvac_mode or ""  # normalise to str for downstream use
 
     if avg_temp_c is None:
         logger.debug("No zone temperature available, skipping offset compensation")
-        return desired_temp_c, 0.0, None, None, hvac_mode
+        return desired_temp_c, 0.0, None, None, hvac_mode_str
 
     # 2. Dead-band: if zones are within 1°F of the target in the self-correcting
     #    direction, the deviation is sub-thermostat-resolution and will even out
@@ -551,17 +561,17 @@ async def apply_offset_compensation(
     #    Cool mode: rooms 0-1°F below target -- environment will warm naturally.
     zone_error_f = (desired_temp_c - avg_temp_c) * 9.0 / 5.0
     in_dead_band = (
-        ("heat" in hvac_mode and -1.0 < zone_error_f < 0.0)
-        or (hvac_mode == "cool" and 0.0 < zone_error_f < 1.0)
+        ("heat" in hvac_mode_str and -1.0 < zone_error_f < 0.0)
+        or (hvac_mode_str == "cool" and 0.0 < zone_error_f < 1.0)
     )
     if in_dead_band:
         logger.debug(
             "Dead-band: zone %.1f°F within 1°F of target %.1f°F (%s mode) — no offset",
             avg_temp_c * 9 / 5 + 32,
             desired_temp_c * 9 / 5 + 32,
-            hvac_mode or "unknown",
+            hvac_mode_str or "unknown",
         )
-        return desired_temp_c, 0.0, zone_names, avg_temp_c, hvac_mode
+        return desired_temp_c, 0.0, zone_names, avg_temp_c, hvac_mode_str
 
     # 3. Fetch thermostat reading and max-offset setting in parallel.
     thermostat_c, max_offset_f = await asyncio.gather(
@@ -571,11 +581,11 @@ async def apply_offset_compensation(
 
     if thermostat_c is None:
         logger.debug("No thermostat reading available, skipping offset compensation")
-        return desired_temp_c, 0.0, zone_names, avg_temp_c, hvac_mode
+        return desired_temp_c, 0.0, zone_names, avg_temp_c, hvac_mode_str
 
     # 4. Compute the adjusted setpoint using the zone average (pure formula, no clamp).
     adjusted_c, offset_c = await compute_adjusted_setpoint(
-        desired_temp_c, thermostat_c, avg_temp_c, max_offset_f, hvac_mode
+        desired_temp_c, thermostat_c, avg_temp_c, max_offset_f, hvac_mode_str
     )
 
-    return adjusted_c, offset_c, zone_names, avg_temp_c, hvac_mode
+    return adjusted_c, offset_c, zone_names, avg_temp_c, hvac_mode_str

@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.models.database import Schedule as _Schedule
@@ -413,6 +413,51 @@ async def check_sensor_health() -> None:
 
 
 # ============================================================================
+# Schedule Execution — HVAC mode helpers
+# ============================================================================
+
+# Schedule hvac_mode values that map to an explicit HA climate mode.
+# "auto" means "don't touch the current thermostat mode" — only set the temp.
+_SCHED_MODE_ALIASES: dict[str, str] = {
+    "heat": "heat",
+    "heating": "heat",
+    "cool": "cool",
+    "cooling": "cool",
+    "heat_cool": "heat_cool",
+    "off": "off",
+}
+
+
+def _resolve_schedule_hvac_mode(schedule_hvac_mode: str | None) -> str | None:
+    """Return the HA climate mode to apply, or None if the schedule defers to the
+    thermostat's current mode (i.e. schedule.hvac_mode is 'auto' or unset)."""
+    mode = (schedule_hvac_mode or "").lower().strip()
+    return _SCHED_MODE_ALIASES.get(mode)  # returns None for "auto" or unknown
+
+
+async def _switch_hvac_mode_if_needed(
+    ha_client: Any,
+    climate_entity: str,
+    target_mode: str,
+    context: str,
+) -> None:
+    """Switch the thermostat to target_mode only when it is not already in that mode.
+
+    Reads the current state first so we avoid an unnecessary HA service call on
+    every execute_schedules / maintain_climate_offset tick.
+    """
+    try:
+        state = await ha_client.get_state(climate_entity)
+        current = (state.state or "").lower() if state else ""
+        if current == target_mode:
+            return
+        await ha_client.set_hvac_mode(climate_entity, target_mode)
+        logger.info("%s: thermostat mode %s → %s", context, current or "unknown", target_mode)
+    except Exception as _me:
+        logger.warning("%s: could not set HVAC mode to '%s': %s", context, target_mode, _me)
+
+
+# ============================================================================
 # Schedule Execution
 # ============================================================================
 
@@ -598,6 +643,14 @@ async def execute_schedules() -> None:
                 if exec_key in _last_executed_schedules:
                     continue
 
+                # Switch HVAC mode if the schedule specifies one (before setting temp)
+                sched_hvac_mode = _resolve_schedule_hvac_mode(schedule.hvac_mode)
+                if sched_hvac_mode:
+                    await _switch_hvac_mode_if_needed(
+                        ha_client, climate_entity, sched_hvac_mode,
+                        f"Schedule '{schedule.name}'",
+                    )
+
                 # Apply offset compensation before converting units
                 from backend.core.temp_compensation import apply_offset_compensation
 
@@ -609,6 +662,7 @@ async def execute_schedules() -> None:
                         db, ha_client, climate_entity,
                         schedule.target_temp_c,
                         zone_ids=schedule.zone_ids or None,
+                        hvac_mode=sched_hvac_mode,
                     )
                 except Exception as comp_err:
                     logger.debug("Offset compensation failed (non-critical): %s", comp_err)
@@ -881,6 +935,14 @@ async def apply_schedule_now(schedule: _Schedule) -> None:
 
             temp_unit = settings_instance.temperature_unit.upper()
 
+            # --- Switch HVAC mode if the schedule specifies one (before setting temp) ---
+            sched_hvac_mode = _resolve_schedule_hvac_mode(getattr(schedule, "hvac_mode", None))
+            if sched_hvac_mode:
+                await _switch_hvac_mode_if_needed(
+                    ha_client, climate_entity, sched_hvac_mode,
+                    f"Schedule '{getattr(schedule, 'name', '?')}' (immediate apply)",
+                )
+
             # --- Offset compensation ---
             from backend.core.temp_compensation import apply_offset_compensation
 
@@ -895,6 +957,7 @@ async def apply_schedule_now(schedule: _Schedule) -> None:
                         climate_entity,
                         schedule.target_temp_c,
                         zone_ids=schedule.zone_ids or None,
+                        hvac_mode=sched_hvac_mode,
                     )
                 )
             except Exception as comp_err:
@@ -1069,6 +1132,14 @@ async def maintain_climate_offset() -> None:
                 zone_ids,
             )
 
+            # ── Switch HVAC mode if the schedule specifies one ──────────
+            sched_hvac_mode = _resolve_schedule_hvac_mode(active_schedule.hvac_mode)
+            if sched_hvac_mode:
+                await _switch_hvac_mode_if_needed(
+                    ha_client, climate_entity, sched_hvac_mode,
+                    f"Climate maintenance (schedule '{active_schedule.name}')",
+                )
+
             # ── Apply offset compensation (dead-band + formula) ─────────
             from backend.core.temp_compensation import (
                 apply_offset_compensation,
@@ -1080,6 +1151,7 @@ async def maintain_climate_offset() -> None:
                     db, ha_client, climate_entity,
                     desired_temp_c,
                     zone_ids=zone_ids,
+                    hvac_mode=sched_hvac_mode,
                 )
             )
 
