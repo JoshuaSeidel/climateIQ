@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.30] - 2026-03-08
+
+### Fixed
+- **Wrong-direction mode override**: When the thermostat is actively working against the target (e.g. running cool while zone sensors are already below the schedule target), the system now switches to the correct mode immediately — bypassing both the 1°F dead-band and the 30-minute cooldown. This is not oscillation; it is the thermostat moving temps in the wrong direction. `_auto_select_hvac_mode` returns an `urgent=True` flag in this case; callers pass `override_cooldown=True` to `_switch_hvac_mode_if_needed`, which logs the switch with a `[wrong-direction override]` marker. The cooldown and dead-band remain fully active for normal near-target transitions.
+
 ## [1.0.29] - 2026-03-08
 
 ### Added

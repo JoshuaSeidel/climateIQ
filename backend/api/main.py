@@ -448,11 +448,17 @@ async def _switch_hvac_mode_if_needed(
     climate_entity: str,
     target_mode: str,
     context: str,
+    *,
+    override_cooldown: bool = False,
 ) -> None:
     """Switch the thermostat to target_mode only when it is not already in that mode.
 
     Reads the current state first so we avoid an unnecessary HA service call on
     every execute_schedules / maintain_climate_offset tick.
+
+    override_cooldown=True bypasses the 30-min reversal cooldown when the
+    thermostat is actively working against the target (e.g. cooling a room
+    that is already below target).
     """
     try:
         state = await ha_client.get_state(climate_entity)
@@ -460,23 +466,29 @@ async def _switch_hvac_mode_if_needed(
         if current == target_mode:
             return
 
-        # Cooldown: block rapid reversals (e.g. heat → cool → heat within minutes)
-        last = _last_mode_switch.get(climate_entity)
-        if last is not None:
-            last_mode, last_time = last
-            elapsed_s = (datetime.now(UTC) - last_time).total_seconds()
-            if last_mode != target_mode and elapsed_s < _MODE_SWITCH_COOLDOWN_S:
-                logger.info(
-                    "%s: mode switch %s → %s suppressed — last switch %d min ago "
-                    "(cooldown %d min)",
-                    context, current or "unknown", target_mode,
-                    int(elapsed_s / 60), _MODE_SWITCH_COOLDOWN_S // 60,
-                )
-                return
+        # Cooldown: block rapid reversals (e.g. heat → cool → heat within minutes).
+        # Bypassed when the current mode is actively working against the target.
+        if not override_cooldown:
+            last = _last_mode_switch.get(climate_entity)
+            if last is not None:
+                last_mode, last_time = last
+                elapsed_s = (datetime.now(UTC) - last_time).total_seconds()
+                if last_mode != target_mode and elapsed_s < _MODE_SWITCH_COOLDOWN_S:
+                    logger.info(
+                        "%s: mode switch %s → %s suppressed — last switch %d min ago "
+                        "(cooldown %d min)",
+                        context, current or "unknown", target_mode,
+                        int(elapsed_s / 60), _MODE_SWITCH_COOLDOWN_S // 60,
+                    )
+                    return
 
         await ha_client.set_hvac_mode(climate_entity, target_mode)
         _last_mode_switch[climate_entity] = (target_mode, datetime.now(UTC))
-        logger.info("%s: thermostat mode %s → %s", context, current or "unknown", target_mode)
+        logger.info(
+            "%s: thermostat mode %s → %s%s",
+            context, current or "unknown", target_mode,
+            " [wrong-direction override]" if override_cooldown else "",
+        )
     except Exception as _me:
         logger.warning("%s: could not set HVAC mode to '%s': %s", context, target_mode, _me)
 
@@ -488,48 +500,72 @@ async def _auto_select_hvac_mode(
     *,
     db: Any = None,
     zone_ids: list[Any] | None = None,
-) -> str | None:
+) -> tuple[str | None, bool]:
     """Auto-select heat or cool based on zone sensor average vs desired target.
 
     Only zone sensors are used for the heat/cool decision — the thermostat's
     own sensor (hallway/return air) is only valid for offset compensation and
-    must never stand in for zone temperature.  Returns None when zone readings
-    are unavailable so the current mode is left unchanged.
+    must never stand in for zone temperature.
 
-    Returns "heat", "cool", "heat_cool", or None (near target / no data / unsupported).
+    Returns (mode, urgent):
+      - mode: "heat", "cool", "heat_cool", or None (no change needed / no data)
+      - urgent: True when the current thermostat mode is actively working against
+        the target (e.g. cooling a room that is already below target).  Callers
+        must bypass the cooldown when urgent=True.
     """
     try:
         state = await ha_client.get_state(climate_entity)
         if not state:
-            return None
+            return None, False
         supported = {m.lower() for m in (state.attributes.get("hvac_modes") or [])}
+        current_mode = (state.state or "").lower()
+
         from backend.core.temp_compensation import get_avg_zone_temp_c
 
         if db is None or not zone_ids:
-            return None  # no zone data — don't guess from thermostat sensor
+            return None, False  # no zone data — don't guess from thermostat sensor
 
         zone_avg, _ = await get_avg_zone_temp_c(db, zone_ids, ha_client)
         if zone_avg is None:
-            return None  # sensors offline — leave mode unchanged
+            return None, False  # sensors offline — leave mode unchanged
 
-        current_c = zone_avg
+        error_c = desired_temp_c - zone_avg  # positive = need heat, negative = need cool
 
-        error_c = desired_temp_c - current_c  # positive = need heat, negative = need cool
+        # Wrong-direction check: if the thermostat is actively working against the
+        # target, switch immediately regardless of dead-band or cooldown.
+        wrong_direction = (
+            (error_c > 0 and "cool" in current_mode and "heat" not in current_mode)
+            or (error_c < 0 and "heat" in current_mode and "cool" not in current_mode)
+        )
+        if wrong_direction:
+            if error_c > 0:
+                if "heat" in supported:
+                    return "heat", True
+                if "heat_cool" in supported:
+                    return "heat_cool", True
+            else:
+                if "cool" in supported:
+                    return "cool", True
+                if "heat_cool" in supported:
+                    return "heat_cool", True
+
+        # Normal dead-band: only switch when meaningfully off target
         _HEAT_DEADBAND = 0.6  # ~1°F — wide enough to avoid oscillation near target
         if error_c > _HEAT_DEADBAND:
             if "heat" in supported:
-                return "heat"
+                return "heat", False
             if "heat_cool" in supported:
-                return "heat_cool"
+                return "heat_cool", False
         elif error_c < -_HEAT_DEADBAND:
             if "cool" in supported:
-                return "cool"
+                return "cool", False
             if "heat_cool" in supported:
-                return "heat_cool"
-        return None  # near target — no mode change needed
+                return "heat_cool", False
+
+        return None, False  # near target — no mode change needed
     except Exception as _ae:
         logger.debug("_auto_select_hvac_mode failed (non-critical): %s", _ae)
-        return None
+        return None, False
 
 
 # ============================================================================
@@ -720,8 +756,9 @@ async def execute_schedules() -> None:
 
                 # Switch HVAC mode — explicit schedule mode or auto-select based on temp need
                 sched_hvac_mode = _resolve_schedule_hvac_mode(schedule.hvac_mode)
+                _mode_urgent = False
                 if sched_hvac_mode is None:
-                    sched_hvac_mode = await _auto_select_hvac_mode(
+                    sched_hvac_mode, _mode_urgent = await _auto_select_hvac_mode(
                         ha_client, climate_entity, schedule.target_temp_c,
                         db=db, zone_ids=schedule.zone_ids or None,
                     )
@@ -729,6 +766,7 @@ async def execute_schedules() -> None:
                     await _switch_hvac_mode_if_needed(
                         ha_client, climate_entity, sched_hvac_mode,
                         f"Schedule '{schedule.name}'",
+                        override_cooldown=_mode_urgent,
                     )
 
                 # Apply offset compensation before converting units
@@ -1017,8 +1055,9 @@ async def apply_schedule_now(schedule: _Schedule) -> None:
 
             # --- Switch HVAC mode — explicit schedule mode or auto-select ---
             sched_hvac_mode = _resolve_schedule_hvac_mode(getattr(schedule, "hvac_mode", None))
+            _mode_urgent = False
             if sched_hvac_mode is None:
-                sched_hvac_mode = await _auto_select_hvac_mode(
+                sched_hvac_mode, _mode_urgent = await _auto_select_hvac_mode(
                     ha_client, climate_entity, schedule.target_temp_c,
                     db=db, zone_ids=getattr(schedule, "zone_ids", None) or None,
                 )
@@ -1026,6 +1065,7 @@ async def apply_schedule_now(schedule: _Schedule) -> None:
                 await _switch_hvac_mode_if_needed(
                     ha_client, climate_entity, sched_hvac_mode,
                     f"Schedule '{getattr(schedule, 'name', '?')}' (immediate apply)",
+                    override_cooldown=_mode_urgent,
                 )
 
             # --- Offset compensation ---
@@ -1219,8 +1259,9 @@ async def maintain_climate_offset() -> None:
 
             # ── Switch HVAC mode — explicit schedule mode or auto-select ──
             sched_hvac_mode = _resolve_schedule_hvac_mode(active_schedule.hvac_mode)
+            _mode_urgent = False
             if sched_hvac_mode is None:
-                sched_hvac_mode = await _auto_select_hvac_mode(
+                sched_hvac_mode, _mode_urgent = await _auto_select_hvac_mode(
                     ha_client, climate_entity, desired_temp_c,
                     db=db, zone_ids=zone_ids,
                 )
@@ -1228,6 +1269,7 @@ async def maintain_climate_offset() -> None:
                 await _switch_hvac_mode_if_needed(
                     ha_client, climate_entity, sched_hvac_mode,
                     f"Climate maintenance (schedule '{active_schedule.name}')",
+                    override_cooldown=_mode_urgent,
                 )
 
             # ── Apply offset compensation (dead-band + formula) ─────────
