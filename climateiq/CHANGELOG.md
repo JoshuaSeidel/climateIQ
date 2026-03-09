@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.31] - 2026-03-08
+
+### Fixed
+- **Schedule notifications show the schedule target, not the thermostat setpoint**: The push notification for a schedule activation previously showed the offset-adjusted thermostat setpoint (e.g. "71°F") rather than what the schedule is actually targeting (e.g. "68°F"), which was confusing. Notifications now read "Set to 68°F" using the schedule's configured target temperature. When offset compensation is active (|offset| > 0.1°C), the adjusted thermostat value is appended in parentheses — e.g. "Set to 68°F (thermostat adjusted to 71°F)" — so the offset is visible but not the headline. Logs were updated to show both values as `target=X thermostat=Y` for clarity.
+
 ## [1.0.30] - 2026-03-08
 
 ### Fixed

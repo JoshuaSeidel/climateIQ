@@ -821,12 +821,20 @@ async def execute_schedules() -> None:
                             if zone_names:
                                 zone_display = ", ".join(zone_names)
 
-                    temp_display = f"{target_temp:.1f}°{'F' if temp_unit == 'F' else 'C'}"
+                    # Schedule target — what the user configured (never offset-adjusted)
+                    sched_target_f = round(schedule.target_temp_c * 9 / 5 + 32, 1)
+                    sched_target_display = (
+                        f"{sched_target_f:.1f}°F" if temp_unit == "F"
+                        else f"{schedule.target_temp_c:.1f}°C"
+                    )
+                    # Thermostat setpoint — may differ due to offset compensation
+                    thermo_display = f"{target_temp:.1f}°{'F' if temp_unit == 'F' else 'C'}"
                     logger.info(
-                        "Schedule executed: '%s' → %s set to %s (entity: %s)",
+                        "Schedule executed: '%s' → %s target=%s thermostat=%s (entity: %s)",
                         schedule.name,
                         zone_display,
-                        temp_display,
+                        sched_target_display,
+                        thermo_display,
                         climate_entity,
                     )
 
@@ -837,12 +845,15 @@ async def execute_schedules() -> None:
                             offset_f, priority_zone_name or "unknown",
                         )
 
-                    # Send notification
+                    # Send notification — show schedule target, not thermostat setpoint
                     if _notification_service:
                         try:
+                            notif_msg = f"{zone_display}: Set to {sched_target_display} at {current_time_str}"
+                            if offset_c and abs(offset_c) > 0.1:
+                                notif_msg += f" (thermostat adjusted to {thermo_display})"
                             await _notification_service.send_ha_notification(
                                 title=f"Schedule Activated: {schedule.name}",
-                                message=f"{zone_display}: Target set to {temp_display} at {current_time_str}",
+                                message=notif_msg,
                                 target=notif_target,
                             )
                         except Exception as notif_err:
@@ -1100,11 +1111,17 @@ async def apply_schedule_now(schedule: _Schedule) -> None:
 
             _last_offset_temp[str(schedule.id)] = adjusted_temp_c
 
-            temp_display = f"{target_temp:.1f}°{'F' if temp_unit == 'F' else 'C'}"
+            sched_target_f = round(schedule.target_temp_c * 9 / 5 + 32, 1)
+            sched_target_display = (
+                f"{sched_target_f:.1f}°F" if temp_unit == "F"
+                else f"{schedule.target_temp_c:.1f}°C"
+            )
+            thermo_display = f"{target_temp:.1f}°{'F' if temp_unit == 'F' else 'C'}"
             logger.info(
-                "Schedule immediately applied: '%s' → %s (entity: %s)",
+                "Schedule immediately applied: '%s' → target=%s thermostat=%s (entity: %s)",
                 schedule.name,
-                temp_display,
+                sched_target_display,
+                thermo_display,
                 climate_entity,
             )
             if offset_c and abs(offset_c) > 0.1:
