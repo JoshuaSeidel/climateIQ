@@ -616,12 +616,16 @@ when zones are already at or past target.  To resume heating/cooling, the
 setpoint must cross the thermostat's current reading.
 
 HVAC MODE: You may optionally recommend switching the thermostat's hvac_mode
-when outdoor conditions make it clearly beneficial — e.g. switch to "heat"
-when it is very cold outside and the zone is drifting below target, or to
-"cool" when it is warm outside and the zone is climbing above target.  Only
-include "hvac_mode" when a switch is genuinely warranted; omit it otherwise
-so the current mode is left unchanged.  Valid values: "heat", "cool",
-"heat_cool".
+but ONLY when ALL of the following are true:
+  1. Zone temperature is MORE THAN 1°F (0.6°C) away from target — small
+     deviations will self-correct without HVAC intervention.
+  2. Outdoor conditions actively support the need — e.g. do NOT recommend
+     "cool" when it is 50°F or colder outside; passive ventilation/infiltration
+     will correct a minor overshoot far more efficiently than running AC.
+  3. The current mode cannot achieve the target — e.g. zone is below target
+     and thermostat is in cool mode (wrong direction).
+Omit "hvac_mode" entirely when in doubt.  A missed mode switch costs less
+than an unnecessary one.  Valid values: "heat", "cool", "heat_cool".
 
 Return JSON only (no prose):
 {{

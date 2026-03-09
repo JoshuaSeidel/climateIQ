@@ -1374,12 +1374,23 @@ async def maintain_climate_offset() -> None:
                 max_offset_f = await get_max_offset_setting(db)
                 vetted = SafetyProtocol.vet(decision, desired_temp_c, max_offset_f, hvac_mode)
 
-                # Apply AI-recommended mode change (overrides the initial auto-select)
-                if vetted.hvac_mode:
-                    await _switch_hvac_mode_if_needed(
-                        ha_client, climate_entity, vetted.hvac_mode,
-                        f"Climate maintenance (advisor, schedule '{active_schedule.name}')",
-                    )
+                # Apply AI-recommended mode change — same dead-band as auto-select.
+                # The advisor must not trigger mode switches for small near-target
+                # deviations that will self-correct without HVAC intervention.
+                if vetted.hvac_mode and avg_zone_c is not None:
+                    _adv_error_c = desired_temp_c - avg_zone_c
+                    _ADV_MODE_DEADBAND = 0.6  # ~1°F — must match _auto_select_hvac_mode
+                    if abs(_adv_error_c) > _ADV_MODE_DEADBAND:
+                        await _switch_hvac_mode_if_needed(
+                            ha_client, climate_entity, vetted.hvac_mode,
+                            f"Climate maintenance (advisor, schedule '{active_schedule.name}')",
+                        )
+                    else:
+                        logger.debug(
+                            "Climate maintenance: advisor hvac_mode=%s ignored — "
+                            "zone %.2f°C within dead-band of target %.2f°C",
+                            vetted.hvac_mode, avg_zone_c, desired_temp_c,
+                        )
 
                 # Respect wait decisions
                 if vetted.action == "wait":

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.32] - 2026-03-08
+
+### Fixed
+- **AI advisor mode recommendation now gated by dead-band**: The advisor's optional `hvac_mode` field was previously applied unconditionally, allowing the AI to trigger a mode switch (e.g. cool) for a 0.5°F overshoot even when the rule-based path correctly suppressed it. The advisor's recommendation is now ignored when the zone is within 0.6°C (~1°F) of target — the same threshold used by `_auto_select_hvac_mode`. Suppressed recommendations are logged at DEBUG level.
+- **Tightened advisor prompt for mode switches**: The HVAC MODE prompt section now explicitly requires (1) zone >1°F from target, (2) outdoor conditions that support the switch — e.g. do not recommend cool when it is ≤50°F outside since passive correction is more efficient, and (3) the current mode cannot reach the target. The prompt now states: "A missed mode switch costs less than an unnecessary one."
+
 ## [1.0.31] - 2026-03-08
 
 ### Fixed
