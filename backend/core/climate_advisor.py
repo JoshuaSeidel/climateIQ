@@ -70,7 +70,7 @@ class AdvisorDecision:
     wait_until: datetime | None  # only when action=="wait"
     reasoning: str
     from_llm: bool              # False = formula passthrough (LLM skipped or failed)
-    hvac_mode: str | None = None  # optional AI-recommended mode change (heat/cool/heat_cool)
+    hvac_mode: str | None = None  # optional AI-recommended mode change (heat/cool only)
 
 
 @dataclass
@@ -625,14 +625,15 @@ but ONLY when ALL of the following are true:
   3. The current mode cannot achieve the target — e.g. zone is below target
      and thermostat is in cool mode (wrong direction).
 Omit "hvac_mode" entirely when in doubt.  A missed mode switch costs less
-than an unnecessary one.  Valid values: "heat", "cool", "heat_cool".
+than an unnecessary one.  Valid values: "heat" or "cool" — never recommend
+"auto" or "heat_cool"; this system always commits to an explicit direction.
 
 Return JSON only (no prose):
 {{
   "action": "adjust" | "hold" | "wait",
   "setpoint_f": <integer 55-90, required only if action=adjust>,
   "wait_minutes": <integer 5-30, required only if action=wait>,
-  "hvac_mode": "heat" | "cool" | "heat_cool" (optional — omit if no change needed),
+  "hvac_mode": "heat" | "cool" (optional — omit if no change needed),
   "reasoning": "<2 sentences max>"
 }}"""
 
@@ -973,8 +974,9 @@ class ClimateAdvisor:
 
         reasoning = str(data.get("reasoning", "")).strip()[:300]
 
-        # Optional mode recommendation — validate against allowed values
-        _VALID_MODES = {"heat", "cool", "heat_cool"}
+        # Optional mode recommendation — only explicit heat/cool is accepted.
+        # auto/heat_cool are rejected: this system always commits to a direction.
+        _VALID_MODES = {"heat", "cool"}
         raw_mode = str(data.get("hvac_mode", "") or "").lower().strip()
         advisor_hvac_mode: str | None = raw_mode if raw_mode in _VALID_MODES else None
 

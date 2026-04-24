@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.33] - 2026-04-24
+
+### Changed
+- **Never use the thermostat's built-in auto / heat_cool mode**: ClimateIQ now always commits to an explicit `heat` or `cool` direction — the thermostat is never left in Ecobee's `auto` or HA's `heat_cool` where the thermostat itself decides which side to drive. `_auto_select_hvac_mode` no longer falls back to `heat_cool` when `heat`/`cool` aren't in the supported modes (it logs a warning and leaves the mode alone). When the thermostat is observed sitting on `auto`/`heat_cool`, the system now switches it to heat or cool based on the sign of the zone error (bypassing the cooldown — same urgency flag used for the wrong-direction override). Schedules with `hvac_mode="heat_cool"` now route through auto-selection just like `hvac_mode="auto"` does. The AI advisor prompt and validator now reject `heat_cool`; only `heat` or `cool` are accepted.
+
 ## [1.0.32] - 2026-03-08
 
 ### Fixed

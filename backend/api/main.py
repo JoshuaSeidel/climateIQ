@@ -431,16 +431,18 @@ _SCHED_MODE_ALIASES: dict[str, str] = {
     "heating": "heat",
     "cool": "cool",
     "cooling": "cool",
-    "heat_cool": "heat_cool",
     "off": "off",
 }
+# "auto" and "heat_cool" are intentionally absent — the system never defers to
+# the thermostat's own heat-vs-cool decision.  Those values fall through to
+# _auto_select_hvac_mode, which picks an explicit "heat" or "cool" from zone data.
 
 
 def _resolve_schedule_hvac_mode(schedule_hvac_mode: str | None) -> str | None:
-    """Return the HA climate mode to apply, or None if the schedule defers to the
-    thermostat's current mode (i.e. schedule.hvac_mode is 'auto' or unset)."""
+    """Return the HA climate mode to apply, or None if the schedule's value
+    requires auto-selection (i.e. 'auto', 'heat_cool', or unset)."""
     mode = (schedule_hvac_mode or "").lower().strip()
-    return _SCHED_MODE_ALIASES.get(mode)  # returns None for "auto" or unknown
+    return _SCHED_MODE_ALIASES.get(mode)  # returns None for "auto"/"heat_cool"/unknown
 
 
 async def _switch_hvac_mode_if_needed(
@@ -507,11 +509,15 @@ async def _auto_select_hvac_mode(
     own sensor (hallway/return air) is only valid for offset compensation and
     must never stand in for zone temperature.
 
+    The system never uses the thermostat's built-in auto / heat_cool modes —
+    it always commits to an explicit heat or cool decision.
+
     Returns (mode, urgent):
-      - mode: "heat", "cool", "heat_cool", or None (no change needed / no data)
+      - mode: "heat", "cool", or None (no zone data / unsupported thermostat)
       - urgent: True when the current thermostat mode is actively working against
-        the target (e.g. cooling a room that is already below target).  Callers
-        must bypass the cooldown when urgent=True.
+        the target (e.g. cooling a room that is already below target), OR when
+        the thermostat is currently in auto/heat_cool and must be moved off it.
+        Callers must bypass the cooldown when urgent=True.
     """
     try:
         state = await ha_client.get_state(climate_entity)
@@ -531,38 +537,58 @@ async def _auto_select_hvac_mode(
 
         error_c = desired_temp_c - zone_avg  # positive = need heat, negative = need cool
 
+        # Thermostat sitting in auto / heat_cool must be moved to an explicit
+        # mode — that's the whole point of this function.  Treat it as urgent
+        # so the cooldown doesn't trap it there.
+        on_forbidden_mode = current_mode in ("auto", "heat_cool")
+
         # Wrong-direction check: if the thermostat is actively working against the
         # target, switch immediately regardless of dead-band or cooldown.
         wrong_direction = (
             (error_c > 0 and "cool" in current_mode and "heat" not in current_mode)
             or (error_c < 0 and "heat" in current_mode and "cool" not in current_mode)
         )
-        if wrong_direction:
-            if error_c > 0:
-                if "heat" in supported:
-                    return "heat", True
-                if "heat_cool" in supported:
-                    return "heat_cool", True
-            else:
-                if "cool" in supported:
-                    return "cool", True
-                if "heat_cool" in supported:
-                    return "heat_cool", True
 
         # Normal dead-band: only switch when meaningfully off target
         _HEAT_DEADBAND = 0.6  # ~1°F — wide enough to avoid oscillation near target
-        if error_c > _HEAT_DEADBAND:
-            if "heat" in supported:
-                return "heat", False
-            if "heat_cool" in supported:
-                return "heat_cool", False
-        elif error_c < -_HEAT_DEADBAND:
-            if "cool" in supported:
-                return "cool", False
-            if "heat_cool" in supported:
-                return "heat_cool", False
+        needs_heat = error_c > _HEAT_DEADBAND
+        needs_cool = error_c < -_HEAT_DEADBAND
 
-        return None, False  # near target — no mode change needed
+        # When sitting on auto/heat_cool near target, still commit to a side
+        # based on the sign of the (small) error.  Default to heat on exact zero.
+        pick_heat = (
+            needs_heat
+            or (wrong_direction and error_c > 0)
+            or (on_forbidden_mode and error_c >= 0)
+        )
+        pick_cool = (
+            needs_cool
+            or (wrong_direction and error_c < 0)
+            or (on_forbidden_mode and error_c < 0)
+        )
+
+        urgent = wrong_direction or on_forbidden_mode
+
+        if pick_heat:
+            if "heat" in supported:
+                return "heat", urgent
+            logger.warning(
+                "Auto-select wants heat but thermostat doesn't support it "
+                "(supported=%s) — leaving mode unchanged",
+                sorted(supported),
+            )
+            return None, False
+        if pick_cool:
+            if "cool" in supported:
+                return "cool", urgent
+            logger.warning(
+                "Auto-select wants cool but thermostat doesn't support it "
+                "(supported=%s) — leaving mode unchanged",
+                sorted(supported),
+            )
+            return None, False
+
+        return None, False  # near target, already on heat or cool — no change
     except Exception as _ae:
         logger.debug("_auto_select_hvac_mode failed (non-critical): %s", _ae)
         return None, False
