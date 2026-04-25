@@ -536,6 +536,13 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
     },
   })
 
+  const updateThermostatTempSensor = useMutation({
+    mutationFn: (entity: string) => api.put('/settings', { thermostat_temp_sensor: entity }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+
   return (
     <Card>
       <CardHeader>
@@ -619,6 +626,28 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
           </p>
           {updateEnergyEntity.isSuccess && (
             <p className="mt-1 text-xs text-green-600">Energy entity updated</p>
+          )}
+        </div>
+
+        <div>
+          <label className="text-sm font-medium">Thermostat Temperature Sensor (override)</label>
+          <select
+            value={settings?.thermostat_temp_sensor ?? ''}
+            onChange={(e) => updateThermostatTempSensor.mutate(e.target.value)}
+            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
+          >
+            <option value="">None — use thermostat's built-in reading</option>
+            {(sensorEntities ?? []).map((entity) => (
+              <option key={entity.entity_id} value={entity.entity_id}>
+                {entity.name} ({entity.entity_id}) — {entity.state}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Use a separate HA sensor as the thermostat's "current temperature" reading. Workaround for the Ecobee/HomeKit integration bug where the thermostat's own value stops refreshing. Used for offset compensation only — zone control still uses each zone's own sensors.
+          </p>
+          {updateThermostatTempSensor.isSuccess && (
+            <p className="mt-1 text-xs text-green-600">Thermostat temperature source updated</p>
           )}
         </div>
 

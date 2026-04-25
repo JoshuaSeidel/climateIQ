@@ -353,6 +353,7 @@ export type SystemSettings = {
   energy_entity: string
   max_temp_offset_f: number
   ai_advisor_enabled: boolean
+  thermostat_temp_sensor: string
 
   home_assistant_url: string
   home_assistant_token: string

@@ -1379,7 +1379,7 @@ async def maintain_climate_offset() -> None:
                         logger.debug("Could not fetch zone sensors for advisor: %s", _ze)
 
                 # Current thermostat reading (cheap — HA WS state is cached)
-                thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity)
+                thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity, db=db)
 
                 decision = await ClimateAdvisor().advise(
                     db=db,
@@ -1652,7 +1652,7 @@ async def execute_follow_me_mode() -> None:
                         db, zone_ids=[str(best_zone.id)], ha_client=ha_client
                     )
                     if zone_temp_c is not None:
-                        thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity)
+                        thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity, db=db)
                         if thermostat_c is not None:
                             max_offset_f = await get_max_offset_setting(db)
                             adjusted_temp_c, offset_c = await compute_adjusted_setpoint(

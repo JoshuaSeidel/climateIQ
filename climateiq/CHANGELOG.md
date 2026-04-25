@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.35] - 2026-04-25
+
+### Added
+- **Thermostat temperature sensor override**: New optional setting `thermostat_temp_sensor` lets users designate any HA sensor entity as the thermostat's "current temperature" source for offset compensation. Workaround for the Ecobee/HomeKit integration bug in HA where the climate entity's `current_temperature` attribute stops refreshing. When set, `get_thermostat_reading_c` reads from the override sensor (parsed via the same `_parse_temp_from_state` helper used for zone sensors, so unit detection and multisensor formats are handled). Falls back to the climate entity's reading when the override sensor is unset, missing, or unparseable. Configurable in Settings → Home Assistant tab.
+
 ## [1.0.34] - 2026-04-24
 
 ### Fixed

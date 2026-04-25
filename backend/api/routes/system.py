@@ -1373,7 +1373,7 @@ async def debug_offset_calculation(
     avg_temp_f = round(avg_temp_c * 9 / 5 + 32, 1) if avg_temp_c is not None else None
 
     # Get thermostat reading
-    thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity)
+    thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity, db=db)
     thermostat_f = round(thermostat_c * 9 / 5 + 32, 1) if thermostat_c is not None else None
 
     # Compute offset
@@ -1639,7 +1639,7 @@ async def get_override_status(
                 db, ha_client=_ha_client
             )
 
-            thermostat_c = await get_thermostat_reading_c(_ha_client, climate_entity)
+            thermostat_c = await get_thermostat_reading_c(_ha_client, climate_entity, db=db)
             if zone_temp_c is not None and thermostat_c is not None:
                 raw_offset_c = thermostat_c - zone_temp_c
                 offset_info = {

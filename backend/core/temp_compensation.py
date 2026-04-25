@@ -439,17 +439,70 @@ async def compute_adjusted_setpoint(
     return adjusted_temp_c, offset_c
 
 
-async def get_thermostat_reading_c(ha_client: Any, climate_entity: str) -> float | None:
+async def _get_thermostat_temp_sensor_override(db: Any) -> str:
+    """Read the optional thermostat_temp_sensor override entity_id from settings."""
+    if db is None:
+        return ""
+    from sqlalchemy import select as sa_select
+
+    from backend.models.database import SystemSetting
+
+    try:
+        result = await db.execute(
+            sa_select(SystemSetting).where(SystemSetting.key == "thermostat_temp_sensor")
+        )
+        row = result.scalar_one_or_none()
+        if row and row.value:
+            val = row.value.get("value", "")
+            return str(val or "").strip()
+    except Exception as exc:
+        logger.debug("Could not read thermostat_temp_sensor setting: %s", exc)
+    return ""
+
+
+async def get_thermostat_reading_c(
+    ha_client: Any,
+    climate_entity: str,
+    db: Any = None,
+) -> float | None:
     """Get the thermostat's current temperature reading in Celsius.
+
+    When ``thermostat_temp_sensor`` is configured in settings, the reading
+    comes from that HA sensor entity instead of the climate entity's
+    ``current_temperature`` attribute.  This works around an Ecobee/HomeKit
+    integration bug in HA where the climate entity's reported temperature
+    stops refreshing.
 
     Args:
         ha_client: HAClient instance.
         climate_entity: Entity ID (e.g. "climate.thermostat").
+        db: AsyncSession used to look up the override setting.  When None,
+            no override is consulted (caller-provided pure-thermostat read).
 
     Returns:
         Current temperature in Celsius, or None if unavailable.
     """
     try:
+        override_id = await _get_thermostat_temp_sensor_override(db)
+        if override_id:
+            sensor_state = await ha_client.get_state(override_id)
+            if sensor_state is not None:
+                ha_temp_unit = await _get_ha_temp_unit(ha_client)
+                temp_c = _parse_temp_from_state(sensor_state, ha_temp_unit)
+                if temp_c is not None:
+                    return temp_c
+                logger.warning(
+                    "thermostat_temp_sensor '%s' returned unparsable state — "
+                    "falling back to climate entity reading",
+                    override_id,
+                )
+            else:
+                logger.warning(
+                    "thermostat_temp_sensor '%s' has no HA state — "
+                    "falling back to climate entity reading",
+                    override_id,
+                )
+
         state = await ha_client.get_state(climate_entity)
         if not state:
             return None
@@ -575,7 +628,7 @@ async def apply_offset_compensation(
 
     # 3. Fetch thermostat reading and max-offset setting in parallel.
     thermostat_c, max_offset_f = await asyncio.gather(
-        get_thermostat_reading_c(ha_client, climate_entity),
+        get_thermostat_reading_c(ha_client, climate_entity, db=db),
         get_max_offset_setting(db),
     )
 

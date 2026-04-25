@@ -51,6 +51,11 @@ _KV_DEFAULTS: dict[str, Any] = {
     "energy_entity": "",
     "max_temp_offset_f": 8.0,  # Maximum temperature offset in Fahrenheit
     "ai_advisor_enabled": True,
+    # Optional override: HA sensor entity_id whose state replaces the
+    # thermostat's `current_temperature` attribute.  Workaround for the
+    # Ecobee/HomeKit integration bug where the thermostat's reported
+    # temperature stops refreshing.  Empty string = use thermostat's own value.
+    "thermostat_temp_sensor": "",
 }
 
 # ---------------------------------------------------------------------------
@@ -75,6 +80,7 @@ class SystemSettingsResponse(BaseModel):
     energy_entity: str = ""
     max_temp_offset_f: float = 8.0
     ai_advisor_enabled: bool = True
+    thermostat_temp_sensor: str = ""
     home_assistant_url: str = ""
     home_assistant_token: str = ""
     llm_settings: dict[str, Any] = {}
@@ -98,6 +104,7 @@ class SystemSettingsUpdate(BaseModel):
     energy_entity: str | None = None
     max_temp_offset_f: float | None = None
     ai_advisor_enabled: bool | None = None
+    thermostat_temp_sensor: str | None = None
 
 
 class HAEntityInfo(BaseModel):
@@ -209,6 +216,7 @@ async def _build_response(session: AsyncSession) -> SystemSettingsResponse:
         energy_entity=kv["energy_entity"],
         max_temp_offset_f=float(kv["max_temp_offset_f"]),
         ai_advisor_enabled=bool(kv["ai_advisor_enabled"]),
+        thermostat_temp_sensor=str(kv["thermostat_temp_sensor"] or ""),
         home_assistant_url=ha_url,
         home_assistant_token=masked_token,
         llm_settings=dict(config.llm_settings or {}),
