@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.34] - 2026-04-24
+
+### Fixed
+- **Schedule's stored `hvac_mode` no longer locks the thermostat to a direction**: A schedule with `hvac_mode="heat"` was bypassing auto-select entirely, so a 68°F target schedule would keep the thermostat in heat mode even when the house was at 77°F. The schedule's `hvac_mode` field is now ignored for direction (heat/cool/auto/heat_cool all route through `_auto_select_hvac_mode` from live zone sensors). Only `"off"` is still honored — explicitly turning the system off during a schedule remains a valid intent. Existing schedules don't need to be edited; the stored value is simply no longer authoritative.
+
 ## [1.0.33] - 2026-04-24
 
 ### Changed

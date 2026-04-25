@@ -427,22 +427,23 @@ _last_mode_switch: dict[str, tuple[str, datetime]] = {}
 _MODE_SWITCH_COOLDOWN_S: int = 30 * 60  # 30 minutes
 
 _SCHED_MODE_ALIASES: dict[str, str] = {
-    "heat": "heat",
-    "heating": "heat",
-    "cool": "cool",
-    "cooling": "cool",
     "off": "off",
 }
-# "auto" and "heat_cool" are intentionally absent — the system never defers to
-# the thermostat's own heat-vs-cool decision.  Those values fall through to
-# _auto_select_hvac_mode, which picks an explicit "heat" or "cool" from zone data.
+# Only "off" is honored as an explicit schedule mode.  "heat", "cool", "auto",
+# and "heat_cool" all fall through to _auto_select_hvac_mode — the system
+# always decides heat vs cool from current zone temps, never from a stored
+# schedule preference.  A schedule that "wants heat" while the room is 9°F
+# above target is wrong about what it wants; trust the sensors.
 
 
 def _resolve_schedule_hvac_mode(schedule_hvac_mode: str | None) -> str | None:
-    """Return the HA climate mode to apply, or None if the schedule's value
-    requires auto-selection (i.e. 'auto', 'heat_cool', or unset)."""
+    """Return the HA climate mode to apply, or None to trigger auto-selection.
+
+    Only "off" passes through.  Every other value (including explicit "heat"
+    or "cool" stored on the schedule) returns None so that the heat/cool
+    decision is made from live zone sensor data."""
     mode = (schedule_hvac_mode or "").lower().strip()
-    return _SCHED_MODE_ALIASES.get(mode)  # returns None for "auto"/"heat_cool"/unknown
+    return _SCHED_MODE_ALIASES.get(mode)  # only "off" returns non-None
 
 
 async def _switch_hvac_mode_if_needed(
