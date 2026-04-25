@@ -406,10 +406,8 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
 // ============================================================================
 function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
   const queryClient = useQueryClient()
-  const [form, setForm] = useState({
-    url: settings?.home_assistant_url ?? '',
-    token: settings?.home_assistant_token ?? '',
-  })
+  const haUrl = settings?.home_assistant_url ?? ''
+  const haToken = settings?.home_assistant_token ?? ''
   const [showToken, setShowToken] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
 
@@ -472,24 +470,6 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
     if (!entitySearch) return entities
     const q = entitySearch.toLowerCase()
     return entities.filter(e => e.entity_id.toLowerCase().includes(q) || e.name.toLowerCase().includes(q))
-  }
-
-  const saveHaConfig = useMutation({
-    mutationFn: (data: Record<string, unknown>) =>
-      api.put('/settings', {
-        home_assistant_url: data.url,
-        home_assistant_token: data.token,
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] })
-    },
-  })
-
-  const handleSave = () => {
-    saveHaConfig.mutate({
-      url: form.url,
-      token: form.token,
-    })
   }
 
   // Fetch available weather entities from HA
@@ -559,25 +539,31 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
         <div>
           <label className="text-sm font-medium">Home Assistant URL</label>
           <Input
-            value={form.url}
-            onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))}
-            placeholder="e.g. http://homeassistant.local:8123"
+            value={haUrl}
+            readOnly
+            placeholder="(supplied by add-on environment)"
           />
+          <p className="mt-1 text-xs text-muted-foreground">
+            Set via the CLIMATEIQ_HA_URL environment variable. Edit it in the add-on configuration page in Home Assistant.
+          </p>
         </div>
         <div>
           <label className="text-sm font-medium">Long-Lived Access Token</label>
           <div className="flex gap-2">
             <Input
               type={showToken ? 'text' : 'password'}
-              value={form.token}
-              onChange={(e) => setForm((f) => ({ ...f, token: e.target.value }))}
-              placeholder="Enter your HA access token"
+              value={haToken}
+              readOnly
+              placeholder="(supplied by add-on environment)"
               className="flex-1"
             />
             <Button variant="outline" size="icon" onClick={() => setShowToken(!showToken)}>
               {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </Button>
           </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Set via the CLIMATEIQ_HA_TOKEN environment variable.
+          </p>
         </div>
 
         <div>
@@ -796,14 +782,6 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
         </div>
 
         <div className="flex items-center gap-3">
-          <Button onClick={handleSave} disabled={saveHaConfig.isPending}>
-            {saveHaConfig.isPending ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Check className="mr-2 h-4 w-4" />
-            )}
-            Save HA Settings
-          </Button>
           <Button
             variant="outline"
             onClick={() => testConnection.mutate()}
@@ -817,14 +795,6 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
             Test Connection
           </Button>
         </div>
-        {saveHaConfig.isSuccess && (
-          <span className="text-sm text-green-600">Home Assistant settings saved successfully</span>
-        )}
-        {saveHaConfig.isError && (
-          <span className="text-sm text-red-500">
-            Failed to save: {saveHaConfig.error?.message}
-          </span>
-        )}
         {testResult && (
           <div className={`flex items-center gap-2 text-sm ${testResult.success ? 'text-green-600' : 'text-red-500'}`}>
             {testResult.success ? (

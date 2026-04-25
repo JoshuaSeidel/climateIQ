@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.36] - 2026-04-25
+
+### Fixed
+- **Removed broken "Save HA Settings" button**: Clicking it produced "No fields provided for update" because the URL/token fields are sourced from the add-on's environment variables (CLIMATEIQ_HA_URL, CLIMATEIQ_HA_TOKEN) and were never wired through the settings PUT schema. The Home Assistant URL and token fields are now read-only display values with helper text pointing users to the add-on configuration page in HA. The "Test Connection" button is preserved.
+
 ## [1.0.35] - 2026-04-25
 
 ### Added
