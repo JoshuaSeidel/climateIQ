@@ -29,6 +29,8 @@ import {
   Filter,
   Search,
   BookOpen,
+  Snowflake,
+  Flame,
 } from 'lucide-react'
 
 type SettingsTab = 'general' | 'homeassistant' | 'llm' | 'modes' | 'logic' | 'backup' | 'about'
@@ -1204,6 +1206,8 @@ function LogicTab({
 }) {
   const queryClient = useQueryClient()
   const aiEnabled = settings?.ai_advisor_enabled ?? true
+  const controlMode = settings?.hvac_control_mode ?? 'auto'
+  const cooldownMin = settings?.mode_switch_cooldown_minutes ?? 30
 
   const toggleAdvisor = useMutation({
     mutationFn: (enabled: boolean) => api.put<SystemSettings>('/settings', { ai_advisor_enabled: enabled }),
@@ -1211,6 +1215,41 @@ function LogicTab({
       queryClient.invalidateQueries({ queryKey: ['settings'] })
     },
   })
+
+  const updateControlMode = useMutation({
+    mutationFn: (mode: 'auto' | 'heat' | 'cool') =>
+      api.put<SystemSettings>('/settings', { hvac_control_mode: mode }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+
+  const [cooldownDraft, setCooldownDraft] = useState(String(cooldownMin))
+  useEffect(() => {
+    setCooldownDraft(String(cooldownMin))
+  }, [cooldownMin])
+
+  const updateCooldown = useMutation({
+    mutationFn: (minutes: number) =>
+      api.put<SystemSettings>('/settings', { mode_switch_cooldown_minutes: minutes }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+
+  const commitCooldown = () => {
+    const parsed = Number(cooldownDraft)
+    if (!Number.isFinite(parsed)) {
+      setCooldownDraft(String(cooldownMin))
+      return
+    }
+    const clamped = Math.min(240, Math.max(0, Math.round(parsed)))
+    if (clamped === cooldownMin) {
+      setCooldownDraft(String(clamped))
+      return
+    }
+    updateCooldown.mutate(clamped)
+  }
 
   return (
     <div className="space-y-4">
@@ -1253,6 +1292,92 @@ function LogicTab({
                 }`}
               />
             </button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* HVAC Control card */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Thermometer className="h-5 w-5" />
+            HVAC Control
+          </CardTitle>
+          <CardDescription>
+            Choose how the system selects between heating and cooling, and how often it's allowed to flip
+            between them.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <p className="text-sm font-medium mb-2">Control Mode</p>
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { id: 'auto' as const, label: 'Auto', icon: RefreshCw, desc: 'Switch heat ↔ cool' },
+                { id: 'heat' as const, label: 'Heat Only', icon: Flame, desc: 'Lock to heat' },
+                { id: 'cool' as const, label: 'Cool Only', icon: Snowflake, desc: 'Lock to cool' },
+              ].map((opt) => {
+                const active = controlMode === opt.id
+                const Icon = opt.icon
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    disabled={updateControlMode.isPending}
+                    onClick={() => updateControlMode.mutate(opt.id)}
+                    className={`flex flex-col items-center gap-1 rounded-xl border p-3 text-xs transition disabled:opacity-50 ${
+                      active
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-input hover:bg-muted/40 text-foreground'
+                    }`}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span className="font-medium">{opt.label}</span>
+                    <span className="text-[10px] text-muted-foreground">{opt.desc}</span>
+                  </button>
+                )
+              })}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Auto picks heat or cool based on zone temps vs target. Heat / Cool Only lock the thermostat
+              to that direction — useful in shoulder seasons when you don't want it flipping.
+            </p>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium">Mode Switch Cooldown (minutes)</label>
+            <div className="flex gap-2 mt-1">
+              <Input
+                type="number"
+                min={0}
+                max={240}
+                value={cooldownDraft}
+                onChange={(e) => setCooldownDraft(e.target.value)}
+                onBlur={commitCooldown}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    (e.target as HTMLInputElement).blur()
+                  }
+                }}
+                disabled={updateCooldown.isPending}
+                className="max-w-[120px]"
+              />
+              <span className="self-center text-xs text-muted-foreground">
+                0 disables the cooldown. Max 240.
+              </span>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Minimum time between heat ↔ cool flips. Higher values reduce oscillation when temps are near
+              target. The cooldown is bypassed when the thermostat is actively working against the target.
+            </p>
+            {updateCooldown.isSuccess && (
+              <p className="mt-1 text-xs text-green-600">Cooldown updated</p>
+            )}
+            {updateCooldown.isError && (
+              <p className="mt-1 text-xs text-red-500">
+                Failed to update: {updateCooldown.error?.message}
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>

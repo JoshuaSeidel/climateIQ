@@ -354,6 +354,8 @@ export type SystemSettings = {
   max_temp_offset_f: number
   ai_advisor_enabled: boolean
   thermostat_temp_sensor: string
+  hvac_control_mode: 'auto' | 'heat' | 'cool'
+  mode_switch_cooldown_minutes: number
 
   home_assistant_url: string
   home_assistant_token: string

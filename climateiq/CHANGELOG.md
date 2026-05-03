@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.37] - 2026-04-24
+
+### Added
+- **HVAC control mode setting (Auto / Heat Only / Cool Only)**: New `hvac_control_mode` setting lets users lock the thermostat to a single direction (heat or cool) or leave it on `auto` so ClimateIQ chooses based on zone temps vs target. When locked, `_auto_select_hvac_mode` short-circuits and returns the user's chosen mode (still honoring thermostat support — falls back gracefully if the mode isn't in the climate entity's `hvac_modes`). The lock treats current `auto`/`heat_cool` or opposite-direction state as urgent and bypasses the cooldown so the requested mode takes effect immediately.
+- **Configurable mode-switch cooldown (`mode_switch_cooldown_minutes`)**: Replaces the hardcoded 30-minute cooldown with a user-tunable value (0–240 minutes; 0 disables the cooldown). All four call sites (`execute_schedules`, `apply_schedule_now`, `maintain_climate_offset`, advisor flow) now read the configured value and pass it to `_switch_hvac_mode_if_needed`. The wrong-direction override still bypasses the cooldown when the thermostat is actively working against the target.
+- **Settings UI**: New "HVAC Control" card on the Logic tab with a 3-up Auto / Heat Only / Cool Only selector and a number input for the cooldown.
+
 ## [1.0.36] - 2026-04-25
 
 ### Fixed

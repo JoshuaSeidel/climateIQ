@@ -7,7 +7,7 @@ import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,6 +56,14 @@ _KV_DEFAULTS: dict[str, Any] = {
     # Ecobee/HomeKit integration bug where the thermostat's reported
     # temperature stops refreshing.  Empty string = use thermostat's own value.
     "thermostat_temp_sensor": "",
+    # HVAC direction lock: "auto" lets the system flip between heat and cool
+    # based on zone sensors; "heat" or "cool" locks the thermostat to a
+    # single direction.  Locked modes still apply the schedule's setpoint
+    # and offset compensation — only the direction is fixed.
+    "hvac_control_mode": "auto",
+    # Minutes between heat↔cool reversals.  Wrong-direction override still
+    # bypasses this when the thermostat is actively working against target.
+    "mode_switch_cooldown_minutes": 30,
 }
 
 # ---------------------------------------------------------------------------
@@ -81,6 +89,8 @@ class SystemSettingsResponse(BaseModel):
     max_temp_offset_f: float = 8.0
     ai_advisor_enabled: bool = True
     thermostat_temp_sensor: str = ""
+    hvac_control_mode: str = "auto"
+    mode_switch_cooldown_minutes: int = 30
     home_assistant_url: str = ""
     home_assistant_token: str = ""
     llm_settings: dict[str, Any] = {}
@@ -105,6 +115,27 @@ class SystemSettingsUpdate(BaseModel):
     max_temp_offset_f: float | None = None
     ai_advisor_enabled: bool | None = None
     thermostat_temp_sensor: str | None = None
+    hvac_control_mode: str | None = None
+    mode_switch_cooldown_minutes: int | None = None
+
+    @field_validator("hvac_control_mode")
+    @classmethod
+    def _validate_hvac_control_mode(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        normalized = v.lower().strip()
+        if normalized not in {"auto", "heat", "cool"}:
+            raise ValueError("hvac_control_mode must be 'auto', 'heat', or 'cool'")
+        return normalized
+
+    @field_validator("mode_switch_cooldown_minutes")
+    @classmethod
+    def _validate_cooldown(cls, v: int | None) -> int | None:
+        if v is None:
+            return v
+        if v < 0 or v > 240:
+            raise ValueError("mode_switch_cooldown_minutes must be between 0 and 240")
+        return v
 
 
 class HAEntityInfo(BaseModel):
@@ -217,6 +248,8 @@ async def _build_response(session: AsyncSession) -> SystemSettingsResponse:
         max_temp_offset_f=float(kv["max_temp_offset_f"]),
         ai_advisor_enabled=bool(kv["ai_advisor_enabled"]),
         thermostat_temp_sensor=str(kv["thermostat_temp_sensor"] or ""),
+        hvac_control_mode=str(kv["hvac_control_mode"] or "auto"),
+        mode_switch_cooldown_minutes=int(kv["mode_switch_cooldown_minutes"]),
         home_assistant_url=ha_url,
         home_assistant_token=masked_token,
         llm_settings=dict(config.llm_settings or {}),
