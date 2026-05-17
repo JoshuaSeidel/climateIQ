@@ -2518,6 +2518,7 @@ async def send_chat_message(
 
     # Save conversation (skip dashboard utility calls — they pollute chat history)
     is_dashboard_call = bool(payload.context and payload.context.get("source") == "dashboard")
+    conversation: Conversation | None = None
     if not is_dashboard_call:
         conversation = Conversation(
             session_id=session_id,
@@ -2531,22 +2532,25 @@ async def send_chat_message(
         db.add(conversation)
     await db.commit()
 
-    # Extract directives from the conversation (fire-and-forget)
+    # Generate contextual suggestions based on zones and time
     zones_for_extraction = list(
         (await db.execute(select(Zone).where(Zone.is_active.is_(True)))).scalars().all()
     )
-    try:
-        await _extract_directives(
-            user_message=payload.message,
-            assistant_response=assistant_message,
-            conversation_id=conversation.id,
-            db=db,
-            zones=zones_for_extraction,
-        )
-    except Exception as extract_err:
-        logger.debug("Directive extraction error (non-critical): %s", extract_err)
 
-    # Generate contextual suggestions based on zones and time
+    # Extract directives from the conversation (fire-and-forget) —
+    # only for persisted (non-dashboard) conversations.
+    if conversation is not None:
+        try:
+            await _extract_directives(
+                user_message=payload.message,
+                assistant_response=assistant_message,
+                conversation_id=conversation.id,
+                db=db,
+                zones=zones_for_extraction,
+            )
+        except Exception as extract_err:
+            logger.debug("Directive extraction error (non-critical): %s", extract_err)
+
     suggestions = _generate_suggestions(zones_list=zones_for_extraction)
 
     return ChatResponse(
@@ -2554,7 +2558,7 @@ async def send_chat_message(
         session_id=session_id,
         actions_taken=actions_taken,
         suggestions=suggestions,
-        metadata={"conversation_id": str(conversation.id)},
+        metadata={"conversation_id": str(conversation.id)} if conversation is not None else {},
         timestamp=datetime.now(UTC),
     )
 

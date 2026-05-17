@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.38] - 2026-05-17
+
+### Fixed
+- **`send_chat_message` crashed with `UnboundLocalError: conversation`** on dashboard chat calls. Dashboard chats skip persistence (`is_dashboard_call`), so the `conversation` local was never assigned — yet `_extract_directives` and the response `metadata` both referenced `conversation.id` unconditionally. Now `conversation` is initialized to `None`, directive extraction is skipped for non-persisted (dashboard) chats, and `metadata` is `{}` when there is no conversation row to reference. Persisted (regular chat) calls behave identically. Surfaced when an upstream LLM request itself failed (Gemini free-tier 429), which masked the real bug — but the dashboard path was always crashing on this line regardless of the LLM outcome.
+
 ## [1.0.37] - 2026-04-24
 
 ### Added
