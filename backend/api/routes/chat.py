@@ -158,17 +158,19 @@ async def _extract_directives(
 
     try:
         # Load existing directives so the LLM skips re-extracting duplicates
+        # Most recent 20 are sufficient to suppress duplicates; older ones
+        # are rarely re-extracted from a single chat exchange anyway.
         existing_result = await db.execute(
             select(UserDirective)
             .where(UserDirective.is_active.is_(True))
-            .order_by(UserDirective.created_at.asc())
-            .limit(50)
+            .order_by(UserDirective.created_at.desc())
+            .limit(20)
         )
         existing_directives = existing_result.scalars().all()
         if existing_directives:
             import html as _html
             existing_block = "\n".join(
-                f"- [{d.category}] {_html.unescape(d.directive[:120])}"
+                f"- [{d.category}] {_html.unescape(d.directive[:100])}"
                 for d in existing_directives
             )
             existing_note = f"\n\nALREADY SAVED (do NOT extract these again):\n{existing_block}"
@@ -389,92 +391,47 @@ async def _get_relevant_directives(
 # System Prompt
 # ============================================================================
 
-SYSTEM_PROMPT = """You are ClimateIQ Advisor, an intelligent HVAC management assistant. You help users understand and control their home climate system through natural conversation.
+SYSTEM_PROMPT = """You are ClimateIQ Advisor, an HVAC assistant. Use ONLY the data below — never invent or estimate sensor values. If a zone shows "no data available" or is missing, say so honestly.
 
-You have visibility into the current system state provided below. Use ONLY this data when reporting temperatures, humidity, occupancy, or any sensor readings.
+Capabilities: report state, adjust temps, manage schedules, explain how the system works, suggest energy savings, and save user preferences via save_memory.
 
-CRITICAL DATA INTEGRITY RULES:
-- NEVER invent, estimate, or infer a temperature or sensor value that is not explicitly listed below.
-- If a zone shows "awaiting sensor data", "no data available", or has no temperature listed, say you don't have a reading for that zone — do not guess.
-- Do not round, extrapolate, or fabricate values. Report only what is explicitly shown.
-- If you are unsure whether a value is in the context, say so rather than making one up.
+save_memory rules: only call it for NEW info the user explicitly asks to save or shares for the first time. To answer "what do you know?", read <user_directives> below — do NOT re-save. When you do save, include a text response listing each item as "* <directive> [<category>]".
 
-You can:
-- Report the current system mode, thermostat state, and all zone conditions
-- Adjust temperatures in specific zones or the whole house
-- Check current temperatures, humidity, and occupancy
-- Explain active schedules and suggest new ones
-- Provide energy-saving recommendations
-- Explain how ClimateIQ works in detail
-- Save facts, routines, and preferences to permanent memory using the save_memory tool
-
-MEMORY SYSTEM: The <user_directives> block above contains ALL currently saved memories about this home. To answer "what do you know?" or "what's in memory?", read and summarize from that block — do NOT call save_memory. The save_memory tool is ONLY for writing NEW information that the user explicitly asks to save or shares for the first time. Never call save_memory to confirm, re-save, or list information that already exists in <user_directives>. When you do save new memories, you MUST include a text response listing each one saved (one bullet per item, e.g. "* Office occupied 9am-5pm weekdays [occupancy]").
-
-When users request changes, use the available tools to execute them. Always confirm what action you're taking.
+Always confirm actions taken. Be concise.
 
 {logic_reference}
 
 {directives}
 
-=== CURRENT SYSTEM STATE ===
-
+=== SYSTEM STATE ===
 {system_state}
 
-=== ZONE DETAILS ===
-
+=== ZONES ===
 {zones}
 
-=== SENSOR CONDITIONS ===
-
-{conditions}
-
-When users ask about the system mode, thermostat state, schedules, or any system configuration, answer directly from the data above. Be concise, helpful, and proactive about energy savings while maintaining comfort. If data is missing for a zone, say so honestly."""
+=== SENSORS ===
+{conditions}"""
 
 
 def _get_logic_reference_text() -> str:
-    """Return the logic reference as plain text for the LLM system prompt."""
-    sections = [
-        ("System Architecture", [
-            "ClimateIQ is a Home Assistant add-on with React frontend, FastAPI backend, TimescaleDB, and Redis.",
-            "All sensor data flows from HA via WebSocket. One global thermostat controls the whole house.",
-            "Backend stores temps in Celsius. Frontend converts to user's preferred unit.",
-        ]),
-        ("Operating Modes", [
-            "Learn: Passive observation, no HVAC changes.",
-            "Scheduled: Follows user schedules. Executor checks every 60s, fires within 2-min window.",
-            "Follow-Me: Tracks occupancy every 90s. Sets thermostat to occupied zone's comfort temp. Averages if multiple zones occupied. Eco temp (18°C) if none occupied. Dead-band of 0.5°C.",
-            "Active/AI: Full LLM control every 5min. Gathers all data, asks LLM for optimal temp with reasoning. Safety clamped.",
-        ]),
-        ("Schedules", [
-            "Each schedule: name, zone, days, start/end time, target temp (Celsius), HVAC mode, priority 1-10.",
-            "Higher priority wins conflicts. Dedup prevents double-firing.",
-        ]),
-        ("Zones & Sensors", [
-            "Zones = rooms. Current temp/humidity from per-zone Zigbee sensors ONLY, not the thermostat.",
-            "Target setpoint is shared from the global thermostat.",
-            "Comfort preferences per zone used by Follow-Me mode.",
-        ]),
-        ("Thermostat", [
-            "Global climate entity (e.g., climate.ecobee). Ecobee uses target_temp_low (heat), target_temp_high (cool).",
-            "Quick actions: Eco, Away, Boost Heat (+2°), Boost Cool (-2°).",
-        ]),
-        ("Notifications", [
-            "Push via HA mobile app (notify.mobile_app_*). Alerts for: schedules, sensor offline, mode changes.",
-        ]),
-        ("Energy", [
-            "Only shown when a real HA energy entity is configured. No heuristic estimates.",
-        ]),
-        ("Weather", [
-            "Polled every 15min from HA weather entity, cached in Redis. Used by AI mode and chat context.",
-        ]),
-    ]
+    """Compact logic reference for the LLM system prompt.
 
-    lines = ["=== ClimateIQ System Logic Reference ===\n"]
-    for title, details in sections:
-        lines.append(f"\n## {title}")
-        for d in details:
-            lines.append(f"- {d}")
-    return "\n".join(lines)
+    Trimmed from a verbose 8-section block to a one-liner per topic — the
+    LLM only needs anchors to answer "how does X work?" questions; deeper
+    detail is exposed via tool calls when needed.
+    """
+    return (
+        "=== ClimateIQ Logic ===\n"
+        "- HA add-on, FastAPI+TimescaleDB+Redis. One global thermostat. Temps stored in Celsius.\n"
+        "- Modes: Learn (observe only), Scheduled (60s tick, 2-min window), "
+        "Follow-Me (90s, occupied-zone comfort temp, eco 18°C if none), Active/AI (5min LLM tick).\n"
+        "- Schedules: name, zone, days, start/end, target_c, hvac_mode, priority (higher wins).\n"
+        "- Zone temps come from per-zone Zigbee sensors only, not the thermostat sensor.\n"
+        "- Ecobee uses target_temp_low (heat) / target_temp_high (cool). "
+        "Quick actions: Eco, Away, Boost Heat (+2°), Boost Cool (-2°).\n"
+        "- Notifications via notify.mobile_app_*. Energy only when an HA energy entity is set. "
+        "Weather polled every 15min."
+    )
 
 
 async def _get_live_system_context(db: AsyncSession, temperature_unit: str) -> str:
@@ -854,11 +811,14 @@ async def get_conditions_context(db: AsyncSession, temperature_unit: str) -> str
                 continue
 
             # 1) Try DB readings
+            # The loop below breaks as soon as it has temp+humidity+presence,
+            # so 5 rows is plenty even for multisensors that split readings
+            # across packets.  25 was over-fetching by ~5x.
             reading_result = await db.execute(
                 select(SensorReading)
                 .where(SensorReading.sensor_id.in_([s.id for s in zone.sensors]))
                 .order_by(SensorReading.recorded_at.desc())
-                .limit(25)
+                .limit(5)
             )
             readings = reading_result.scalars().all()
             current_temp: float | None = None
@@ -2489,12 +2449,14 @@ async def send_chat_message(
         conditions=conditions_context,
     )
 
-    # Get conversation history for context
+    # Get conversation history for context (trimmed from 10 → 6 to cut
+    # ~40% of history tokens; most queries don't reference more than ~3
+    # exchanges back).
     history_result = await db.execute(
         select(Conversation)
         .where(Conversation.session_id == session_id)
         .order_by(desc(Conversation.created_at))
-        .limit(10)
+        .limit(6)
     )
     history = history_result.scalars().all()
 

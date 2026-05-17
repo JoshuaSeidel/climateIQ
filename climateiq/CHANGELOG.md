@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.40] - 2026-05-17
+
+### Changed
+- **Token-spend trim across LLM calls** — no behavior changes, no model swaps, just smaller payloads:
+  - **Chat `SYSTEM_PROMPT`** condensed from ~40 lines to ~15. Same data-integrity rules and save_memory guidance, shorter wording. Section headers compacted.
+  - **`_get_logic_reference_text()`** collapsed from 8 multi-bullet sections (~40 lines) to one paragraph per topic (~8 lines). Same anchor info — the LLM still answers "how does X work?" questions; deeper detail is on tap via tool calls.
+  - **Chat history cap**: `limit(10)` → `limit(6)`. Most queries don't reference >3 exchanges back; saves ~40% of history tokens.
+  - **`get_conditions_context`** sensor reading lookup: `limit(25)` → `limit(5)`. The loop already breaks early once temp+humidity+presence are filled; 25 was over-fetching by ~5×. DB win and slightly smaller payload.
+  - **Directive extraction** "already saved" block: capped at 20 most-recent (was 50, oldest-first), per-directive snippet 120→100 chars. Stops the prompt from growing unbounded as memories accumulate.
+  - **ClimateAdvisor device-action timestamps**: `isoformat()` (with microseconds) → `%Y-%m-%d %H:%M`. ~20 chars saved per action × 5 actions per advisor tick. Decisions never use subsecond precision.
+
 ## [1.0.39] - 2026-05-17
 
 ### Added

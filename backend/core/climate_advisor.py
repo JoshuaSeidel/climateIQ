@@ -248,8 +248,10 @@ async def _get_trend_data(
                 ).bindparams(zone_ids=zone_id_strs)
             )
             for row in rows.fetchall():
+                # Round timestamp to the minute — subsecond precision is
+                # ~20 wasted chars per action and never affects decisions.
                 last_actions.append({
-                    "at": row.created_at.isoformat() if row.created_at else "",
+                    "at": row.created_at.strftime("%Y-%m-%d %H:%M") if row.created_at else "",
                     "params": row.parameters or {},
                     "reason": row.reasoning or "",
                 })
