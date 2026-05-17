@@ -889,11 +889,15 @@ async def execute_schedules() -> None:
                 # Fire the schedule
                 try:
                     try:
-                        await ha_client.set_temperature_with_hold(climate_entity, target_temp)
+                        await ha_client.set_temperature_with_hold(
+                            climate_entity, target_temp, intent_mode=sched_hvac_mode
+                        )
                     except Exception as hold_err:
                         logger.debug("Ecobee hold update (non-critical): %s", hold_err)
                         # Fall back to plain set_temperature if hold fails
-                        await ha_client.set_temperature(climate_entity, target_temp)
+                        await ha_client.set_temperature(
+                            climate_entity, target_temp, intent_mode=sched_hvac_mode
+                        )
                     _last_executed_schedules.add(exec_key)
                     _last_offset_temp[str(schedule.id)] = adjusted_temp_c
 
@@ -1203,9 +1207,13 @@ async def apply_schedule_now(schedule: _Schedule) -> None:
 
             # --- Apply to thermostat ---
             try:
-                await ha_client.set_temperature_with_hold(climate_entity, target_temp)
+                await ha_client.set_temperature_with_hold(
+                    climate_entity, target_temp, intent_mode=sched_hvac_mode
+                )
             except Exception:
-                await ha_client.set_temperature(climate_entity, target_temp)
+                await ha_client.set_temperature(
+                    climate_entity, target_temp, intent_mode=sched_hvac_mode
+                )
 
             _last_offset_temp[str(schedule.id)] = adjusted_temp_c
 
@@ -1513,25 +1521,45 @@ async def maintain_climate_offset() -> None:
                     vetted.reasoning,
                 )
 
-            # ── Only update if the adjusted temp has drifted meaningfully ──
-            prev_temp = _last_offset_temp.get(sched_key)
-            if prev_temp is not None and abs(final_adjusted_c - prev_temp) <= 0.5:
+            # ── Reconcile against HA: read the actual setpoint from the
+            # thermostat and compare to what we want.  If HA already has
+            # the correct value within 0.5°C, skip writing.  Otherwise
+            # write — even if our last write matches, because reality
+            # drifted (Ecobee, HomeKit, user override, etc.).
+            from backend.core.temp_compensation import get_current_setpoint_c
+
+            ha_current_c = await get_current_setpoint_c(
+                ha_client, climate_entity, intent_mode=hvac_mode or sched_hvac_mode
+            )
+            if ha_current_c is not None and abs(final_adjusted_c - ha_current_c) <= 0.5:
+                _last_offset_temp[sched_key] = final_adjusted_c
                 logger.info(
-                    "Climate maintenance: no update needed "
-                    "(adjusted=%.1f C, prev=%.1f C, delta=%.2f C)",
-                    final_adjusted_c, prev_temp, abs(final_adjusted_c - prev_temp),
+                    "Climate maintenance: HA already at target "
+                    "(adjusted=%.1f C, ha=%.1f C, delta=%.2f C) — no write",
+                    final_adjusted_c, ha_current_c, abs(final_adjusted_c - ha_current_c),
                 )
                 return
+
+            if ha_current_c is not None:
+                logger.info(
+                    "Climate maintenance: drift detected — HA=%.1f C, want=%.1f C (delta %.2f C)",
+                    ha_current_c, final_adjusted_c, final_adjusted_c - ha_current_c,
+                )
 
             # ── Convert and send ────────────────────────────────────────
             target_for_ha = final_adjusted_c
             if temp_unit == "F":
                 target_for_ha = round(final_adjusted_c * 9 / 5 + 32, 1)
 
+            intent = hvac_mode or sched_hvac_mode
             try:
-                await ha_client.set_temperature_with_hold(climate_entity, target_for_ha)
+                await ha_client.set_temperature_with_hold(
+                    climate_entity, target_for_ha, intent_mode=intent
+                )
             except Exception:
-                await ha_client.set_temperature(climate_entity, target_for_ha)
+                await ha_client.set_temperature(
+                    climate_entity, target_for_ha, intent_mode=intent
+                )
 
             _last_offset_temp[sched_key] = final_adjusted_c
             final_offset_c = final_adjusted_c - desired_temp_c

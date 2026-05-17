@@ -362,7 +362,12 @@ class HAClient:
 
     # -- climate helpers ------------------------------------------------------
 
-    async def set_temperature(self, entity_id: str, temperature: float) -> Any:
+    async def set_temperature(
+        self,
+        entity_id: str,
+        temperature: float,
+        intent_mode: str | None = None,
+    ) -> Any:
         """Set the target temperature on a climate entity.
 
         ClimateIQ is the control system -- the thermostat is just an
@@ -378,6 +383,11 @@ class HAClient:
         Args:
             entity_id: Fully qualified entity id (e.g. ``climate.thermostat``).
             temperature: Desired target temperature in the HA unit system.
+            intent_mode: Optional caller-provided HVAC mode hint. When the
+                thermostat is in heat_cool/auto, this decides which side of
+                the dual setpoint gets updated: "cool" → target_temp_high,
+                anything else → target_temp_low.  Without it we default to
+                heat (target_temp_low), preserving the existing behaviour.
         """
         logger.info("Setting temperature on %s to %.1f", entity_id, temperature)
 
@@ -439,27 +449,31 @@ class HAClient:
 
                 if hvac_mode in ("heat_cool", "auto"):
                     # Dual-setpoint mode: must send both low (heat) and high
-                    # (cool) setpoints together.
-                    #
-                    # ``temperature`` here is ClimateIQ's *heating* target —
-                    # it should become target_temp_low directly.  Keep the
-                    # existing cooling setpoint (target_temp_high) unchanged
-                    # so we don't accidentally alter the cooling schedule.
-                    # Only raise the cooling setpoint if the heat setpoint
-                    # would come within 2° of it (HA/Ecobee minimum spread).
+                    # (cool) setpoints together.  intent_mode picks which side
+                    # the new value updates; the other side is preserved (or
+                    # adjusted by the minimum 2° Ecobee spread).
+                    existing_low = attrs.get("target_temp_low")
                     existing_high = attrs.get("target_temp_high")
-                    if existing_high is not None:
-                        high = float(existing_high)
-                        # Ensure minimum 2° spread required by Ecobee
-                        high = max(high, temperature + 2)
+                    intent = (intent_mode or "").lower()
+                    if "cool" in intent and "heat" not in intent:
+                        new_high = temperature
+                        if existing_low is not None:
+                            new_low = min(float(existing_low), temperature - 2)
+                        else:
+                            new_low = temperature - 4
                         data = {
-                            "target_temp_low": temperature,
-                            "target_temp_high": high,
+                            "target_temp_low": new_low,
+                            "target_temp_high": new_high,
                         }
                     else:
+                        new_low = temperature
+                        if existing_high is not None:
+                            new_high = max(float(existing_high), temperature + 2)
+                        else:
+                            new_high = temperature + 4
                         data = {
-                            "target_temp_low": temperature,
-                            "target_temp_high": temperature + 4,
+                            "target_temp_low": new_low,
+                            "target_temp_high": new_high,
                         }
                 # For heat, cool, and all other modes: use "temperature"
                 # (already set as the default above)
@@ -484,7 +498,12 @@ class HAClient:
     # Alias used by DecisionEngine (``set_climate_temperature``).
     set_climate_temperature = set_temperature
 
-    async def set_temperature_with_hold(self, entity_id: str, temperature: float) -> Any:
+    async def set_temperature_with_hold(
+        self,
+        entity_id: str,
+        temperature: float,
+        intent_mode: str | None = None,
+    ) -> Any:
         """Set the target temperature with a hold to prevent schedule override.
 
         On Ecobee, calling ``set_temperature`` automatically creates a
@@ -492,7 +511,7 @@ class HAClient:
         call is needed -- the thermostat holds until the user or
         ClimateIQ changes it.
         """
-        return await self.set_temperature(entity_id, temperature)
+        return await self.set_temperature(entity_id, temperature, intent_mode=intent_mode)
 
     async def set_hvac_mode(self, entity_id: str, mode: str) -> Any:
         """Set the HVAC mode on a climate entity.

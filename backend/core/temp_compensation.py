@@ -554,6 +554,49 @@ async def _get_hvac_mode(ha_client: Any, climate_entity: str) -> str:
         return ""
 
 
+async def get_current_setpoint_c(
+    ha_client: Any,
+    climate_entity: str,
+    intent_mode: str | None = None,
+) -> float | None:
+    """Read the thermostat's *current* setpoint from HA, in Celsius.
+
+    Mode-aware: in single-mode heat/cool the ``temperature`` attribute is
+    authoritative; in heat_cool/auto we fall back to target_temp_low (heat)
+    or target_temp_high (cool) using ``intent_mode`` to disambiguate.
+    """
+    try:
+        state = await ha_client.get_state(climate_entity)
+        if not state:
+            return None
+        attrs = state.attributes or {}
+        mode = (state.state or "").lower()
+        intent = (intent_mode or "").lower()
+
+        raw = attrs.get("temperature")
+        if raw is None:
+            if mode in ("heat_cool", "auto"):
+                if "cool" in intent and "heat" not in intent:
+                    raw = attrs.get("target_temp_high")
+                else:
+                    raw = attrs.get("target_temp_low")
+            elif "cool" in mode:
+                raw = attrs.get("target_temp_high")
+            elif "heat" in mode:
+                raw = attrs.get("target_temp_low")
+        if raw is None:
+            return None
+
+        temp_c = float(raw)
+        ha_temp_unit = await _get_ha_temp_unit(ha_client)
+        if ha_temp_unit == "\u00b0F":
+            temp_c = (temp_c - 32) * 5 / 9
+        return temp_c
+    except Exception as exc:
+        logger.debug("Could not read current setpoint: %s", exc)
+        return None
+
+
 async def apply_offset_compensation(
     db: Any,
     ha_client: Any,

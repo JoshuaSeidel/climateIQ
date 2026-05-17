@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.41] - 2026-05-17
+
+### Fixed
+- **Setpoint reconciliation** — `maintain_climate_offset` now reads HA's actual current setpoint each tick and writes when reality drifts from the expected value, not only when our last-write cache disagrees. If Ecobee, HomeKit, or a user overrides the setpoint behind our back, the next tick reasserts it.
+- **Heat_cool / auto-mode dual setpoint routing** — `set_temperature` now accepts an `intent_mode` hint. When the thermostat is in heat_cool or auto, cool-mode writes update `target_temp_high` (and adjust `target_temp_low` to maintain Ecobee's 2° spread); heat-mode writes update `target_temp_low`. Previously every dual-setpoint write went to `target_temp_low`, breaking cool intent.
+- **Override status display** — `/system/override` now falls back to `target_temp_high` (cool) or `target_temp_low` (heat) when the climate entity reports neither `temperature` nor a single-setpoint mode. Dashboard "thermostat" reading no longer goes blank when the thermostat is in heat_cool.
+
 ## [1.0.40] - 2026-05-17
 
 ### Changed

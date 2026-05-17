@@ -1493,6 +1493,24 @@ async def get_override_status(
         preset_mode = attrs.get("preset_mode")
         hvac_action = attrs.get("hvac_action")
 
+        # Ecobee in heat_cool/auto reports target_temp_low/high separately
+        # instead of `temperature`.  Pick the active side based on current
+        # hvac_action (or the mode itself) so the dashboard reflects what
+        # the thermostat is actually trying to do.
+        if target_temp_raw is None:
+            mode_lc = (hvac_mode or "").lower()
+            action_lc = (hvac_action or "").lower()
+            if "cool" in action_lc or (mode_lc in ("heat_cool", "auto") and "cool" in action_lc):
+                target_temp_raw = attrs.get("target_temp_high")
+            elif "heat" in action_lc:
+                target_temp_raw = attrs.get("target_temp_low")
+            elif "cool" in mode_lc:
+                target_temp_raw = attrs.get("target_temp_high")
+            elif "heat" in mode_lc:
+                target_temp_raw = attrs.get("target_temp_low")
+            else:
+                target_temp_raw = attrs.get("target_temp_low")
+
         # Get the HA temperature unit
         ha_config = await _ha_client.get_config()
         ha_temp_unit = ha_config.get("unit_system", {}).get("temperature", "\u00b0C")
