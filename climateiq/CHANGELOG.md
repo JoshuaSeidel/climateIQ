@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.42] - 2026-05-17
+
+### Fixed
+- **Thermostat-anchor double-counting** — when the configured `thermostat_temp_sensor` override entity is also a member of one of the active zones, that sensor is now excluded from zone-average and priority-zone computations. The anchor reading still drives the offset formula's base, but the zone side reflects the *other* sensors only. Prevents the cooling-direction artifact where the offset bias shifts as soon as the thermostat-anchor sensor's own room cools faster than the rest of the schedule.
+
 ## [1.0.41] - 2026-05-17
 
 ### Fixed

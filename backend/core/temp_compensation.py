@@ -91,6 +91,7 @@ async def _get_live_zone_temp_c(
     ha_client: Any,
     zone: Any,
     ha_temp_unit: str,
+    exclude_entity_id: str | None = None,
 ) -> float | None:
     """Read the live temperature for a zone from HA sensors.
 
@@ -98,9 +99,15 @@ async def _get_live_zone_temp_c(
     ha_entity_id and the secondary entity_id field.  Returns the first
     valid Celsius reading found.  Sensors that are unavailable/unknown
     in HA are skipped.
+
+    When ``exclude_entity_id`` is provided, sensors matching it are
+    skipped — used to keep the thermostat-anchor sensor out of the
+    zone average so the offset formula doesn't double-count.
     """
     if not zone.sensors:
         return None
+
+    excluded = (exclude_entity_id or "").strip()
 
     for sensor in zone.sensors:
         # Collect candidate entity IDs: primary first, secondary as fallback
@@ -109,6 +116,9 @@ async def _get_live_zone_temp_c(
             candidates.append(sensor.ha_entity_id)
         if getattr(sensor, "entity_id", None) and sensor.entity_id != sensor.ha_entity_id:
             candidates.append(sensor.entity_id)
+
+        if excluded and excluded in candidates:
+            continue
 
         for entity_id in candidates:
             try:
@@ -123,7 +133,11 @@ async def _get_live_zone_temp_c(
     return None
 
 
-async def _get_db_zone_temp_c(db: Any, zone: Any) -> float | None:
+async def _get_db_zone_temp_c(
+    db: Any,
+    zone: Any,
+    exclude_entity_id: str | None = None,
+) -> float | None:
     """Return the most-recent valid temperature from DB sensor readings for a zone.
 
     Used as a fallback when the HA live sensor read returns None (sensor
@@ -133,6 +147,10 @@ async def _get_db_zone_temp_c(db: Any, zone: Any) -> float | None:
     hours ago when the room was at a very different temperature) must not
     feed into offset compensation — it produces a wrong offset that can
     cause the HVAC to run in the wrong direction.
+
+    When ``exclude_entity_id`` is provided, sensors matching it are
+    omitted from the query so the thermostat-anchor sensor stays out
+    of the zone average.
     """
     if not zone.sensors:
         return None
@@ -143,7 +161,17 @@ async def _get_db_zone_temp_c(db: Any, zone: Any) -> float | None:
 
     from backend.models.database import SensorReading
 
-    sensor_ids = [s.id for s in zone.sensors]
+    excluded = (exclude_entity_id or "").strip()
+    eligible_sensors = [
+        s for s in zone.sensors
+        if not excluded or (
+            (s.ha_entity_id or "") != excluded
+            and getattr(s, "entity_id", "") != excluded
+        )
+    ]
+    if not eligible_sensors:
+        return None
+    sensor_ids = [s.id for s in eligible_sensors]
     cutoff = datetime.now(UTC) - timedelta(minutes=30)
     result = await db.execute(
         sa_select(SensorReading.temperature_c)
@@ -210,6 +238,7 @@ async def get_priority_zone_temp_c(
         return None, None, 0
 
     ha_temp_unit = await _get_ha_temp_unit(ha_client) if ha_client else "°C"
+    thermostat_sensor_id = await _get_thermostat_temp_sensor_override(db)
 
     # Sort by priority descending (highest priority first)
     zones.sort(key=lambda z: getattr(z, "priority", 5), reverse=True)
@@ -227,11 +256,16 @@ async def get_priority_zone_temp_c(
 
         temp_c: float | None = None
         if ha_client:
-            temp_c = await _get_live_zone_temp_c(ha_client, zone, ha_temp_unit)
+            temp_c = await _get_live_zone_temp_c(
+                ha_client, zone, ha_temp_unit,
+                exclude_entity_id=thermostat_sensor_id,
+            )
         # Fallback to DB readings so compensation still works when HA is
         # temporarily unavailable or the sensor entity hasn't been polled yet.
         if temp_c is None:
-            temp_c = await _get_db_zone_temp_c(db, zone)
+            temp_c = await _get_db_zone_temp_c(
+                db, zone, exclude_entity_id=thermostat_sensor_id,
+            )
 
         if temp_c is not None:
             if top_priority is None:
@@ -283,16 +317,22 @@ async def get_avg_zone_temp_c(
         return None, None
 
     ha_temp_unit = await _get_ha_temp_unit(ha_client) if ha_client else "°C"
+    thermostat_sensor_id = await _get_thermostat_temp_sensor_override(db)
     readings: list[tuple[str, float]] = []  # (zone_name, temp_c)
 
     for zone in zones:
         temp_c: float | None = None
         if ha_client:
-            temp_c = await _get_live_zone_temp_c(ha_client, zone, ha_temp_unit)
+            temp_c = await _get_live_zone_temp_c(
+                ha_client, zone, ha_temp_unit,
+                exclude_entity_id=thermostat_sensor_id,
+            )
         # Fallback to DB readings so the avg is always available even when HA
         # returns unavailable for the sensor entity.
         if temp_c is None:
-            temp_c = await _get_db_zone_temp_c(db, zone)
+            temp_c = await _get_db_zone_temp_c(
+                db, zone, exclude_entity_id=thermostat_sensor_id,
+            )
 
         if temp_c is not None:
             readings.append((zone.name, temp_c))
