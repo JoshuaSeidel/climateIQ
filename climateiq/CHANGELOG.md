@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.39] - 2026-05-17
+
+### Added
+- **DeepSeek as an LLM provider**: `deepseek` is now in `SUPPORTED_PROVIDERS` alongside Anthropic, OpenAI, Gemini, Grok, Ollama, and llama.cpp. New `deepseek_api_key` setting on the backend (Pydantic `Settings`) and in the HA add-on `config.yaml` schema (options + schema). LiteLLM model strings are constructed as `deepseek/<model>` (e.g. `deepseek/deepseek-chat`, `deepseek/deepseek-reasoner`). Model discovery hits DeepSeek's OpenAI-compatible `https://api.deepseek.com/v1/models` endpoint with `Authorization: Bearer <key>`; on failure the UI still gets `deepseek-chat` and `deepseek-reasoner` as fallback options. The Settings → LLM Providers tab picks up DeepSeek automatically — the frontend list is driven by the backend `/settings/llm/providers` response, no UI changes were needed.
+
 ## [1.0.38] - 2026-05-17
 
 ### Fixed

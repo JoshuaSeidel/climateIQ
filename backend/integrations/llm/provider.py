@@ -45,6 +45,7 @@ class LLMProvider:
         "anthropic": "claude-sonnet-4-20250514",
         "openai": "gpt-4o",
         "gemini": "gemini-2.0-flash",
+        "deepseek": "deepseek-chat",
     }
 
     def __init__(
@@ -119,6 +120,8 @@ class LLMProvider:
             model_str = self.model
         elif self.provider == "gemini":
             model_str = f"gemini/{self.model}"
+        elif self.provider == "deepseek":
+            model_str = f"deepseek/{self.model}"
         else:
             model_str = self.model
 
@@ -216,7 +219,9 @@ class _RateLimiter:
 
 
 class ClimateIQLLMProvider:
-    SUPPORTED_PROVIDERS = ("anthropic", "openai", "gemini", "grok", "ollama", "llamacpp")
+    SUPPORTED_PROVIDERS = (
+        "anthropic", "openai", "gemini", "grok", "deepseek", "ollama", "llamacpp",
+    )
 
     def __init__(
         self,
@@ -540,6 +545,9 @@ def _normalize_settings(s: ProviderSettings) -> ProviderSettings:
     elif p == "grok":
         api_key = api_key or os.getenv("GROK_API_KEY")
         base_url = base_url or os.getenv("GROK_BASE_URL")
+    elif p == "deepseek":
+        api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
+        base_url = base_url or os.getenv("DEEPSEEK_BASE_URL")
     elif p == "ollama":
         base_url = base_url or os.getenv("OLLAMA_BASE_URL")
     elif p == "llamacpp":
@@ -569,6 +577,8 @@ def _fallback_default_model(provider: str) -> str:
         return os.getenv("CLIMATEIQ_GEMINI_FALLBACK_MODEL", "gemini-1.5-flash")
     if p == "grok":
         return os.getenv("CLIMATEIQ_GROK_FALLBACK_MODEL", "grok-2")
+    if p == "deepseek":
+        return os.getenv("CLIMATEIQ_DEEPSEEK_FALLBACK_MODEL", "deepseek-chat")
     if p == "ollama":
         return os.getenv("CLIMATEIQ_OLLAMA_FALLBACK_MODEL", "llama3.1")
     if p == "llamacpp":

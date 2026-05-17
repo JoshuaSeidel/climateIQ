@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default="")
     gemini_api_key: str = Field(default="")
     grok_api_key: str = Field(default="")
+    deepseek_api_key: str = Field(default="")
     ollama_url: AnyUrl | str = Field(default="http://localhost:11434")
     llamacpp_url: AnyUrl | str = Field(default="http://localhost:8000")
 
@@ -121,6 +122,9 @@ class Settings(BaseSettings):
             },
             "grok": {
                 "configured": bool(self.grok_api_key),
+            },
+            "deepseek": {
+                "configured": bool(self.deepseek_api_key),
             },
             "ollama": {
                 "base_url": str(self.ollama_url),

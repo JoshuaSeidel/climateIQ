@@ -1,5 +1,5 @@
 name: ClimateIQ
-version: "1.0.38"
+version: "1.0.39"
 slug: climateiq
 description: AI-Powered Intelligent Climate Management for Home Assistant
 url: "https://github.com/JoshuaSeidel/climateIQ"
@@ -40,6 +40,7 @@ options:
   openai_api_key: ""
   gemini_api_key: ""
   grok_api_key: ""
+  deepseek_api_key: ""
   ollama_url: ""
   climate_entities: []
   sensor_entities: []
@@ -58,6 +59,7 @@ schema:
   openai_api_key: str?
   gemini_api_key: str?
   grok_api_key: str?
+  deepseek_api_key: str?
   ollama_url: str?
   climate_entities:
     - str

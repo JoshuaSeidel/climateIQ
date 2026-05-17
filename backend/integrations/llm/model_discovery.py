@@ -8,6 +8,7 @@ Supported providers:
 - openai: /v1/models
 - gemini: Generative Language API /v1beta/models
 - grok (xAI): OpenAI-compatible /v1/models
+- deepseek: OpenAI-compatible /v1/models
 - ollama: /api/tags
 - llamacpp: OpenAI-compatible /v1/models (if available)
 """
@@ -114,6 +115,9 @@ def _filter_chat_models(provider: str, models: Iterable[ModelInfo]) -> list[Mode
                 continue
         elif p == "grok":
             if "grok" not in mid:
+                continue
+        elif p == "deepseek":
+            if "deepseek" not in mid:
                 continue
 
         out.append(m)
@@ -283,6 +287,58 @@ def fetch_grok_models(
     return _filter_chat_models("grok", models)
 
 
+def fetch_deepseek_models(
+    *,
+    api_key: str,
+    base_url: str = "https://api.deepseek.com",
+    timeout_s: float = 10.0,
+) -> list[ModelInfo]:
+    if not api_key:
+        return []
+
+    url = base_url.rstrip("/") + "/v1/models"
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    models: list[ModelInfo] = []
+    try:
+        with _http_client(timeout_s) as c:
+            resp = c.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json() or {}
+            for item in data.get("data") or []:
+                mid = item.get("id")
+                if not mid:
+                    continue
+                models.append(
+                    ModelInfo(
+                        provider="deepseek",
+                        id=mid,
+                        display_name=mid,
+                        chat_capable=True,
+                        raw=item,
+                    )
+                )
+    except Exception:
+        logger.exception("DeepSeek model discovery failed")
+        # Fall back to the documented model list so the UI still has options.
+        models = [
+            ModelInfo(
+                provider="deepseek",
+                id="deepseek-chat",
+                display_name="deepseek-chat",
+                chat_capable=True,
+            ),
+            ModelInfo(
+                provider="deepseek",
+                id="deepseek-reasoner",
+                display_name="deepseek-reasoner",
+                chat_capable=True,
+            ),
+        ]
+
+    return _filter_chat_models("deepseek", models)
+
+
 def fetch_ollama_models(
     *,
     base_url: str = "http://localhost:11434",
@@ -422,6 +478,20 @@ def discover_models(
             if resolved_base is None:
                 return []
             models = fetch_grok_models(
+                api_key=resolved_key,
+                base_url=resolved_base,
+                timeout_s=timeout_s,
+            )
+        elif p == "deepseek":
+            resolved_key = api_key or os.getenv("DEEPSEEK_API_KEY", "")
+            if not resolved_key:
+                return []
+            resolved_base = base_url or os.getenv(
+                "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+            )
+            if resolved_base is None:
+                return []
+            models = fetch_deepseek_models(
                 api_key=resolved_key,
                 base_url=resolved_base,
                 timeout_s=timeout_s,

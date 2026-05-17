@@ -268,6 +268,8 @@ def _resolve_provider_credentials(provider: str) -> tuple[str | None, str | None
         return SETTINGS.gemini_api_key or None, None
     elif provider == "grok":
         return SETTINGS.grok_api_key or None, None
+    elif provider == "deepseek":
+        return SETTINGS.deepseek_api_key or None, None
     elif provider == "ollama":
         return None, str(SETTINGS.ollama_url) or None
     elif provider == "llamacpp":
