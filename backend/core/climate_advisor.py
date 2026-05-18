@@ -787,7 +787,7 @@ class ClimateAdvisor:
         try:
             weather_entity = await self._get_weather_entity(db)
             if weather_entity and hasattr(settings, "_ha_client"):
-                ha = settings._ha_client  # type: ignore[attr-defined]
+                ha = settings._ha_client
                 state = await ha.get_state(weather_entity)
                 if state:
                     outdoor_temp_c = state.attributes.get("temperature")

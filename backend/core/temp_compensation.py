@@ -24,7 +24,7 @@ async def _get_ha_temp_unit(ha_client: Any) -> str:
     """Detect HA's configured temperature unit ('°F' or '°C')."""
     try:
         config = await ha_client.get_config()
-        return config.get("unit_system", {}).get("temperature", "°C")
+        return str(config.get("unit_system", {}).get("temperature", "°C"))
     except Exception:
         return "°C"
 
@@ -185,7 +185,7 @@ async def _get_db_zone_temp_c(
     )
     for temp_c in result.scalars().all():
         if -40 <= temp_c <= 60:
-            return temp_c
+            return float(temp_c)
     return None
 
 

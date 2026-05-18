@@ -338,7 +338,7 @@ class DecisionEngine:
         delta_str = "unknown"
         if zone.temperature_c is not None and target_c is not None:
             try:
-                delta_c = float(zone.temperature_c) - float(target_c)  # type: ignore[arg-type]
+                delta_c = float(zone.temperature_c) - float(target_c)
                 sign = "+" if delta_c >= 0 else ""
                 delta_str = f"{sign}{delta_c:.1f}°C ({sign}{delta_c * 9 / 5:.1f}°F)"
             except (TypeError, ValueError):
@@ -410,7 +410,7 @@ class DecisionEngine:
         if json_action in ("heat",):
             target = zone.metrics.get("target_temperature_c", SETTINGS.default_comfort_temp_min_c)
             temperature = (
-                float(target)  # type: ignore[arg-type]
+                float(target)
                 if isinstance(target, (int, float)) and not isinstance(target, bool)
                 else SETTINGS.default_comfort_temp_min_c
             )
@@ -425,7 +425,7 @@ class DecisionEngine:
         if json_action in ("cool",):
             target = zone.metrics.get("target_temperature_c", SETTINGS.default_comfort_temp_max_c)
             temperature = (
-                float(target)  # type: ignore[arg-type]
+                float(target)
                 if isinstance(target, (int, float)) and not isinstance(target, bool)
                 else SETTINGS.default_comfort_temp_max_c
             )
@@ -470,7 +470,7 @@ class DecisionEngine:
         if any(kw in text_lower for kw in ("heat", "warm", "raise temperature", "increase temperature")):
             target = zone.metrics.get("target_temperature_c", SETTINGS.default_comfort_temp_min_c)
             temperature = (
-                float(target)  # type: ignore[arg-type]
+                float(target)
                 if isinstance(target, (int, float)) and not isinstance(target, bool)
                 else SETTINGS.default_comfort_temp_min_c
             )
@@ -486,7 +486,7 @@ class DecisionEngine:
         if any(kw in text_lower for kw in ("cool", "lower temperature", "decrease temperature", "reduce temperature")):
             target = zone.metrics.get("target_temperature_c", SETTINGS.default_comfort_temp_max_c)
             temperature = (
-                float(target)  # type: ignore[arg-type]
+                float(target)
                 if isinstance(target, (int, float)) and not isinstance(target, bool)
                 else SETTINGS.default_comfort_temp_max_c
             )

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.45] - 2026-05-18
+
+### Fixed (CI)
+- Backend mypy was failing on 13 errors: two real `Returning Any` issues in `temp_compensation.py` (now wrapped with explicit `str()` / `float()` coercion), one missing generic in `api/main.py` (`dict` → `dict[str, Any]`), and ten `unused "type: ignore"` warnings (six `[arg-type]` ignores in `decision_engine.py`, one `[attr-defined]` in `climate_advisor.py`, one `[union-attr]` in `zones.py`, and three `[union-attr, attr-defined]` in `api/main.py` reduced to just `[attr-defined]`). No runtime behavior change.
+
 ## [1.0.44] - 2026-05-18
 
 ### Fixed

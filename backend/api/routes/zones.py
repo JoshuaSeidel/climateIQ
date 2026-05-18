@@ -344,7 +344,7 @@ async def _enrich_zone_response(
         )
 
         async def _fetch_col(col_attr: Any) -> SensorReading | None:
-            result = await db.execute(base.where(col_attr.isnot(None)))  # type: ignore[union-attr]
+            result = await db.execute(base.where(col_attr.isnot(None)))
             return result.scalars().first()
 
         temp_row, hum_row, pres_row, lux_row = await asyncio.gather(
