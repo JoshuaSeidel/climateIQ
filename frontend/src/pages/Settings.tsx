@@ -833,6 +833,27 @@ function LLMTab({
   const [selectedProvider, setSelectedProvider] = useState<string>('anthropic')
   const [selectedModels, setSelectedModels] = useState<Record<string, string>>({})
 
+  // Fetch the currently-active primary (what's in SystemConfig.llm_settings)
+  const { data: activePrimary } = useQuery<{ provider: string; model: string }>({
+    queryKey: ['llm-primary'],
+    queryFn: () => api.get<{ provider: string; model: string }>('/system/config/llm'),
+  })
+
+  // Render-time sync: once we know the active primary, pre-select it so
+  // the user can see what's in use.  React 19's "Avoid setState in effects"
+  // guidance points to this pattern over useEffect.
+  const [primarySyncKey, setPrimarySyncKey] = useState<string>('')
+  const currentPrimaryKey = `${activePrimary?.provider ?? ''}|${activePrimary?.model ?? ''}`
+  if (activePrimary?.provider && currentPrimaryKey !== primarySyncKey) {
+    setPrimarySyncKey(currentPrimaryKey)
+    setSelectedProvider(activePrimary.provider)
+    if (activePrimary.model) {
+      const provider = activePrimary.provider
+      const model = activePrimary.model
+      setSelectedModels((prev) => (prev[provider] ? prev : { ...prev, [provider]: model }))
+    }
+  }
+
   // Save LLM config
   const saveLLMConfig = useMutation({
     mutationFn: async (config: { provider: string; model?: string }) => {
@@ -843,6 +864,7 @@ function LLMTab({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['llm-providers'] })
+      queryClient.invalidateQueries({ queryKey: ['llm-primary'] })
     },
   })
 
@@ -873,39 +895,64 @@ function LLMTab({
           <CardDescription>Configure LLM providers for the AI assistant</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Current Primary banner */}
+          {activePrimary?.provider && (
+            <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm dark:bg-primary/10">
+              <span className="text-muted-foreground">Currently in use: </span>
+              <span className="font-medium capitalize">{activePrimary.provider}</span>
+              {activePrimary.model && (
+                <>
+                  <span className="text-muted-foreground"> → </span>
+                  <span className="font-mono text-xs">{activePrimary.model}</span>
+                </>
+              )}
+            </div>
+          )}
+
           {/* Provider Selection */}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-            {(providers?.providers ?? []).map((provider) => (
-              <button
-                key={provider.provider}
-                onClick={() => setSelectedProvider(provider.provider)}
-                className={`rounded-lg border p-3 text-left text-sm transition-colors ${
-                  selectedProvider === provider.provider
-                    ? 'border-primary bg-primary/5 dark:border-primary/40 dark:bg-primary/10'
-                    : 'border-border/60 hover:border-border dark:border-[rgba(148,163,184,0.15)]'
-                }`}
-              >
-                <div className="font-medium capitalize">{provider.provider}</div>
-                <div className="mt-1 flex items-center gap-1">
-                  {provider.configured ? (
-                    <>
-                      <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
-                      <span className="text-xs text-green-600">Active</span>
-                    </>
-                  ) : (
-                    <>
-                      <div className="h-1.5 w-1.5 rounded-full bg-muted" />
-                      <span className="text-xs text-muted-foreground">Not set</span>
-                    </>
-                  )}
-                </div>
-                {provider.models.length > 0 && (
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {provider.models.length} models
+            {(providers?.providers ?? []).map((provider) => {
+              const isPrimary = activePrimary?.provider === provider.provider
+              const isSelected = selectedProvider === provider.provider
+              return (
+                <button
+                  key={provider.provider}
+                  onClick={() => setSelectedProvider(provider.provider)}
+                  className={`rounded-lg border p-3 text-left text-sm transition-colors ${
+                    isSelected
+                      ? 'border-primary bg-primary/5 dark:border-primary/40 dark:bg-primary/10'
+                      : 'border-border/60 hover:border-border dark:border-[rgba(148,163,184,0.15)]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="font-medium capitalize">{provider.provider}</div>
+                    {isPrimary && (
+                      <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                        Primary
+                      </span>
+                    )}
                   </div>
-                )}
-              </button>
-            ))}
+                  <div className="mt-1 flex items-center gap-1">
+                    {provider.configured ? (
+                      <>
+                        <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                        <span className="text-xs text-green-600">Configured</span>
+                      </>
+                    ) : (
+                      <>
+                        <div className="h-1.5 w-1.5 rounded-full bg-muted" />
+                        <span className="text-xs text-muted-foreground">Not set</span>
+                      </>
+                    )}
+                  </div>
+                  {provider.models.length > 0 && (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {provider.models.length} models
+                    </div>
+                  )}
+                </button>
+              )
+            })}
             {!providers?.providers?.length && !loading && (
               <p className="col-span-full text-sm text-muted-foreground">
                 No providers available. Check backend configuration.
@@ -919,7 +966,7 @@ function LLMTab({
               <h4 className="font-medium capitalize">{selectedProvider} Configuration</h4>
               <div className="flex items-center justify-between gap-2">
                 <div className="text-sm text-muted-foreground">
-                  Choose the model used for this provider.
+                  Pick a model below, then click <span className="font-medium">Save as Primary</span> to switch.
                 </div>
                 <Button
                   onClick={() => {
@@ -928,12 +975,12 @@ function LLMTab({
                       model: selectedModels[selectedProvider] || undefined,
                     })
                   }}
-                  disabled={saveLLMConfig.isPending}
+                  disabled={saveLLMConfig.isPending || !selectedModels[selectedProvider]}
                 >
                   {saveLLMConfig.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    'Save'
+                    'Save as Primary'
                   )}
                 </Button>
               </div>

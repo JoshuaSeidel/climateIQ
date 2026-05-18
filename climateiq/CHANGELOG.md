@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.44] - 2026-05-18
+
+### Fixed
+- **DeepSeek API key never reached the backend** — `climateiq/run.sh` reads each LLM key from `/data/options.json` and exports it as `CLIMATEIQ_<NAME>_API_KEY` for Pydantic settings. The DeepSeek wiring was missing: the script wasn't parsing `.deepseek_api_key` or exporting `CLIMATEIQ_DEEPSEEK_API_KEY`. So even though the field showed up in the addon UI, `SETTINGS.deepseek_api_key` was always empty and the Providers tab showed DeepSeek as **Not set** (no green dot). Now wired correctly.
+- **Ollama/llamacpp always appeared "Configured"** — `_resolve_provider_credentials` did `str(SETTINGS.ollama_url) or None`, but `str(None)` returns the literal string `"None"` (truthy). Replaced with `_normalize_local_url()` which treats `None`, empty string, and `"None"` as unconfigured. Also changed the defaults in `backend/config.py` for `ollama_url` and `llamacpp_url` from `http://localhost:...` to `""` so an unset URL means unset.
+
+### Changed (LLM Settings UI)
+- **"Currently in use" banner** at the top of the LLM Providers tab now shows the actual primary provider/model from `SystemConfig.llm_settings` (fetched via `GET /system/config/llm`). Before this, there was no way to see which provider was selected as primary — multiple providers showed green "Active" badges meaning "has API key," not "currently selected."
+- **"Primary" badge** on the currently-selected provider card (separate from the "Configured" badge).
+- **"Configured"** label replaces the misleading **"Active"** label.
+- **"Save as Primary"** button (renamed from "Save"). Disabled until a model is selected, preventing the silent fallback to `gpt-4o-mini`.
+- The tab now **auto-selects** the current primary on load (uses render-time sync per React 19 guidance, not `useEffect` + `setState`).
+
+> **NOTE for upgrade**: If you had DeepSeek configured before and saw "Not set" — that was the run.sh wiring gap fixed in this release. After upgrading and restarting, DeepSeek should now show "Configured" (green) once your key is filled in.
+
 ## [1.0.43] - 2026-05-17
 
 ### Fixed

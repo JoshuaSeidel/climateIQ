@@ -271,10 +271,25 @@ def _resolve_provider_credentials(provider: str) -> tuple[str | None, str | None
     elif provider == "deepseek":
         return SETTINGS.deepseek_api_key or None, None
     elif provider == "ollama":
-        return None, str(SETTINGS.ollama_url) or None
+        return None, _normalize_local_url(SETTINGS.ollama_url)
     elif provider == "llamacpp":
-        return None, str(SETTINGS.llamacpp_url) or None
+        return None, _normalize_local_url(SETTINGS.llamacpp_url)
     return None, None
+
+
+def _normalize_local_url(raw: Any) -> str | None:
+    """Coerce a Pydantic URL/None to a real string or None.
+
+    The previous ``str(value) or None`` form returned the literal ``"None"``
+    when ``value`` was ``None`` — truthy, so Ollama/llamacpp always appeared
+    configured even when the user had cleared the URL field.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s or s.lower() == "none":
+        return None
+    return s
 
 
 # ---------------------------------------------------------------------------

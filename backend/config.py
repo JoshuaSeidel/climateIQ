@@ -83,8 +83,8 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field(default="")
     grok_api_key: str = Field(default="")
     deepseek_api_key: str = Field(default="")
-    ollama_url: AnyUrl | str = Field(default="http://localhost:11434")
-    llamacpp_url: AnyUrl | str = Field(default="http://localhost:8000")
+    ollama_url: AnyUrl | str = Field(default="")
+    llamacpp_url: AnyUrl | str = Field(default="")
 
     # API key authentication (empty = no auth required)
     api_key: str = Field(default="")

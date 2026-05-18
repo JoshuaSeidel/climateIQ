@@ -31,6 +31,7 @@ if [ -f "$CONFIG_PATH" ]; then
     OPENAI_API_KEY=$(jq -r '.openai_api_key // ""' "$CONFIG_PATH")
     GEMINI_API_KEY=$(jq -r '.gemini_api_key // ""' "$CONFIG_PATH")
     GROK_API_KEY=$(jq -r '.grok_api_key // ""' "$CONFIG_PATH")
+    DEEPSEEK_API_KEY=$(jq -r '.deepseek_api_key // ""' "$CONFIG_PATH")
     OLLAMA_URL=$(jq -r '.ollama_url // ""' "$CONFIG_PATH")
 
     # Entity filters (optional — empty = accept all)
@@ -52,6 +53,7 @@ else
     OPENAI_API_KEY=""
     GEMINI_API_KEY=""
     GROK_API_KEY=""
+    DEEPSEEK_API_KEY=""
     OLLAMA_URL=""
     CLIMATE_ENTITIES=""
     SENSOR_ENTITIES=""
@@ -190,6 +192,7 @@ export CLIMATEIQ_ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}"
 export CLIMATEIQ_OPENAI_API_KEY="${OPENAI_API_KEY}"
 export CLIMATEIQ_GEMINI_API_KEY="${GEMINI_API_KEY}"
 export CLIMATEIQ_GROK_API_KEY="${GROK_API_KEY}"
+export CLIMATEIQ_DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}"
 if [ -n "$OLLAMA_URL" ]; then
     export CLIMATEIQ_OLLAMA_URL="${OLLAMA_URL}"
 fi
