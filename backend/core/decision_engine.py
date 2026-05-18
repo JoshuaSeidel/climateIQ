@@ -73,17 +73,32 @@ class DecisionEngine:
             api_key=self._provider_api_key(primary_provider),
             default_model=primary_model,
         )
-        secondary_key = self._provider_api_key(secondary_provider)
-        secondary = (
-            ProviderSettings(
-                provider=secondary_provider,
-                api_key=secondary_key,
-                default_model=secondary_model,
-            )
-            if secondary_key
-            else None
+        secondary = self._pick_secondary_provider(
+            primary_provider, secondary_provider, secondary_model
         )
         return ClimateIQLLMProvider(primary=primary, secondary=secondary)
+
+    def _pick_secondary_provider(
+        self,
+        primary_provider: str,
+        preferred_secondary: str,
+        preferred_model: str,
+    ) -> ProviderSettings | None:
+        if primary_provider != preferred_secondary:
+            key = self._provider_api_key(preferred_secondary)
+            if key:
+                return ProviderSettings(
+                    provider=preferred_secondary,
+                    api_key=key,
+                    default_model=preferred_model,
+                )
+        for cand in ("anthropic", "openai", "gemini", "deepseek", "grok"):
+            if cand == primary_provider:
+                continue
+            key = self._provider_api_key(cand)
+            if key:
+                return ProviderSettings(provider=cand, api_key=key)
+        return None
 
     def _provider_api_key(self, provider: str) -> str:
         provider_key = provider.lower()
@@ -95,6 +110,8 @@ class DecisionEngine:
             return SETTINGS.gemini_api_key
         if provider_key == "grok":
             return SETTINGS.grok_api_key
+        if provider_key == "deepseek":
+            return SETTINGS.deepseek_api_key
         if provider_key == "ollama":
             return ""
         if provider_key == "llamacpp":
@@ -281,15 +298,8 @@ class DecisionEngine:
             api_key=self._provider_api_key(primary_provider),
             default_model=primary_model,
         )
-        openai_key = self._provider_api_key("openai")
-        secondary = (
-            ProviderSettings(
-                provider="openai",
-                api_key=openai_key,
-                default_model="gpt-4o-mini",
-            )
-            if openai_key
-            else None
+        secondary = self._pick_secondary_provider(
+            primary_provider, "openai", "gpt-4o-mini"
         )
         return ClimateIQLLMProvider(primary=primary, secondary=secondary)
 

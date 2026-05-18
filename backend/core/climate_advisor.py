@@ -131,7 +131,9 @@ async def _build_llm_provider(db: Any, settings: Any) -> Any:
             "openai": getattr(settings, "openai_api_key", ""),
             "gemini": getattr(settings, "gemini_api_key", ""),
             "grok": getattr(settings, "grok_api_key", ""),
+            "deepseek": getattr(settings, "deepseek_api_key", ""),
             "ollama": None,
+            "llamacpp": None,
         }
         val = mapping.get(provider, "")
         return val or None
@@ -141,16 +143,27 @@ async def _build_llm_provider(db: Any, settings: Any) -> Any:
         api_key=_api_key(primary_provider),
         default_model=primary_model,
     )
-    secondary_key = _api_key(secondary_provider)
-    secondary = (
-        ProviderSettings(
+
+    # Pick a secondary that's actually configured.  Prefer the hardcoded
+    # default (OpenAI gpt-4o-mini) when its key is present; otherwise fall
+    # back to the first cloud provider with a key that isn't already
+    # serving as primary.  This stops the chain from re-trying a dead
+    # primary when the user has other keys available.
+    secondary: ProviderSettings | None = None
+    if primary_provider != secondary_provider and _api_key(secondary_provider):
+        secondary = ProviderSettings(
             provider=secondary_provider,
-            api_key=secondary_key,
+            api_key=_api_key(secondary_provider),
             default_model=secondary_model,
         )
-        if secondary_key
-        else None
-    )
+    else:
+        for cand in ("anthropic", "openai", "gemini", "deepseek", "grok"):
+            if cand == primary_provider:
+                continue
+            key = _api_key(cand)
+            if key:
+                secondary = ProviderSettings(provider=cand, api_key=key)
+                break
     return ClimateIQLLMProvider(primary=primary, secondary=secondary)
 
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.43] - 2026-05-17
+
+### Fixed
+- **DeepSeek provider selection ignored** — the LLM provider builders in `climate_advisor.py` and `decision_engine.py` were missing `deepseek` (and `llamacpp`) in their api-key lookup maps. Even when DeepSeek was set as the primary in `SystemConfig.llm_settings`, the key was never wired up, so the chain fell back to Ollama/OpenAI.
+- **Hardcoded OpenAI fallback when primary fails** — the secondary provider was always built as OpenAI `gpt-4o-mini` if (and only if) the OpenAI key was present. If the user had only DeepSeek and Anthropic keys, primary failures had no fallback. Both builders now auto-detect the first configured cloud provider (prefer the historical OpenAI default when its key exists; otherwise scan Anthropic → OpenAI → Gemini → DeepSeek → Grok).
+
+> **NOTE for upgrade**: the code fix wires the key correctly, but the *active provider* still lives in `SystemConfig.llm_settings`. If your DB still says `provider=ollama`, change it under **Settings → LLM** in the UI (e.g. to `deepseek` + `deepseek-chat`) for the new behavior to take effect.
+
 ## [1.0.42] - 2026-05-17
 
 ### Fixed
