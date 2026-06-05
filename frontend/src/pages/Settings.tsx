@@ -1113,7 +1113,290 @@ function ModesTab({ settings }: { settings?: SystemSettings }) {
           ))}
         </CardContent>
       </Card>
+
+      <SeasonalLockCard />
     </div>
+  )
+}
+
+// ============================================================================
+// Seasonal Lock (within Modes tab)
+// ============================================================================
+type SeasonModePref = 'auto' | 'heat' | 'cool'
+
+interface SeasonCfg {
+  name: string
+  start_month: number
+  start_day: number
+  end_month: number
+  end_day: number
+  preferred_mode: SeasonModePref
+  override_outdoor_below_c: number | null
+  override_outdoor_above_c: number | null
+}
+
+interface SeasonalLockConfigT {
+  enabled: boolean
+  seasons: SeasonCfg[]
+}
+
+interface SeasonalLockStateT {
+  enabled: boolean
+  active_season: string | null
+  preferred_mode: SeasonModePref | null
+  locked_mode: 'heat' | 'cool' | null
+  outdoor_temp_c: number | null
+  override_active: boolean
+  reason: string
+}
+
+interface SeasonalLockResponse {
+  config: SeasonalLockConfigT
+  state: SeasonalLockStateT
+}
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+const cToDisplay = (c: number | null, isF: boolean): string => {
+  if (c === null || c === undefined) return ''
+  return isF ? String(Math.round(c * 9 / 5 + 32)) : String(Math.round(c * 10) / 10)
+}
+
+const displayToC = (raw: string, isF: boolean): number | null => {
+  if (raw.trim() === '') return null
+  const n = parseFloat(raw)
+  if (Number.isNaN(n)) return null
+  return isF ? (n - 32) * 5 / 9 : n
+}
+
+function SeasonalLockCard() {
+  const queryClient = useQueryClient()
+  const tempUnit = useSettingsStore((s) => s.temperatureUnit)
+  const isF = tempUnit === 'fahrenheit'
+  const unitLabel = isF ? 'F' : 'C'
+
+  const { data, isLoading } = useQuery<SeasonalLockResponse>({
+    queryKey: ['seasonal-lock'],
+    queryFn: () => api.get<SeasonalLockResponse>('/settings/seasonal-lock'),
+  })
+
+  const [draft, setDraft] = useState<SeasonalLockConfigT | null>(null)
+  const [draftKey, setDraftKey] = useState<string>('')
+  // Render-time sync: seed draft from server data when it first arrives or
+  // when the server reports a newer payload.
+  if (data && draftKey !== JSON.stringify(data.config)) {
+    setDraft(structuredClone(data.config))
+    setDraftKey(JSON.stringify(data.config))
+  }
+
+  const save = useMutation({
+    mutationFn: (cfg: SeasonalLockConfigT) =>
+      api.put<SeasonalLockResponse>('/settings/seasonal-lock', cfg),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['seasonal-lock'] })
+    },
+  })
+
+  const state = data?.state
+  const cfg = draft
+
+  const updateSeason = (idx: number, patch: Partial<SeasonCfg>) => {
+    if (!cfg) return
+    const next = { ...cfg, seasons: cfg.seasons.map((s, i) => i === idx ? { ...s, ...patch } : s) }
+    setDraft(next)
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Snowflake className="h-5 w-5 text-primary" />
+          <CardTitle>Seasonal Lock</CardTitle>
+        </div>
+        <CardDescription>
+          Lock the thermostat to heat or cool during specific times of year — with
+          an outdoor-temperature escape valve. Prevents the system from flip-flopping
+          between modes when one direction is clearly preferred (e.g. always cool in summer).
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading || !cfg ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+          </div>
+        ) : (
+          <>
+            {/* Current status banner */}
+            {state && state.enabled && (
+              <div className="rounded-lg border border-border/40 bg-muted/30 p-3 text-sm dark:bg-[rgba(2,6,23,0.35)] dark:border-[rgba(148,163,184,0.15)]">
+                <div className="font-medium">
+                  {state.active_season
+                    ? `Active season: ${state.active_season}`
+                    : 'No active season for today'}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {state.locked_mode
+                    ? `Currently locked to: ${state.locked_mode.toUpperCase()}`
+                    : state.override_active
+                      ? `Override active (outdoor ${cToDisplay(state.outdoor_temp_c, isF)}°${unitLabel})`
+                      : 'No lock in effect'}
+                </div>
+                {state.reason && (
+                  <div className="mt-1 text-xs text-muted-foreground italic">{state.reason}</div>
+                )}
+              </div>
+            )}
+
+            {/* Enable toggle */}
+            <label className="flex items-center justify-between rounded-lg border border-border/60 p-3 dark:border-[rgba(148,163,184,0.15)]">
+              <div>
+                <div className="text-sm font-medium">Enable seasonal lock</div>
+                <p className="text-xs text-muted-foreground">
+                  When enabled, the active season's preferred mode wins over auto-select.
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={cfg.enabled}
+                onChange={(e) => setDraft({ ...cfg, enabled: e.target.checked })}
+                className="h-4 w-4"
+              />
+            </label>
+
+            {/* Season editors */}
+            <div className="space-y-3">
+              {cfg.seasons.map((s, idx) => (
+                <div
+                  key={idx}
+                  className="rounded-lg border border-border/60 p-3 space-y-3 dark:border-[rgba(148,163,184,0.15)]"
+                >
+                  <div className="flex items-center justify-between">
+                    <Input
+                      value={s.name}
+                      onChange={(e) => updateSeason(idx, { name: e.target.value })}
+                      className="h-8 max-w-[200px] text-sm font-medium"
+                    />
+                    <div className="flex gap-1">
+                      {(['auto', 'heat', 'cool'] as SeasonModePref[]).map((m) => (
+                        <Button
+                          key={m}
+                          size="sm"
+                          variant={s.preferred_mode === m ? 'default' : 'outline'}
+                          onClick={() => updateSeason(idx, { preferred_mode: m })}
+                          className="h-7 px-2 text-xs capitalize"
+                        >
+                          {m === 'heat' && <Flame className="mr-1 h-3 w-3" />}
+                          {m === 'cool' && <Snowflake className="mr-1 h-3 w-3" />}
+                          {m}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Date range */}
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="space-y-1">
+                      <label className="text-muted-foreground">Start</label>
+                      <div className="flex gap-1">
+                        <select
+                          value={s.start_month}
+                          onChange={(e) => updateSeason(idx, { start_month: parseInt(e.target.value) })}
+                          className="h-8 rounded border border-border/60 bg-background px-2 text-xs dark:border-[rgba(148,163,184,0.2)]"
+                        >
+                          {MONTH_NAMES.map((m, i) => (
+                            <option key={m} value={i + 1}>{m}</option>
+                          ))}
+                        </select>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={31}
+                          value={s.start_day}
+                          onChange={(e) => updateSeason(idx, { start_day: parseInt(e.target.value) || 1 })}
+                          className="h-8 w-16 text-xs"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-muted-foreground">End</label>
+                      <div className="flex gap-1">
+                        <select
+                          value={s.end_month}
+                          onChange={(e) => updateSeason(idx, { end_month: parseInt(e.target.value) })}
+                          className="h-8 rounded border border-border/60 bg-background px-2 text-xs dark:border-[rgba(148,163,184,0.2)]"
+                        >
+                          {MONTH_NAMES.map((m, i) => (
+                            <option key={m} value={i + 1}>{m}</option>
+                          ))}
+                        </select>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={31}
+                          value={s.end_day}
+                          onChange={(e) => updateSeason(idx, { end_day: parseInt(e.target.value) || 1 })}
+                          className="h-8 w-16 text-xs"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Override inputs */}
+                  {s.preferred_mode === 'cool' && (
+                    <div className="space-y-1 text-xs">
+                      <label className="text-muted-foreground">
+                        Allow heat if outdoor below (°{unitLabel}) — optional safety override
+                      </label>
+                      <Input
+                        type="number"
+                        value={cToDisplay(s.override_outdoor_below_c, isF)}
+                        onChange={(e) => updateSeason(idx, {
+                          override_outdoor_below_c: displayToC(e.target.value, isF),
+                        })}
+                        placeholder="leave blank for no override"
+                        className="h-8 max-w-[160px] text-xs"
+                      />
+                    </div>
+                  )}
+                  {s.preferred_mode === 'heat' && (
+                    <div className="space-y-1 text-xs">
+                      <label className="text-muted-foreground">
+                        Allow cool if outdoor above (°{unitLabel}) — optional safety override
+                      </label>
+                      <Input
+                        type="number"
+                        value={cToDisplay(s.override_outdoor_above_c, isF)}
+                        onChange={(e) => updateSeason(idx, {
+                          override_outdoor_above_c: displayToC(e.target.value, isF),
+                        })}
+                        placeholder="leave blank for no override"
+                        className="h-8 max-w-[160px] text-xs"
+                      />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={() => save.mutate(cfg)}
+                disabled={save.isPending}
+              >
+                {save.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Save
+              </Button>
+              {save.isSuccess && (
+                <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                  <Check className="h-3 w-3" /> Saved
+                </span>
+              )}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

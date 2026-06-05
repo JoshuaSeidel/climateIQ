@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.46] - 2026-05-18
+
+### Added
+- **Seasonal HVAC lock with outdoor-temperature safety override.** Configure the year as a set of seasons (Winter / Spring / Summer / Fall by default) and lock each to a preferred direction — `heat`, `cool`, or `auto`. While a season's lock is active, the auto-select engine refuses to flip the thermostat to the opposite mode and the LLM advisor's `hvac_mode` recommendation is filtered to match. This is the user-requested fix for "it's summer, stop switching back and forth between heat and cool — stay on cool."
+- **Outdoor-temperature escape valve per season.** Each locked season can declare a one-way override: a *cool* season allows heat when the outdoor temp drops below a threshold (default ≈ 40 °F for Summer); a *heat* season allows cool when outdoor rises above a threshold (default ≈ 70 °F for Winter). The override consults the configured `weather_entity` and stays out of the way when no entity is set.
+- **Settings → Modes → Seasonal Lock** card: enable/disable, edit season names + date ranges, pick preferred mode per season, and set override thresholds in the user's display unit. Shows the live status (active season, locked mode, override active).
+- **Dashboard status bar**: now shows the active season + lock direction (e.g. "Season: Summer · locked to cool") when seasonal lock is enabled.
+
+### Backend
+- New module `backend/core/seasonal_lock.py` (Pydantic models, year-wrap-aware season detection, outdoor reader mirroring the climate-advisor pattern).
+- New endpoints: `GET /settings/seasonal-lock` (returns `{config, state}`) and `PUT /settings/seasonal-lock`.
+- `seasonal_lock` is wired into `_auto_select_hvac_mode` *after* the explicit `hvac_control_mode` check — explicit user choice always wins, the seasonal lock layers in next, then the sensor-driven mode picker.
+- Wrong-direction detection in auto-select extends to the seasonal lock: if the thermostat is on the *opposite* mode of the lock, the switch happens immediately without dead-band or cooldown gating.
+
 ## [1.0.45] - 2026-05-18
 
 ### Fixed (CI)

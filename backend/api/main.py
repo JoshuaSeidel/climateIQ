@@ -595,6 +595,22 @@ async def _auto_select_hvac_mode(
             )
             return None, False
 
+        # Seasonal lock — kicks in when the user has set hvac_control_mode=auto
+        # but the current season has a preferred direction (with outdoor temp
+        # override).  Treated the same as the explicit user lock above:
+        # urgent-switch when thermostat is fighting the lock.
+        from backend.core.seasonal_lock import compute_lock_state
+
+        season_state = await compute_lock_state(db, ha_client)
+        if season_state.locked_mode and season_state.locked_mode in supported:
+            opposite = "cool" if season_state.locked_mode == "heat" else "heat"
+            urgent_season = on_forbidden_mode or opposite in current_mode
+            logger.debug(
+                "Seasonal lock active: %s (reason=%s)",
+                season_state.locked_mode, season_state.reason,
+            )
+            return season_state.locked_mode, urgent_season
+
         from backend.core.temp_compensation import get_avg_zone_temp_c
 
         if db is None or not zone_ids:
@@ -1423,7 +1439,11 @@ async def maintain_climate_offset() -> None:
             )
 
             # ── LLM advisor: let the AI make or refine the timing decision ──
-            from backend.core.climate_advisor import ClimateAdvisor, SafetyProtocol
+            from backend.core.climate_advisor import (
+                AdvisorDecision,
+                ClimateAdvisor,
+                SafetyProtocol,
+            )
             from backend.core.temp_compensation import get_max_offset_setting
 
             sched_key = str(active_schedule.id)
@@ -1481,6 +1501,37 @@ async def maintain_climate_offset() -> None:
                 # Safety vet (unconditional — catches physically impossible LLM outputs)
                 max_offset_f = await get_max_offset_setting(db)
                 vetted = SafetyProtocol.vet(decision, desired_temp_c, max_offset_f, hvac_mode)
+
+                # Seasonal lock filter — if the user has locked the season to a
+                # specific direction (e.g. summer→cool) and the outdoor safety
+                # override is NOT active, strip any LLM-recommended mode change
+                # that contradicts the lock.  The lock state is consulted on a
+                # best-effort basis; on any failure the advisor's choice stands.
+                if vetted.hvac_mode:
+                    try:
+                        from backend.core.seasonal_lock import compute_lock_state
+                        _lock_state = await compute_lock_state(db, ha_client)
+                        if (
+                            _lock_state.locked_mode
+                            and vetted.hvac_mode != _lock_state.locked_mode
+                        ):
+                            logger.info(
+                                "Climate maintenance: advisor hvac_mode=%s overruled "
+                                "by seasonal lock (%s)",
+                                vetted.hvac_mode, _lock_state.reason,
+                            )
+                            vetted = AdvisorDecision(
+                                action=vetted.action,
+                                setpoint_c=vetted.setpoint_c,
+                                wait_until=vetted.wait_until,
+                                reasoning=vetted.reasoning,
+                                from_llm=vetted.from_llm,
+                                hvac_mode=None,
+                            )
+                    except Exception as _lock_exc:
+                        logger.debug(
+                            "Seasonal lock check skipped (%s)", _lock_exc,
+                        )
 
                 # Apply AI-recommended mode change — same dead-band as auto-select.
                 # The advisor must not trigger mode switches for small near-target

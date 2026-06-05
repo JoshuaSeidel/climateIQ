@@ -224,6 +224,22 @@ export const Dashboard = () => {
     refetchInterval: 10_000,
   })
 
+  // Fetch seasonal lock state (for status banner)
+  const { data: seasonalLock } = useQuery<{
+    config: { enabled: boolean }
+    state: {
+      enabled: boolean
+      active_season: string | null
+      locked_mode: 'heat' | 'cool' | null
+      override_active: boolean
+      reason: string
+    }
+  }>({
+    queryKey: ['seasonal-lock'],
+    queryFn: () => api.get('/settings/seasonal-lock'),
+    refetchInterval: 60_000,
+  })
+
   // Initialize manualTemp from schedule target temp when it loads
   useEffect(() => {
     if (overrideStatus?.schedule_target_temp != null && manualTemp === null) {
@@ -588,6 +604,19 @@ export const Dashboard = () => {
             {overrideStatus?.preset_mode && overrideStatus.preset_mode.toLowerCase() !== 'none' && (
               <span className="text-xs text-muted-foreground">
                 Preset: <span className="font-bold capitalize text-foreground">{overrideStatus.preset_mode}</span>
+              </span>
+            )}
+            {seasonalLock?.state.enabled && seasonalLock.state.active_season && (
+              <span className="text-xs text-muted-foreground">
+                Season: <span className="font-bold text-foreground">{seasonalLock.state.active_season}</span>
+                {seasonalLock.state.locked_mode && (
+                  <> · <span className="font-bold capitalize text-primary">
+                    locked to {seasonalLock.state.locked_mode}
+                  </span></>
+                )}
+                {seasonalLock.state.override_active && (
+                  <> · <span className="font-bold text-orange-500">override active</span></>
+                )}
               </span>
             )}
             {overrideStatus?.schedule_zone_names && (

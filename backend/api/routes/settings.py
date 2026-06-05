@@ -64,6 +64,40 @@ _KV_DEFAULTS: dict[str, Any] = {
     # Minutes between heat↔cool reversals.  Wrong-direction override still
     # bypasses this when the thermostat is actively working against target.
     "mode_switch_cooldown_minutes": 30,
+    # Seasonal HVAC mode lock — stored as a structured JSON object.  See
+    # backend.core.seasonal_lock for the schema.  Use the dedicated
+    # /settings/seasonal-lock endpoints to read/update.
+    "seasonal_lock": {
+        "enabled": False,
+        "seasons": [
+            {
+                "name": "Winter",
+                "start_month": 12, "start_day": 1,
+                "end_month": 2, "end_day": 28,
+                "preferred_mode": "heat",
+                "override_outdoor_above_c": 21.1,
+            },
+            {
+                "name": "Spring",
+                "start_month": 3, "start_day": 1,
+                "end_month": 4, "end_day": 30,
+                "preferred_mode": "auto",
+            },
+            {
+                "name": "Summer",
+                "start_month": 5, "start_day": 1,
+                "end_month": 9, "end_day": 30,
+                "preferred_mode": "cool",
+                "override_outdoor_below_c": 4.4,
+            },
+            {
+                "name": "Fall",
+                "start_month": 10, "start_day": 1,
+                "end_month": 11, "end_day": 30,
+                "preferred_mode": "auto",
+            },
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -326,6 +360,48 @@ async def update_settings(
 
     await db.commit()
     return await _build_response(db)
+
+
+# ---------------------------------------------------------------------------
+# Seasonal HVAC mode lock
+# ---------------------------------------------------------------------------
+@router.get("/seasonal-lock")
+async def get_seasonal_lock(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Return the seasonal lock config + current computed state."""
+    from backend.api.dependencies import _ha_client
+    from backend.core.seasonal_lock import compute_lock_state, load_config
+
+    cfg = await load_config(db)
+    state = await compute_lock_state(db, _ha_client)
+    return {"config": cfg.model_dump(), "state": state.model_dump()}
+
+
+@router.put("/seasonal-lock")
+async def update_seasonal_lock(
+    payload: dict[str, Any],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Replace the seasonal lock config.  Validates against the schema."""
+    from backend.api.dependencies import _ha_client
+    from backend.core.seasonal_lock import (
+        SeasonalLockConfig,
+        compute_lock_state,
+    )
+
+    try:
+        cfg = SeasonalLockConfig.model_validate(payload)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid seasonal_lock payload: {exc}",
+        ) from exc
+
+    await _upsert_kv(db, "seasonal_lock", cfg.model_dump())
+    await db.commit()
+    state = await compute_lock_state(db, _ha_client)
+    return {"config": cfg.model_dump(), "state": state.model_dump()}
 
 
 # ---------------------------------------------------------------------------
