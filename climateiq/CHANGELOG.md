@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.0.47] - 2026-07-02
+
+### Fixed
+- **Chat now works with Ollama, llamacpp, DeepSeek, and Grok.** The chat route was still on the old simple `LLMProvider` that (a) only checked hardcoded keys (`anthropic` → `openai` → `gemini`), ignoring the user's provider choice saved to `SystemConfig.llm_settings`, and (b) never applied the `ollama/` / `deepseek/` / `grok/` prefix that LiteLLM needs for local + newer cloud providers. Chat requests fell back to Anthropic/OpenAI/Gemini even when Ollama was configured as primary; if none of those had a key, chat returned an empty 503.
+  - `get_llm_provider()` now consults `SystemConfig.llm_settings.provider`/`model` first, then builds a fallback chain across every configured cloud key + configured local URL. All chat callers now pass the DB session so this lookup can happen.
+  - Simple `LLMProvider` gained `base_url` support (for Ollama/llamacpp), a `grok`/`ollama`/`llamacpp` entry in `PROVIDER_MODELS`, and the correct `provider/model` prefix routing in `_chat_once()`.
+  - llama.cpp's OpenAI-compatible endpoint is routed via LiteLLM's `openai/` prefix with the user's base URL.
+
+### Added
+- **Weather-aware schedule pre-conditioning.** The scheduler already started HVAC ~15 minutes ahead of a scheduled target, but the lead time was static — a hot day + upcoming cool target could easily miss because the pre-condition window was too short. Pre-conditioning now factors in:
+  - The zone's *current* temperature gap to the schedule target.
+  - The zone's learned `heating_rate_c_per_hour` / `cooling_rate_c_per_hour` (from `zone_analytics.py`).
+  - Current outdoor temperature (from the weather cache) — with a bump of ~0.5 min per °C of adverse outdoor delta beyond a 3°C tolerance band. Hostile outdoor conditions push the pre-condition window earlier so schedules are actually met.
+  - Lead time is clamped to `[5, 120]` minutes to prevent runaway values on cold outages.
+- `PatternEngine.get_preconditioning_time()` gained optional keyword arguments (`current_temp_c`, `target_temp_c`, `outdoor_temp_c`, `hvac_mode`, `thermal_profile`). Falling back to the legacy static formula is unchanged, so anything that doesn't pass the new args behaves as before.
+
+### Fixed (CI)
+- Two `Unused "type: ignore"` errors from the v1.0.46 CI run cleaned up (`backend/core/seasonal_lock.py:271` assignment ignore was redundant; `backend/api/routes/system.py:911` was rewritten to avoid the `Awaitable[bool] | bool` union that needed the ignore). CI now goes green again alongside the addon build.
+
 ## [1.0.46] - 2026-05-18
 
 ### Added

@@ -268,7 +268,7 @@ async def compute_lock_state(
             return state
 
     # Lock is in effect.
-    state.locked_mode = season.preferred_mode  # type: ignore[assignment]
+    state.locked_mode = season.preferred_mode
     state.reason = f"season '{season.name}': locked to {season.preferred_mode}"
     return state
 

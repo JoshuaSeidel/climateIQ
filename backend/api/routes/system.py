@@ -908,7 +908,9 @@ async def get_diagnostics(
             )
         else:
             t0 = time.monotonic()
-            await redis_client.ping()  # type: ignore[misc]
+            ping_result = redis_client.ping()
+            if hasattr(ping_result, "__await__"):
+                await ping_result
             latency = (time.monotonic() - t0) * 1000
 
             # SET/GET round-trip test

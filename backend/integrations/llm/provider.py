@@ -46,15 +46,19 @@ class LLMProvider:
         "openai": "gpt-4o",
         "gemini": "gemini-2.0-flash",
         "deepseek": "deepseek-chat",
+        "grok": "grok-2-latest",
+        "ollama": "llama3.1",
+        "llamacpp": "gpt-3.5-turbo",  # llamacpp servers serve whatever model is loaded
     }
 
     def __init__(
         self,
         provider: str,
-        api_key: str,
+        api_key: str | None = None,
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        base_url: str | None = None,
         fallbacks: list[LLMProvider] | None = None,
     ) -> None:
         self.provider = provider
@@ -62,6 +66,7 @@ class LLMProvider:
         self.model = model or self.PROVIDER_MODELS.get(provider, "gpt-4o")
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.base_url = base_url
         self.fallbacks: list[LLMProvider] = fallbacks or []
 
     async def chat(
@@ -114,26 +119,28 @@ class LLMProvider:
 
         # Build model string for litellm — pass api_key directly instead of
         # setting os.environ (which is not concurrency-safe).
-        if self.provider == "anthropic":
-            model_str = f"anthropic/{self.model}"
-        elif self.provider == "openai":
+        if self.provider == "openai":
             model_str = self.model
-        elif self.provider == "gemini":
-            model_str = f"gemini/{self.model}"
-        elif self.provider == "deepseek":
-            model_str = f"deepseek/{self.model}"
+        elif self.provider == "llamacpp":
+            # llama.cpp exposes an OpenAI-compatible endpoint; route via openai/
+            model_str = f"openai/{self.model}"
         else:
-            model_str = self.model
+            model_str = f"{self.provider}/{self.model}"
 
-        response = await litellm.acompletion(
-            model=model_str,
-            messages=full_messages,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            tools=tools if tools else None,
-            api_key=self.api_key,
-            **kwargs,
-        )
+        call_kwargs: dict[str, Any] = {
+            "model": model_str,
+            "messages": full_messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "tools": tools if tools else None,
+        }
+        if self.api_key:
+            call_kwargs["api_key"] = self.api_key
+        if self.base_url:
+            call_kwargs["api_base"] = self.base_url
+        call_kwargs.update(kwargs)
+
+        response = await litellm.acompletion(**call_kwargs)
 
         # Extract response content
         choice = response.choices[0]

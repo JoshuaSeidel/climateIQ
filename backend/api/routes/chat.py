@@ -152,7 +152,7 @@ async def _extract_directives(
     from backend.models.database import UserDirective
 
     try:
-        llm = await get_llm_provider()
+        llm = await get_llm_provider(db)
     except Exception:
         return
 
@@ -655,27 +655,96 @@ async def _get_live_system_context(db: AsyncSession, temperature_unit: str) -> s
 # ============================================================================
 
 
-async def get_llm_provider() -> LLMProvider:
-    """Get configured LLM provider with fallback chain from all configured keys."""
+async def get_llm_provider(db: AsyncSession | None = None) -> LLMProvider:
+    """Get configured LLM provider with fallback chain.
+
+    Priority:
+    1. User's SystemConfig.llm_settings (provider + model) — set from Settings → LLM
+    2. Cloud providers with configured API keys (anthropic → openai → gemini →
+       deepseek → grok)
+    3. Local providers with configured base URLs (ollama, llamacpp)
+    """
     settings = get_settings()
 
-    # Build ordered candidate list: anthropic → openai → gemini
-    candidates: list[tuple[str, str]] = []
-    if settings.anthropic_api_key:
-        candidates.append(("anthropic", settings.anthropic_api_key))
-    if settings.openai_api_key:
-        candidates.append(("openai", settings.openai_api_key))
-    if settings.gemini_api_key:
-        candidates.append(("gemini", settings.gemini_api_key))
+    def _normalize_local_url(raw: Any) -> str | None:
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        if not s or s.lower() == "none":
+            return None
+        return s
 
-    if not candidates:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No LLM provider configured. Please add an API key in settings.",
+    def _spec_for(provider: str) -> tuple[str | None, str | None] | None:
+        """Return (api_key, base_url) tuple if provider is configured, else None."""
+        if provider == "anthropic" and settings.anthropic_api_key:
+            return settings.anthropic_api_key, None
+        if provider == "openai" and settings.openai_api_key:
+            return settings.openai_api_key, None
+        if provider == "gemini" and settings.gemini_api_key:
+            return settings.gemini_api_key, None
+        if provider == "deepseek" and settings.deepseek_api_key:
+            return settings.deepseek_api_key, None
+        if provider == "grok" and settings.grok_api_key:
+            return settings.grok_api_key, None
+        if provider == "ollama":
+            url = _normalize_local_url(settings.ollama_url)
+            if url:
+                return None, url
+        if provider == "llamacpp":
+            url = _normalize_local_url(settings.llamacpp_url)
+            if url:
+                return None, url
+        return None
+
+    # 1. User's primary choice from SystemConfig.llm_settings
+    primary_provider: str | None = None
+    primary_model: str | None = None
+    if db is not None:
+        try:
+            from backend.models.database import SystemConfig
+            result = await db.execute(
+                SystemConfig.__table__.select().where(SystemConfig.id == 1)
+            )
+            row = result.first()
+            llm_settings = dict(row.llm_settings or {}) if row else {}
+            if llm_settings.get("provider"):
+                primary_provider = str(llm_settings["provider"])
+            if llm_settings.get("model"):
+                primary_model = str(llm_settings["model"])
+        except Exception as exc:
+            logger.debug("get_llm_provider: SystemConfig read failed (%s)", exc)
+
+    # Build ordered candidate list starting with user's primary
+    ordered: list[str] = []
+    if primary_provider:
+        ordered.append(primary_provider)
+    for cand in ("anthropic", "openai", "gemini", "deepseek", "grok", "ollama", "llamacpp"):
+        if cand not in ordered:
+            ordered.append(cand)
+
+    providers: list[LLMProvider] = []
+    for provider_name in ordered:
+        spec = _spec_for(provider_name)
+        if spec is None:
+            continue
+        api_key, base_url = spec
+        # Only the primary uses the explicit model choice.
+        model = primary_model if provider_name == primary_provider else None
+        providers.append(
+            LLMProvider(
+                provider=provider_name,
+                api_key=api_key,
+                model=model,
+                base_url=base_url,
+            )
         )
 
-    # Build providers; first is primary, rest are fallbacks
-    providers = [LLMProvider(provider=p, api_key=k) for p, k in candidates]
+    if not providers:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No LLM provider configured. Please add an API key or local URL in Settings → LLM.",
+        )
+
     providers[0].fallbacks = providers[1:]
     return providers[0]
 
@@ -2424,7 +2493,7 @@ async def send_chat_message(
     """
     settings = get_settings()
     try:
-        llm = await get_llm_provider()
+        llm = await get_llm_provider(db)
     except HTTPException:
         # Fall back to simple response if no LLM configured
         return ChatResponse(
@@ -2590,7 +2659,7 @@ async def execute_command(
     if not parsed:
         # Fall back to AI parsing
         try:
-            llm = await get_llm_provider()
+            llm = await get_llm_provider(db)
             response = await llm.chat(
                 messages=[
                     {
@@ -2919,10 +2988,9 @@ async def chat_websocket(
 
             # Process message using a short-lived DB session
             try:
-                llm = await get_llm_provider()
-
                 session_maker = get_session_maker()
                 async with session_maker() as db:
+                    llm = await get_llm_provider(db)
                     settings = get_settings()
                     zone_context = await get_zone_context(db, settings.temperature_unit)
                     conditions_context = await get_conditions_context(

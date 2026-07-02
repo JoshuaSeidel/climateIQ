@@ -694,6 +694,7 @@ async def execute_schedules() -> None:
     from sqlalchemy import select as sa_select
 
     from backend.models.database import Schedule, SystemSetting
+    from backend.models.database import Zone as _Zone
 
     try:
         import backend.api.dependencies as _deps
@@ -807,6 +808,22 @@ async def execute_schedules() -> None:
                     and precondition_key not in _last_executed_schedules
                     and app_state.zone_manager
                 ):
+                    # Fetch outdoor temp once per pass (from the weather cache
+                    # populated by poll_weather_data). Weather may be unavailable
+                    # — the preconditioning helper handles None gracefully.
+                    outdoor_temp_c: float | None = None
+                    if app_state.redis_client:
+                        try:
+                            _cached_weather = await app_state.redis_client.get("weather:current")
+                            if _cached_weather:
+                                import json as _json_pre
+                                _wd = _json_pre.loads(_cached_weather).get("data", {})
+                                _t = _wd.get("temperature")
+                                if isinstance(_t, (int, float)):
+                                    outdoor_temp_c = float(_t)
+                        except Exception:  # noqa: S110
+                            pass
+
                     raw_zone_ids_pre = schedule.zone_ids or []
                     for zid_str in raw_zone_ids_pre:
                         try:
@@ -816,12 +833,50 @@ async def execute_schedules() -> None:
                         zstate = app_state.zone_manager.get_state(_zid)
                         if not zstate:
                             continue
+
+                        # Look up current zone temp + thermal profile so the
+                        # preconditioning helper can compute a weather-aware
+                        # lead time. Any failure falls back to the legacy
+                        # static calculation.
+                        current_zone_temp_c: float | None = None
+                        zone_thermal_profile: dict[str, float] = {}
+                        try:
+                            from backend.core.temp_compensation import get_avg_zone_temp_c
+                            _avg, _ = await get_avg_zone_temp_c(db, [str(_zid)], ha_client)
+                            if _avg is not None:
+                                current_zone_temp_c = float(_avg)
+                        except Exception:  # noqa: S110
+                            pass
+                        try:
+                            _zrow = await db.execute(
+                                sa_select(_Zone).where(_Zone.id == _zid)
+                            )
+                            _zobj = _zrow.scalar_one_or_none()
+                            if _zobj is not None:
+                                zone_thermal_profile = dict(_zobj.thermal_profile or {})
+                        except Exception:  # noqa: S110
+                            pass
+
+                        # Resolve HVAC direction: honour explicit schedule mode
+                        # when set, otherwise infer from current-vs-target sign.
+                        sched_mode_pre = _resolve_schedule_hvac_mode(schedule.hvac_mode)
+                        precond_mode: str | None = None
+                        if sched_mode_pre in ("heat", "cool"):
+                            precond_mode = sched_mode_pre
+                        elif current_zone_temp_c is not None:
+                            precond_mode = "heat" if current_zone_temp_c < schedule.target_temp_c else "cool"
+
                         # Use PatternEngine preconditioning time if available
                         precond_minutes = 15  # default
                         if app_state.pattern_engine:
                             try:
                                 precond_minutes = app_state.pattern_engine.get_preconditioning_time(
-                                    str(_zid)
+                                    str(_zid),
+                                    current_temp_c=current_zone_temp_c,
+                                    target_temp_c=schedule.target_temp_c,
+                                    outdoor_temp_c=outdoor_temp_c,
+                                    hvac_mode=precond_mode,
+                                    thermal_profile=zone_thermal_profile,
                                 )
                             except Exception:  # noqa: S110
                                 pass

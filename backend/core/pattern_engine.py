@@ -112,8 +112,68 @@ class PatternEngine:
         key = f"{day.lower()}:{slot}"
         return cache.get(key, 0.0)
 
-    def get_preconditioning_time(self, zone_id: str) -> int:
+    def get_preconditioning_time(
+        self,
+        zone_id: str,
+        *,
+        current_temp_c: float | None = None,
+        target_temp_c: float | None = None,
+        outdoor_temp_c: float | None = None,
+        hvac_mode: str | None = None,
+        thermal_profile: dict[str, float] | None = None,
+    ) -> int:
+        """Return the number of minutes to start conditioning before a schedule fires.
+
+        When only ``zone_id`` is provided, falls back to a simple lead-time cache
+        keyed by the zone's average temperature trend. Passing the current/target
+        temps and (optionally) outdoor temp + a thermal profile enables a
+        weather-aware calculation: the further the room is from target — and the
+        more hostile outdoor conditions are — the earlier we start.
+        """
         cache = self._thermal_cache.get(zone_id)
+
+        # Weather-aware branch: we have enough data to model lead time explicitly.
+        if (
+            current_temp_c is not None
+            and target_temp_c is not None
+            and hvac_mode in ("heat", "cool")
+        ):
+            gap_c = abs(target_temp_c - current_temp_c)
+            if gap_c < 0.3:
+                return 0  # already at target, no lead-in needed
+
+            # Preferred rate source: thermal_profile from zone_analytics
+            # (heating_rate_c_per_hour / cooling_rate_c_per_hour). Fall back to
+            # the pattern-engine's own trend cache if analytics haven't populated
+            # yet.
+            profile = thermal_profile or {}
+            if hvac_mode == "heat":
+                rate_c_per_min = abs(profile.get("heating_rate_c_per_hour", 0.0)) / 60.0
+            else:
+                rate_c_per_min = abs(profile.get("cooling_rate_c_per_hour", 0.0)) / 60.0
+            if rate_c_per_min < 1e-4 and cache:
+                rate_c_per_min = abs(cache.get("avg_trend_c_per_min", 0.0)) or 0.0
+            if rate_c_per_min < 1e-4:
+                rate_c_per_min = 0.05  # conservative default: ~3°C/hour
+
+            base_minutes = gap_c / rate_c_per_min
+
+            # Outdoor difficulty bump: HVAC works harder against a hostile
+            # outdoors. For heat, cold outdoors slows us; for cool, hot outdoors
+            # slows us. ~0.5 min per °C of adverse outdoor delta beyond a 3°C
+            # tolerance band.
+            outdoor_bump = 0.0
+            if outdoor_temp_c is not None:
+                if hvac_mode == "heat":
+                    delta = target_temp_c - outdoor_temp_c
+                else:
+                    delta = outdoor_temp_c - target_temp_c
+                outdoor_bump = max(0.0, delta - 3.0) * 0.5
+
+            minutes = int(max(5, min(120, round(base_minutes + outdoor_bump))))
+            return minutes
+
+        # Legacy branch — original static formula (unchanged behaviour).
         if not cache:
             return 0
         if zone_id in self._preconditioning:
