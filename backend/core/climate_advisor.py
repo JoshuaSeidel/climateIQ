@@ -138,9 +138,25 @@ async def _build_llm_provider(db: Any, settings: Any) -> Any:
         val = mapping.get(provider, "")
         return val or None
 
+    def _base_url(provider: str) -> str | None:
+        # Pydantic Settings may return AnyUrl or str; coerce and reject empty/"None".
+        if provider == "ollama":
+            raw = getattr(settings, "ollama_url", None)
+        elif provider == "llamacpp":
+            raw = getattr(settings, "llamacpp_url", None)
+        else:
+            return None
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        if not s or s.lower() == "none":
+            return None
+        return s
+
     primary = ProviderSettings(
         provider=primary_provider,
         api_key=_api_key(primary_provider),
+        base_url=_base_url(primary_provider),
         default_model=primary_model,
     )
 
@@ -164,6 +180,14 @@ async def _build_llm_provider(db: Any, settings: Any) -> Any:
             if key:
                 secondary = ProviderSettings(provider=cand, api_key=key)
                 break
+        if secondary is None:
+            for cand in ("ollama", "llamacpp"):
+                if cand == primary_provider:
+                    continue
+                url = _base_url(cand)
+                if url:
+                    secondary = ProviderSettings(provider=cand, base_url=url)
+                    break
     return ClimateIQLLMProvider(primary=primary, secondary=secondary)
 
 

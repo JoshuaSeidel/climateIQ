@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.48] - 2026-07-02
+
+### Fixed
+- **Advisor + auto-select LLM path now uses Ollama.** v1.0.47 fixed the chat route to reach Ollama, but the climate advisor path (`_build_llm_provider` in `backend/core/climate_advisor.py`) still built `ProviderSettings` without threading `settings.ollama_url` / `settings.llamacpp_url` as `base_url`. LiteLLM then defaulted to `http://localhost:11434`, which inside the HA add-on container is the container itself → `Errno 111 Connection refused`. The advisor now passes the configured local base URL for the primary provider and for any local-provider fallback, matching the chat path.
+- **Settings UI now reports Ollama / llamacpp as configured** when a base URL is set. `llm_provider_config` in `backend/config.py` was hard-coding `configured: False` for both local providers.
+
 ## [1.0.47] - 2026-07-02
 
 ### Fixed

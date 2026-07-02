@@ -128,11 +128,11 @@ class Settings(BaseSettings):
             },
             "ollama": {
                 "base_url": str(self.ollama_url),
-                "configured": False,
+                "configured": bool(str(self.ollama_url).strip()) and str(self.ollama_url).strip().lower() != "none",
             },
             "llamacpp": {
                 "base_url": str(self.llamacpp_url),
-                "configured": False,
+                "configured": bool(str(self.llamacpp_url).strip()) and str(self.llamacpp_url).strip().lower() != "none",
             },
         }
 
