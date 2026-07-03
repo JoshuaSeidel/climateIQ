@@ -139,7 +139,7 @@ class PatternEngine:
             and hvac_mode in ("heat", "cool")
         ):
             gap_c = abs(target_temp_c - current_temp_c)
-            if gap_c < 0.3:
+            if gap_c < 0.15:
                 return 0  # already at target, no lead-in needed
 
             # Preferred rate source: thermal_profile from zone_analytics
@@ -156,21 +156,34 @@ class PatternEngine:
             if rate_c_per_min < 1e-4:
                 rate_c_per_min = 0.05  # conservative default: ~3°C/hour
 
-            base_minutes = gap_c / rate_c_per_min
-
-            # Outdoor difficulty bump: HVAC works harder against a hostile
-            # outdoors. For heat, cold outdoors slows us; for cool, hot outdoors
-            # slows us. ~0.5 min per °C of adverse outdoor delta beyond a 3°C
-            # tolerance band.
-            outdoor_bump = 0.0
+            # Adverse-outdoor delta: how hard HVAC is fighting the outdoors.
+            adverse = 0.0
             if outdoor_temp_c is not None:
                 if hvac_mode == "heat":
-                    delta = target_temp_c - outdoor_temp_c
+                    outdoor_delta = target_temp_c - outdoor_temp_c
                 else:
-                    delta = outdoor_temp_c - target_temp_c
-                outdoor_bump = max(0.0, delta - 3.0) * 0.5
+                    outdoor_delta = outdoor_temp_c - target_temp_c
+                adverse = max(0.0, outdoor_delta - 3.0)
 
-            minutes = int(max(5, min(120, round(base_minutes + outdoor_bump))))
+            # Scale the cooling/heating rate down under hostile outdoor
+            # conditions: HVAC delivers less effective conditioning per minute
+            # as the outdoor temperature fights it. 3% rate reduction per °C
+            # of adverse delta beyond a 3°C tolerance band, floored at 30%
+            # of nominal effectiveness so we never blow past the 3-hour cap
+            # on merely-warm days.
+            outdoor_scale = max(0.30, 1.0 - adverse * 0.03)
+            effective_rate = max(1e-4, rate_c_per_min * outdoor_scale)
+
+            base_minutes = gap_c / effective_rate
+
+            # Small additive bump — the rate scale already captures most of the
+            # effect, this just biases toward starting a bit earlier under
+            # extreme conditions so the AC has a real chance of catching up.
+            outdoor_bump = adverse * 0.5
+
+            # Wider clamp: up to 3 hours of lead time. Necessary when a 30°+F
+            # heatwave meets a 5-7°F gap and the AC just needs time.
+            minutes = int(max(5, min(180, round(base_minutes + outdoor_bump))))
             return minutes
 
         # Legacy branch — original static formula (unchanged behaviour).

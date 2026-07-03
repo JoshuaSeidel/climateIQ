@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.53] - 2026-07-03
+
+### Fixed
+- **Pre-conditioning is now much more aggressive on hot (and cold) days** so schedules like "kid's room = 70°F at 6 PM" are actually met when outdoor temp is fighting the AC. `PatternEngine.get_preconditioning_time()` now:
+  - Scales the effective cooling/heating rate *down* proportionally to how far outdoor temp is beyond a 3°C tolerance band (3% per °C, floored at 30% of nominal). Hostile outdoors → longer lead time.
+  - Raises the maximum lead time from **2 hours → 3 hours** so extreme heatwaves + wide temperature gaps get a real head start.
+  - Kicks in for smaller gaps (0.15°C, was 0.3°C).
+- Example: 78°F → 70°F with 32°C outdoor now schedules ~122 min of pre-conditioning (was ~94 min); 27°C → 21°C with 38°C outdoor now schedules the full 180 min. On mild days behavior is essentially unchanged.
+- Additive outdoor bump (~0.5 min per °C of adverse delta beyond 3°C) preserved as a small early-start bias on top of the rate scale.
+
 ## [1.0.52] - 2026-07-03
 
 ### Fixed
