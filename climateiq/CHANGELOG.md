@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.52] - 2026-07-03
+
+### Fixed
+- **Chat with Ollama no longer returns the tool schema as text.** Small local models (qwen 4B, llama 3.1 8B, etc.) cannot reliably emit OpenAI-style tool_calls — many of them dump the tool schema back as plain text instead. Chat responses came back like "The tools available are: schedule_control, set_zone_temperature…" which is worse than useless. v1.0.49's retry only caught *empty* responses; echoed-schema responses passed through. Added `LLMProvider.TOOL_CAPABLE_PROVIDERS = {anthropic, openai, gemini, deepseek, grok}` and now silently drop `tools=[...]` for any provider outside that set. Chat becomes a Q&A/advice assistant on Ollama and llama.cpp; tool-driven actions still work on cloud providers.
+- Advisor + active-mode paths were already tool-free (they ask for JSON), so they're unaffected.
+
 ## [1.0.51] - 2026-07-02
 
 ### Fixed

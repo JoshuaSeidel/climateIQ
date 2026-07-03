@@ -51,6 +51,15 @@ class LLMProvider:
         "llamacpp": "gpt-3.5-turbo",  # llamacpp servers serve whatever model is loaded
     }
 
+    # Providers that reliably follow the OpenAI tool-calling schema.
+    # Small local models (Ollama qwen 4B, llama 3.1 8B, llama.cpp) often
+    # echo the tool schema back as plain text instead of emitting
+    # tool_calls, which surfaces as garbage in the chat UI. For those
+    # providers we drop `tools` and let the model answer as plain text.
+    TOOL_CAPABLE_PROVIDERS: ClassVar[frozenset[str]] = frozenset(
+        {"anthropic", "openai", "gemini", "deepseek", "grok"}
+    )
+
     def __init__(
         self,
         provider: str,
@@ -131,6 +140,15 @@ class LLMProvider:
             model_str = f"ollama_chat/{self.model}"
         else:
             model_str = f"{self.provider}/{self.model}"
+
+        # Drop `tools` for providers that don't reliably tool-call.
+        # Otherwise small local models echo the schema back as text.
+        if tools and self.provider not in self.TOOL_CAPABLE_PROVIDERS:
+            logger.debug(
+                "Dropping tools for provider=%s (not in TOOL_CAPABLE_PROVIDERS)",
+                self.provider,
+            )
+            tools = None
 
         call_kwargs: dict[str, Any] = {
             "model": model_str,
