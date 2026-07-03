@@ -2410,6 +2410,17 @@ async def _run_llm_with_tools(
     tool_calls: list[dict[str, Any]] = response.get("tool_calls", [])
     actions_taken: list[dict[str, Any]] = []
 
+    # Small local models (Ollama qwen 3.5 4B, llama 3.1 8B, etc.) frequently
+    # respond to `tools=[...]` with an empty message + no tool_calls because
+    # they can't produce the OpenAI function-calling schema. Retry once
+    # without tools so we still get a plain-text answer.
+    if not assistant_message.strip() and not tool_calls:
+        try:
+            retry = await llm.chat(messages=messages, system=system_prompt)
+            assistant_message = (retry.get("content", "") or "").strip()
+        except Exception:
+            logger.debug("Retry without tools failed", exc_info=True)
+
     for tc in tool_calls:
         func_info = tc.get("function", {})
         func_name = func_info.get("name", "")

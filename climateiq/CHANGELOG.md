@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.49] - 2026-07-02
+
+### Fixed
+- **Chat + dashboard brief work with small Ollama models (qwen 3.5 4B, llama 3.1 8B, etc.).** These models don't reliably follow the OpenAI function-calling schema, so when the chat route sent `tools=get_climate_tools()` they returned empty content with no `tool_calls`, and the response fell through to the canned "I'm not sure how to help with that." message. `_run_llm_with_tools` now retries once without tools when the first turn returns nothing, so a small local model can still answer plain-text questions like the dashboard's "brief summary" prompt. Tool-capable providers (Anthropic, GPT-4o, etc.) are unaffected — the retry only fires when the first response was empty.
+
 ## [1.0.48] - 2026-07-02
 
 ### Fixed
