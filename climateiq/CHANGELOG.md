@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.51] - 2026-07-02
+
+### Fixed
+- **Active AI mode (the 5-minute autopilot) now uses the user's chosen LLM.** `execute_active_mode` in `backend/api/main.py` was hard-coded to try `anthropic` → `openai` → `gemini` and silently returned "No LLM provider configured" for users on Ollama, llama.cpp, DeepSeek, or Grok. Now delegates to `chat.py:get_llm_provider(db)`, so it respects `SystemConfig.llm_settings` and falls back through the full provider chain (including the local providers). This completes the "chat + advisor + active-mode" trio — every LLM caller in the addon now works with Ollama.
+
 ## [1.0.50] - 2026-07-02
 
 ### Fixed

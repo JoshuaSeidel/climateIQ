@@ -2217,27 +2217,16 @@ async def execute_active_mode() -> None:
             reason = ""
 
             try:
-                from backend.integrations.llm.provider import LLMProvider
+                # Reuse the chat route's provider selector so Active mode
+                # respects the user's chosen LLM (SystemConfig.llm_settings)
+                # and can fall back through the full provider chain
+                # including Ollama, llama.cpp, DeepSeek, and Grok.
+                from backend.api.routes.chat import get_llm_provider
 
-                llm: LLMProvider | None = None
-                if settings_instance.anthropic_api_key:
-                    llm = LLMProvider(
-                        provider="anthropic",
-                        api_key=settings_instance.anthropic_api_key,
-                    )
-                elif settings_instance.openai_api_key:
-                    llm = LLMProvider(
-                        provider="openai",
-                        api_key=settings_instance.openai_api_key,
-                    )
-                elif settings_instance.gemini_api_key:
-                    llm = LLMProvider(
-                        provider="gemini",
-                        api_key=settings_instance.gemini_api_key,
-                    )
-
-                if llm is None:
-                    logger.debug("No LLM provider configured, skipping active-mode AI call")
+                try:
+                    llm = await get_llm_provider(db)
+                except Exception as no_llm_err:
+                    logger.debug("No LLM provider configured for active-mode: %s", no_llm_err)
                     return
 
                 response = await llm.generate(
