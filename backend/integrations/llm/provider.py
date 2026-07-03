@@ -124,6 +124,11 @@ class LLMProvider:
         elif self.provider == "llamacpp":
             # llama.cpp exposes an OpenAI-compatible endpoint; route via openai/
             model_str = f"openai/{self.model}"
+        elif self.provider == "ollama":
+            # `ollama_chat/` hits Ollama's /api/chat endpoint which supports
+            # tool calling; the legacy `ollama/` prefix hits /api/generate
+            # and silently drops the `tools` parameter.
+            model_str = f"ollama_chat/{self.model}"
         else:
             model_str = f"{self.provider}/{self.model}"
 
@@ -571,7 +576,14 @@ def _normalize_settings(s: ProviderSettings) -> ProviderSettings:
 
 
 def _litellm_model(provider: str, model: str) -> str:
-    return f"{provider.lower().strip()}/{model}"
+    p = provider.lower().strip()
+    if p == "ollama":
+        # Route Ollama through /api/chat so tool calling works.
+        return f"ollama_chat/{model}"
+    if p == "llamacpp":
+        # llama.cpp's OpenAI-compatible endpoint.
+        return f"openai/{model}"
+    return f"{p}/{model}"
 
 
 def _fallback_default_model(provider: str) -> str:

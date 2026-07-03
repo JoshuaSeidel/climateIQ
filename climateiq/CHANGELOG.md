@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.50] - 2026-07-02
+
+### Fixed
+- **Ollama chat + tool calling now actually work with llama 3.1, qwen 3, mistral, etc.** Both LLM provider paths (`LLMProvider._chat_once` for the chat route, and `ClimateIQLLMProvider._litellm_model` for the advisor) were sending `ollama/<model>` to LiteLLM. That prefix routes to Ollama's legacy `/api/generate` endpoint which silently drops the `tools=[...]` parameter and returns empty content whenever a model would have wanted to tool-call. Switched both paths to `ollama_chat/<model>`, which hits `/api/chat` — LiteLLM's Ollama tool-calling path. Plain-text chat and dashboard brief now work for any modern Ollama model; tool-capable Ollama models (llama3.1, qwen2.5:7b+, mistral-nemo, etc.) can now invoke ClimateIQ tools directly.
+
 ## [1.0.49] - 2026-07-02
 
 ### Fixed
