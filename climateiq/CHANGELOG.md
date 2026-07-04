@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.62] - 2026-07-04
+
+### Fixed
+- **Fan control was a total no-op since 1.0.58.** `_apply_fan_target()` passed `service_data={...}` to `HAClient.call_service`, but that method's kwarg is `data=` — every `fan.set_percentage` call raised `TypeError: unexpected keyword argument 'service_data'` and was silently caught. Logs showed `Active-mode fan fan.olivers_room → 100% [no-op] (set_failed:…)` on every tick. Renamed to `data=` at both call sites in `backend/api/main.py`. Fans now actually ramp.
+
+### Changed
+- **Active mode now inherits Schedule mode's offset-compensation aggression.** When a focus zone was 8-9°F above target, Schedule mode's `apply_offset_compensation` would drive the thermostat 8°F below desired (e.g. 62°F for a 70°F room). Active mode's LLM was picking timid setpoints like "nudge to 68°F" for the same delta, unable to overcome 95-100°F outdoor heat load. After the LLM returns, Active mode now also runs `apply_offset_compensation` against the schedule target (or the LLM's own recommendation when no schedule is active) and takes whichever setpoint pushes harder in the current HVAC direction — cooler in cool mode, warmer in heat mode. Same safety and constraint-zone clamps still apply.
+- **Anti-oscillation lockout bypassed when a focus zone is severely out of band (>2°F).** The 15-min direction lockout was blocking necessary cooling corrections in the logs (`Active-mode: blocking setpoint reversal (up → down) within 900s anti-oscillation window`) while rooms were baking. When a focus zone is >2°F beyond its schedule target in the wrong direction for the current HVAC mode, the lockout is bypassed so the corrective setpoint can go through immediately.
+
 ## [1.0.61] - 2026-07-04
 
 ### Changed

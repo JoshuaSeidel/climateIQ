@@ -277,7 +277,7 @@ async def _apply_fan_target(
                 await ha_client_ref.call_service(
                     "fan", "set_percentage",
                     target={"entity_id": entity_id},
-                    service_data={"percentage": baseline},
+                    data={"percentage": baseline},
                 )
         except Exception as exc:
             return False, f"release_failed:{exc}"
@@ -297,7 +297,7 @@ async def _apply_fan_target(
         await ha_client_ref.call_service(
             "fan", "set_percentage",
             target={"entity_id": entity_id},
-            service_data={"percentage": effective_target},
+            data={"percentage": effective_target},
         )
     except Exception as exc:
         return False, f"set_failed:{exc}"
@@ -3000,6 +3000,62 @@ async def execute_active_mode() -> None:
                 logger.warning("Active-mode: LLM did not return a valid temperature")
                 return
 
+            # ── Offset-comp override (borrow schedule-mode formula) ─────
+            # The LLM often picks a timid setpoint (e.g. "nudge to 68°F" when
+            # a focus zone is 9°F above its 70°F target).  Schedule mode
+            # faces the same delta and drives the thermostat up to 8°F past
+            # desired via apply_offset_compensation.  Reuse that formula
+            # here — if the schedule-style adjusted setpoint is more
+            # aggressive than the LLM's pick in the current HVAC direction,
+            # use it.  This closes the gap between Active mode and Schedule
+            # mode without changing the LLM prompt contract.
+            offset_desired_c: float | None = schedule_target_c
+            offset_zone_ids: list[str] | None = (
+                list(focus_zone_ids) if focus_zone_ids else None
+            )
+            # No active schedule → treat the LLM's own recommendation as the
+            # desired zone temperature and let offset comp drive past it.
+            if offset_desired_c is None:
+                offset_desired_c = recommended_temp_c
+                offset_zone_ids = None
+            try:
+                from backend.core.temp_compensation import apply_offset_compensation
+
+                (
+                    adj_c,
+                    _adj_offset_c,
+                    adj_zone_names,
+                    adj_avg_c,
+                    _adj_mode,
+                ) = await apply_offset_compensation(
+                    db,
+                    ha_client,
+                    climate_entity,
+                    offset_desired_c,
+                    zone_ids=offset_zone_ids,
+                    hvac_mode=hvac_mode,
+                )
+                # Pick whichever pushes harder in the active HVAC direction.
+                override_c: float | None = None
+                if "cool" in hvac_mode and adj_c < recommended_temp_c - 0.1:
+                    override_c = adj_c
+                elif "heat" in hvac_mode and adj_c > recommended_temp_c + 0.1:
+                    override_c = adj_c
+                if override_c is not None:
+                    logger.info(
+                        "Active-mode: offset comp overriding LLM %.1f°C → %.1f°C "
+                        "(desired=%.1f°C, zones=%s, avg=%s, mode=%s)",
+                        recommended_temp_c,
+                        override_c,
+                        offset_desired_c,
+                        adj_zone_names or "n/a",
+                        f"{adj_avg_c:.1f}°C" if adj_avg_c is not None else "n/a",
+                        hvac_mode,
+                    )
+                    recommended_temp_c = override_c
+            except Exception as ofs_err:
+                logger.debug("Active-mode: offset comp override skipped: %s", ofs_err)
+
             # ── Safety + constraint-guard clamps ────────────────────────
             recommended_temp_c = max(safety_min, min(safety_max, recommended_temp_c))
 
@@ -3049,8 +3105,26 @@ async def execute_active_mode() -> None:
             # the last real change was less than _SETPOINT_ANTI_OSCILLATION_S
             # ago.  This is on top of the existing mode-switch cooldown and
             # protects the HVAC from rapid cycles even inside a single mode.
+            #
+            # Bypass when a focus zone is severely out of band (>2°F in the
+            # wrong direction vs. the schedule target) so a stale up-direction
+            # lockout can't hold the setpoint above the target while the room
+            # is baking (or freezing).
+            severely_off = False
+            if schedule_target_c is not None and focus_zones:
+                for _, _zd in focus_zones:
+                    _t = _zd.get("temp_c")
+                    if _t is None:
+                        continue
+                    _delta_f = (float(_t) - float(schedule_target_c)) * 9.0 / 5.0
+                    if "cool" in hvac_mode and _delta_f > 2.0:
+                        severely_off = True
+                        break
+                    if "heat" in hvac_mode and _delta_f < -2.0:
+                        severely_off = True
+                        break
             hist = _active_mode_setpoint_history.get(climate_entity)
-            if hist is not None and current_target_c is not None:
+            if hist is not None and current_target_c is not None and not severely_off:
                 last_dir = hist.get("direction")
                 last_at = hist.get("at")
                 new_dir = (
@@ -3071,6 +3145,11 @@ async def execute_active_mode() -> None:
                         _SETPOINT_ANTI_OSCILLATION_S,
                     )
                     return
+            if severely_off and hist is not None:
+                logger.info(
+                    "Active-mode: focus zone severely out of band — bypassing "
+                    "anti-oscillation lockout"
+                )
 
             # ── Apply ───────────────────────────────────────────────────
             target_for_ha = recommended_temp_c
