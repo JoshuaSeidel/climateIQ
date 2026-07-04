@@ -190,7 +190,13 @@ async def _get_db_zone_temp_c(
 
 
 async def _fetch_zones(db: Any, zone_ids: list[str] | None = None) -> list[Any]:
-    """Fetch active zones (with sensors eagerly loaded) from the DB."""
+    """Fetch active zones (with sensors eagerly loaded) from the DB.
+
+    Zones marked ``exclude_from_metrics`` (year-round, or with the current
+    month in ``exclude_months``) are dropped so the offset math never
+    considers them.  This applies even when the caller passes the zone by
+    id — ignored zones remain ignored everywhere in the control loop.
+    """
     from sqlalchemy import select as sa_select
     from sqlalchemy.orm import selectinload
 
@@ -205,7 +211,8 @@ async def _fetch_zones(db: Any, zone_ids: list[str] | None = None) -> list[Any]:
             pass
 
     result = await db.execute(stmt)
-    return list(result.scalars().unique().all())
+    zones = list(result.scalars().unique().all())
+    return [z for z in zones if not z.is_currently_excluded]
 
 
 async def get_priority_zone_temp_c(

@@ -145,6 +145,10 @@ export const Zones = () => {
   })
   const [excludeFromMetrics, setExcludeFromMetrics] = useState(false)
   const [excludeMonths, setExcludeMonths] = useState<number[]>([])
+  const [haEntities, setHaEntities] = useState<string[]>([])
+  const [haEntityDraft, setHaEntityDraft] = useState('')
+  const [fanEntities, setFanEntities] = useState<string[]>([])
+  const [fanEntityDraft, setFanEntityDraft] = useState('')
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
   // Fetch zones from backend
@@ -358,6 +362,40 @@ export const Zones = () => {
     },
   })
 
+  // Save HA entities mutation
+  const [haEntitiesSaveStatus, setHaEntitiesSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
+  const saveHaEntities = useMutation({
+    mutationFn: ({ id, ha_entities }: { id: string; ha_entities: string[] }) =>
+      api.put<ZoneBackend>(`/zones/${id}`, { ha_entities }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['zones-raw'] })
+      queryClient.invalidateQueries({ queryKey: ['zones'] })
+      setHaEntitiesSaveStatus('success')
+      setTimeout(() => setHaEntitiesSaveStatus('idle'), 3000)
+    },
+    onError: () => {
+      setHaEntitiesSaveStatus('error')
+      setTimeout(() => setHaEntitiesSaveStatus('idle'), 3000)
+    },
+  })
+
+  // Save Fan entities mutation
+  const [fanEntitiesSaveStatus, setFanEntitiesSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
+  const saveFanEntities = useMutation({
+    mutationFn: ({ id, fan_entities }: { id: string; fan_entities: string[] }) =>
+      api.put<ZoneBackend>(`/zones/${id}`, { fan_entities }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['zones-raw'] })
+      queryClient.invalidateQueries({ queryKey: ['zones'] })
+      setFanEntitiesSaveStatus('success')
+      setTimeout(() => setFanEntitiesSaveStatus('idle'), 3000)
+    },
+    onError: () => {
+      setFanEntitiesSaveStatus('error')
+      setTimeout(() => setFanEntitiesSaveStatus('idle'), 3000)
+    },
+  })
+
   const inferSensorType = useCallback((entities: HADeviceEntity[]): SensorType => {
     const classes = new Set(entities.map(e => e.device_class ?? '').filter(Boolean))
     const hasTemp = classes.has('temperature')
@@ -400,6 +438,10 @@ export const Zones = () => {
     }
     setExcludeFromMetrics(zoneRaw?.exclude_from_metrics ?? false)
     setExcludeMonths(zoneRaw?.exclude_months ?? [])
+    setHaEntities(zoneRaw?.ha_entities ?? [])
+    setHaEntityDraft('')
+    setFanEntities(zoneRaw?.fan_entities ?? [])
+    setFanEntityDraft('')
     setSelectedZoneId(zoneId)
     setViewMode('detail')
   }, [zonesRaw, unitKey])
@@ -1288,6 +1330,202 @@ export const Zones = () => {
                 )}
                 {exclusionSaveStatus === 'error' && (
                   <span className="text-sm text-red-500">Failed to save exclusion settings</span>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* HA Occupancy Signals */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Occupancy Signals (Home Assistant)</CardTitle>
+            <CardDescription>
+              Attach any HA entities you want the AI to use as occupancy signals for this zone — motion sensors,
+              door/window contacts, lights, switches, plugs, media players, etc. Any recent state change or
+              "on" state counts. Multisensor motion alone is unreliable; the more signals here the better.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Input
+                  placeholder="binary_sensor.living_motion, light.desk_lamp, switch.toaster..."
+                  value={haEntityDraft}
+                  onChange={(e) => setHaEntityDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      const v = haEntityDraft.trim()
+                      if (v && !haEntities.includes(v)) {
+                        setHaEntities([...haEntities, v])
+                      }
+                      setHaEntityDraft('')
+                    }
+                  }}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const v = haEntityDraft.trim()
+                    if (v && !haEntities.includes(v)) {
+                      setHaEntities([...haEntities, v])
+                    }
+                    setHaEntityDraft('')
+                  }}
+                >
+                  <Plus className="mr-1 h-3 w-3" /> Add
+                </Button>
+              </div>
+
+              {haEntities.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No entities attached. The zone still uses its own multisensor + learned patterns.
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {haEntities.map((eid) => (
+                    <span
+                      key={eid}
+                      className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-2.5 py-1 text-xs font-medium"
+                    >
+                      <code className="text-[11px]">{eid}</code>
+                      <button
+                        onClick={() => setHaEntities(haEntities.filter((e) => e !== eid))}
+                        className="ml-1 text-muted-foreground hover:text-destructive"
+                        aria-label={`Remove ${eid}`}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex items-center gap-3">
+                <Button
+                  size="sm"
+                  disabled={saveHaEntities.isPending}
+                  onClick={() => {
+                    if (selectedZoneId) {
+                      saveHaEntities.mutate({
+                        id: selectedZoneId,
+                        ha_entities: haEntities,
+                      })
+                    }
+                  }}
+                >
+                  {saveHaEntities.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Check className="mr-2 h-4 w-4" />
+                  )}
+                  Save Occupancy Signals
+                </Button>
+                {haEntitiesSaveStatus === 'success' && (
+                  <span className="text-sm text-green-600">Occupancy signals saved</span>
+                )}
+                {haEntitiesSaveStatus === 'error' && (
+                  <span className="text-sm text-red-500">Failed to save occupancy signals</span>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Fan Entities */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Fans in this zone</CardTitle>
+            <CardDescription>
+              Attach any HA <code>fan.*</code> entities in this room. When a fan is running,
+              airflow makes the space feel ~1.5°F cooler than the temperature reading, so the AI
+              relaxes the comfort band and delays HVAC action.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Input
+                  placeholder="fan.living_room_ceiling, fan.desk_fan..."
+                  value={fanEntityDraft}
+                  onChange={(e) => setFanEntityDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      const v = fanEntityDraft.trim()
+                      if (v && !fanEntities.includes(v)) {
+                        setFanEntities([...fanEntities, v])
+                      }
+                      setFanEntityDraft('')
+                    }
+                  }}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const v = fanEntityDraft.trim()
+                    if (v && !fanEntities.includes(v)) {
+                      setFanEntities([...fanEntities, v])
+                    }
+                    setFanEntityDraft('')
+                  }}
+                >
+                  <Plus className="mr-1 h-3 w-3" /> Add
+                </Button>
+              </div>
+
+              {fanEntities.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No fans attached. The AI will not factor airflow into its comfort decisions here.
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {fanEntities.map((eid) => (
+                    <span
+                      key={eid}
+                      className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-2.5 py-1 text-xs font-medium"
+                    >
+                      <code className="text-[11px]">{eid}</code>
+                      <button
+                        onClick={() => setFanEntities(fanEntities.filter((e) => e !== eid))}
+                        className="ml-1 text-muted-foreground hover:text-destructive"
+                        aria-label={`Remove ${eid}`}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex items-center gap-3">
+                <Button
+                  size="sm"
+                  disabled={saveFanEntities.isPending}
+                  onClick={() => {
+                    if (selectedZoneId) {
+                      saveFanEntities.mutate({
+                        id: selectedZoneId,
+                        fan_entities: fanEntities,
+                      })
+                    }
+                  }}
+                >
+                  {saveFanEntities.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Check className="mr-2 h-4 w-4" />
+                  )}
+                  Save Fans
+                </Button>
+                {fanEntitiesSaveStatus === 'success' && (
+                  <span className="text-sm text-green-600">Fans saved</span>
+                )}
+                {fanEntitiesSaveStatus === 'error' && (
+                  <span className="text-sm text-red-500">Failed to save fans</span>
                 )}
               </div>
             </div>

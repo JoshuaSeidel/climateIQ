@@ -49,6 +49,12 @@ _KV_DEFAULTS: dict[str, Any] = {
     "climate_entities": "",
     "sensor_entities": "",
     "energy_entity": "",
+    # Optional additional energy telemetry entities.  Feed the Active-mode
+    # AI so it can favor "burn free electrons" behavior when solar is
+    # producing surplus and back off when the house is importing at peak.
+    "solar_production_entity": "",
+    "grid_export_entity": "",
+    "battery_soc_entity": "",
     "max_temp_offset_f": 8.0,  # Maximum temperature offset in Fahrenheit
     "ai_advisor_enabled": True,
     # Optional override: HA sensor entity_id whose state replaces the
@@ -120,6 +126,9 @@ class SystemSettingsResponse(BaseModel):
     climate_entities: str = ""
     sensor_entities: str = ""
     energy_entity: str = ""
+    solar_production_entity: str = ""
+    grid_export_entity: str = ""
+    battery_soc_entity: str = ""
     max_temp_offset_f: float = 8.0
     ai_advisor_enabled: bool = True
     thermostat_temp_sensor: str = ""
@@ -146,6 +155,9 @@ class SystemSettingsUpdate(BaseModel):
     climate_entities: str | None = None
     sensor_entities: str | None = None
     energy_entity: str | None = None
+    solar_production_entity: str | None = None
+    grid_export_entity: str | None = None
+    battery_soc_entity: str | None = None
     max_temp_offset_f: float | None = None
     ai_advisor_enabled: bool | None = None
     thermostat_temp_sensor: str | None = None
@@ -279,6 +291,9 @@ async def _build_response(session: AsyncSession) -> SystemSettingsResponse:
         climate_entities=kv["climate_entities"],
         sensor_entities=kv["sensor_entities"],
         energy_entity=kv["energy_entity"],
+        solar_production_entity=kv.get("solar_production_entity", "") or "",
+        grid_export_entity=kv.get("grid_export_entity", "") or "",
+        battery_soc_entity=kv.get("battery_soc_entity", "") or "",
         max_temp_offset_f=float(kv["max_temp_offset_f"]),
         ai_advisor_enabled=bool(kv["ai_advisor_enabled"]),
         thermostat_temp_sensor=str(kv["thermostat_temp_sensor"] or ""),

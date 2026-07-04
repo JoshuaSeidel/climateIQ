@@ -86,6 +86,20 @@ class Zone(Base):
     exclude_from_metrics: Mapped[bool] = mapped_column(Boolean(), default=False)
     exclude_months: Mapped[list[int]] = mapped_column(JSONB, default=list)
 
+    # User-attached Home Assistant entity IDs that provide extra occupancy
+    # signal for this zone (motion sensors, door/window contacts, light and
+    # switch states, plugs, etc.).  Any recent state change or "on" state on
+    # any of these entities counts as an occupancy signal in
+    # `infer_zone_occupancy`.  Kind is not required — the list is open-ended.
+    ha_entities: Mapped[list[str]] = mapped_column(JSONB, default=list)
+
+    # HA fan entity IDs for this zone.  When any listed fan is on the AI is
+    # told airflow is active — a room feels ~1.5°C cooler than its measured
+    # temp with a fan on, which shifts the LLM's tolerance band.  Kept
+    # separate from ``ha_entities`` because fans are used as *airflow*
+    # signal, not occupancy signal.
+    fan_entities: Mapped[list[str]] = mapped_column(JSONB, default=list)
+
     sensors: Mapped[list[Sensor]] = relationship(
         back_populates="zone", cascade="all, delete-orphan"
     )
@@ -707,6 +721,24 @@ async def init_db() -> None:
             ))
         except Exception:
             _db_logger.warning("Could not add zone exclusion columns")
+
+        # --- Migration: add ha_entities column to zones if missing -----------
+        try:
+            await conn.execute(text(
+                "ALTER TABLE zones "
+                "ADD COLUMN IF NOT EXISTS ha_entities JSONB DEFAULT '[]'::jsonb"
+            ))
+        except Exception:
+            _db_logger.warning("Could not add ha_entities column to zones")
+
+        # --- Migration: add fan_entities column to zones if missing ---------
+        try:
+            await conn.execute(text(
+                "ALTER TABLE zones "
+                "ADD COLUMN IF NOT EXISTS fan_entities JSONB DEFAULT '[]'::jsonb"
+            ))
+        except Exception:
+            _db_logger.warning("Could not add fan_entities column to zones")
 
         # --- Migration: add zone priority column if missing ------------------
         try:

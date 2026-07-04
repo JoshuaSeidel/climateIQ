@@ -518,6 +518,27 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
     },
   })
 
+  const updateSolarProductionEntity = useMutation({
+    mutationFn: (entity: string) => api.put('/settings', { solar_production_entity: entity }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+
+  const updateGridExportEntity = useMutation({
+    mutationFn: (entity: string) => api.put('/settings', { grid_export_entity: entity }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+
+  const updateBatterySocEntity = useMutation({
+    mutationFn: (entity: string) => api.put('/settings', { battery_soc_entity: entity }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+
   const updateThermostatTempSensor = useMutation({
     mutationFn: (entity: string) => api.put('/settings', { thermostat_temp_sensor: entity }),
     onSuccess: () => {
@@ -614,6 +635,74 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
           </p>
           {updateEnergyEntity.isSuccess && (
             <p className="mt-1 text-xs text-green-600">Energy entity updated</p>
+          )}
+        </div>
+
+        <div>
+          <label className="text-sm font-medium">Solar Production</label>
+          <select
+            value={settings?.solar_production_entity ?? ''}
+            onChange={(e) => updateSolarProductionEntity.mutate(e.target.value)}
+            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
+          >
+            <option value="">None — solar not tracked</option>
+            {(sensorEntities ?? []).map((entity) => (
+              <option key={entity.entity_id} value={entity.entity_id}>
+                {entity.name} ({entity.entity_id}) — {entity.state}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-muted-foreground">
+            HA sensor reporting current solar production (kW).  When production exceeds household
+            usage, Active mode favors comfort over conservation.
+          </p>
+          {updateSolarProductionEntity.isSuccess && (
+            <p className="mt-1 text-xs text-green-600">Solar production entity updated</p>
+          )}
+        </div>
+
+        <div>
+          <label className="text-sm font-medium">Grid Export</label>
+          <select
+            value={settings?.grid_export_entity ?? ''}
+            onChange={(e) => updateGridExportEntity.mutate(e.target.value)}
+            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
+          >
+            <option value="">None</option>
+            {(sensorEntities ?? []).map((entity) => (
+              <option key={entity.entity_id} value={entity.entity_id}>
+                {entity.name} ({entity.entity_id}) — {entity.state}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-muted-foreground">
+            HA sensor for grid-export (kW).  Positive value = you are pushing energy back to the utility.
+          </p>
+          {updateGridExportEntity.isSuccess && (
+            <p className="mt-1 text-xs text-green-600">Grid export entity updated</p>
+          )}
+        </div>
+
+        <div>
+          <label className="text-sm font-medium">Battery State-of-Charge</label>
+          <select
+            value={settings?.battery_soc_entity ?? ''}
+            onChange={(e) => updateBatterySocEntity.mutate(e.target.value)}
+            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
+          >
+            <option value="">None</option>
+            {(sensorEntities ?? []).map((entity) => (
+              <option key={entity.entity_id} value={entity.entity_id}>
+                {entity.name} ({entity.entity_id}) — {entity.state}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-muted-foreground">
+            HA sensor for home battery SOC (%).  Used to bias decisions when battery is full and cheap
+            solar is being wasted, or when battery is low and grid draw would be costly.
+          </p>
+          {updateBatterySocEntity.isSuccess && (
+            <p className="mt-1 text-xs text-green-600">Battery SOC entity updated</p>
           )}
         </div>
 

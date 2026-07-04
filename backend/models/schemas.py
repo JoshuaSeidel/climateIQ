@@ -39,6 +39,22 @@ class ZoneBase(BaseModel):
             "Empty list means always excluded when exclude_from_metrics is true."
         ),
     )
+    ha_entities: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Open-ended list of Home Assistant entity IDs attached to this "
+            "zone (motion sensors, door contacts, lights, switches, plugs, "
+            "etc.) that feed extra occupancy signal to the AI."
+        ),
+    )
+    fan_entities: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Home Assistant fan entity IDs in this zone.  Active fans widen "
+            "the AI's comfort tolerance because airflow makes a room feel "
+            "cooler than its measured temperature."
+        ),
+    )
 
 
 class ZoneCreate(ZoneBase):
@@ -56,6 +72,8 @@ class ZoneUpdate(BaseModel):
     thermal_profile: dict[str, Any] | None = None
     exclude_from_metrics: bool | None = None
     exclude_months: list[int] | None = None
+    ha_entities: list[str] | None = None
+    fan_entities: list[str] | None = None
 
 
 class SensorBase(BaseModel):

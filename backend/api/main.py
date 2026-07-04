@@ -91,6 +91,70 @@ _notification_service: NotificationService | None = None
 _last_executed_schedules: set[str] = set()
 # Track the last offset-adjusted temperature sent per schedule (schedule_id -> temp_c)
 _last_offset_temp: dict[str, float] = {}
+# Active-mode LLM optimization state.  Keyed on climate_entity so a multi-
+# thermostat future doesn't cross the streams.  Holds the last change-gate
+# hash and the timestamp of the last real LLM call, so we can enforce both a
+# steady-state skip and a hard minimum interval between LLM calls even when
+# the tick fires every 5 minutes.
+_active_mode_state: dict[str, dict[str, Any]] = {}
+
+# Occupancy dwell buffer.  The raw multi-signal fusion in
+# ``infer_zone_occupancy`` can flip on brief noise ("someone walked past the
+# door", "lights just turned on") which then triggers a full LLM call.  We
+# gate the raw signal with hysteresis: raw must hold OCC for 3 min before
+# stable flips ON; raw must hold VAC for 10 min before stable flips OFF.
+_zone_occupancy_stable: dict[str, dict[str, Any]] = {}
+_OCCUPANCY_DWELL_OCC_S: int = 3 * 60
+_OCCUPANCY_DWELL_VAC_S: int = 10 * 60
+
+# Active-mode setpoint anti-oscillation.  We already have a per-climate
+# mode-switch cooldown (``_last_mode_switch``) but the *setpoint* itself can
+# oscillate too — dropping the target 1° and raising it 1° minutes later
+# just burns HVAC cycles.  Track the last setpoint change and its direction
+# so we can block quick reversals.
+_active_mode_setpoint_history: dict[str, dict[str, Any]] = {}
+_SETPOINT_ANTI_OSCILLATION_S: int = 15 * 60
+
+
+def _stable_occupancy(zone_id: str, raw: bool) -> bool:
+    """Hysteresis wrapper around raw occupancy signal.
+
+    The stable value only flips when the raw signal has held that state for
+    the configured dwell time — 3 min to become occupied, 10 min to become
+    vacant.  This eliminates "flash occupancy" churn while still reacting
+    fast to real presence.
+    """
+    now = datetime.now(UTC)
+    state = _zone_occupancy_stable.get(zone_id)
+    if state is None:
+        _zone_occupancy_stable[zone_id] = {
+            "raw": raw,
+            "raw_since": now,
+            "stable": raw,
+        }
+        return raw
+    if state["raw"] != raw:
+        state["raw"] = raw
+        state["raw_since"] = now
+    dwell = (now - state["raw_since"]).total_seconds()
+    threshold = _OCCUPANCY_DWELL_OCC_S if raw else _OCCUPANCY_DWELL_VAC_S
+    if state["stable"] != raw and dwell >= threshold:
+        state["stable"] = raw
+    return bool(state["stable"])
+
+
+def _c_to_disp(c: float | None, unit: str) -> float | None:
+    """Convert internal Celsius to user display unit."""
+    if c is None:
+        return None
+    return round(c * 9 / 5 + 32, 1) if unit == "F" else round(c, 1)
+
+
+def _disp_to_c(u: float | None, unit: str) -> float | None:
+    """Convert user display unit back to internal Celsius."""
+    if u is None:
+        return None
+    return round((u - 32) * 5 / 9, 2) if unit == "F" else round(u, 2)
 
 
 # ============================================================================
@@ -1776,7 +1840,7 @@ async def execute_follow_me_mode() -> None:
                 .options(selectinload(Zone.sensors))
                 .where(Zone.is_active.is_(True))
             )
-            zones = zone_result.scalars().unique().all()
+            zones = [z for z in zone_result.scalars().unique().all() if not z.is_currently_excluded]
 
             if not zones:
                 return
@@ -1961,12 +2025,34 @@ async def execute_active_mode() -> None:
     """Full AI-driven HVAC control (Active mode).
 
     Runs every 5 minutes.  Only active when ``SystemConfig.current_mode``
-    is ``active``.  Gathers all context, asks the LLM for a recommendation,
-    and applies it.
+    is ``active``.
+
+    The design is *frugal* — the tick fires every 5 minutes but the LLM is
+    only actually called when it can add value:
+
+    * Excluded zones (``exclude_from_metrics``) never influence the prompt,
+      the steady-state check, or the change hash.
+    * The currently-active schedule (if any) defines the *focus zones*.
+      Everything else is a *constraint zone* — the LLM must keep those in
+      their comfort band but is not trying to hit their target.
+    * If focus zones are already within ±0.5 °C of the schedule target and
+      no constraint zone is out of band → skip the LLM entirely.
+    * A change-gate hash is stored per climate entity.  If the input state
+      (rounded zone temps, hvac_mode, occupancy bits, outdoor band,
+      schedule id, current setpoint) is unchanged from the previous real
+      LLM call and less than 10 minutes have elapsed → skip.
+    * The prompt itself is compact: no explanatory paragraphs, drop
+      humidity/lux unless notable, drop unoccupied constraint zones'
+      comfort ranges.
+
+    Rough net effect: 2-6 real LLM calls per hour instead of 12.
     """
+    import hashlib as _hashlib
     import json as _json
     import re
+    from datetime import time as _time
     from datetime import timedelta
+    from zoneinfo import ZoneInfo
 
     from sqlalchemy import select as sa_select
     from sqlalchemy.orm import selectinload
@@ -1992,15 +2078,14 @@ async def execute_active_mode() -> None:
 
         session_maker = get_session_maker()
         async with session_maker() as db:
-            # ── Check current mode ──────────────────────────────────────
+            # ── Mode check ──────────────────────────────────────────────
             cfg_result = await db.execute(sa_select(SystemConfig).limit(1))
             config = cfg_result.scalar_one_or_none()
             if config is None or config.current_mode != SystemMode.active:
                 return
 
-            # ── Determine climate entity ────────────────────────────────
+            # ── Climate entity ──────────────────────────────────────────
             climate_entity: str | None = None
-
             setting_result = await db.execute(
                 sa_select(SystemSetting).where(SystemSetting.key == "climate_entities")
             )
@@ -2009,12 +2094,10 @@ async def execute_active_mode() -> None:
                 val = setting_row.value.get("value", "")
                 if isinstance(val, str) and val.strip():
                     climate_entity = val.strip().split(",")[0].strip()
-
             if not climate_entity:
                 _climate_cfg = settings_instance.climate_entities.strip()
                 if _climate_cfg:
                     climate_entity = _climate_cfg.split(",")[0].strip()
-
             if not climate_entity:
                 logger.debug("No climate entity configured, skipping active-mode")
                 return
@@ -2028,31 +2111,54 @@ async def execute_active_mode() -> None:
             if notif_row and notif_row.value:
                 notif_target = notif_row.value.get("value") or None
 
-            # ── Temperature unit & safety limits ────────────────────────
+            # ── Units & safety ──────────────────────────────────────────
             temp_unit = settings_instance.temperature_unit.upper()
             safety_min = settings_instance.safety_min_temp_c
             safety_max = settings_instance.safety_max_temp_c
 
-            # ── Gather zone data ────────────────────────────────────────
+            # ── Timezone (for schedule lookup) ──────────────────────────
+            user_tz = ZoneInfo("UTC")
+            try:
+                tz_result = await db.execute(
+                    sa_select(SystemSetting).where(SystemSetting.key == "timezone")
+                )
+                tz_row = tz_result.scalar_one_or_none()
+                if tz_row and tz_row.value:
+                    tz_val = (
+                        tz_row.value.get("value", "")
+                        if isinstance(tz_row.value, dict)
+                        else str(tz_row.value)
+                    )
+                    if tz_val:
+                        user_tz = ZoneInfo(tz_val)
+            except Exception:  # noqa: S110
+                pass
+
+            now_local = datetime.now(user_tz)
+            now_utc = datetime.now(UTC)
+
+            # ── Zone data ───────────────────────────────────────────────
             zone_result = await db.execute(
                 sa_select(Zone)
                 .options(selectinload(Zone.sensors))
                 .where(Zone.is_active.is_(True))
             )
-            zones = zone_result.scalars().unique().all()
+            all_zones = zone_result.scalars().unique().all()
+            zones = [z for z in all_zones if not z.is_currently_excluded]
+            if not zones:
+                logger.debug("Active-mode: no non-excluded zones, skipping")
+                return
 
-            zone_summaries: list[str] = []
-            reading_cutoff = datetime.now(UTC) - timedelta(minutes=15)
+            reading_cutoff = now_utc - timedelta(minutes=15)
 
+            # zone_id -> dict(temp_c, hum, lux, occ, temp_min, temp_max)
+            zone_data: dict[str, dict[str, Any]] = {}
             for zone in zones:
                 sensor_ids = [s.id for s in zone.sensors] if zone.sensors else []
-
-                # Fetch recent readings (multiple to cover different sensor types)
                 temp_val: float | None = None
                 hum_val: float | None = None
                 lux_val: float | None = None
                 occ_val: bool | None = None
-
                 if sensor_ids:
                     r_result = await db.execute(
                         sa_select(SensorReading)
@@ -2075,89 +2181,367 @@ async def execute_active_mode() -> None:
                         if all(v is not None for v in (temp_val, hum_val, lux_val, occ_val)):
                             break
 
-                # Read comfort preferences (frontend saves temp_min/temp_max)
                 prefs = zone.comfort_preferences or {}
                 temp_min = prefs.get("temp_min")
                 temp_max = prefs.get("temp_max")
-                if temp_min is not None and temp_max is not None:
-                    comfort_str = f"{temp_min}-{temp_max}°C"
-                else:
-                    # Legacy fallback
-                    legacy = prefs.get("target_temp") or prefs.get("ideal_temp")
-                    comfort_str = f"{legacy}°C" if legacy else "not set"
+                try:
+                    temp_min_v = float(temp_min) if temp_min is not None else None
+                except (TypeError, ValueError):
+                    temp_min_v = None
+                try:
+                    temp_max_v = float(temp_max) if temp_max is not None else None
+                except (TypeError, ValueError):
+                    temp_max_v = None
 
-                # Use multi-signal occupancy inference
                 inferred_occ = await infer_zone_occupancy(str(zone.id), db)
                 if inferred_occ is None:
-                    # Fall back to raw presence sensor
                     inferred_occ = occ_val if occ_val is not None else False
+                stable_occ = _stable_occupancy(str(zone.id), bool(inferred_occ))
 
-                temp_str = f"{temp_val:.1f}°C" if temp_val is not None else "N/A"
-                hum_str = f"{hum_val:.0f}%" if hum_val is not None else "N/A"
-                lux_str = f"{lux_val:.0f} lx" if lux_val is not None else "N/A"
-                occ_str = "occupied" if inferred_occ else "unoccupied"
+                # Trend from learned OccupancyPattern — probability that the
+                # zone is occupied in the CURRENT and NEXT-30-min slot.  Used
+                # for preconditioning ("no one there yet but people usually
+                # arrive at 5pm, start warming/cooling now").
+                trend_now: float | None = None
+                trend_next: float | None = None
+                try:
+                    from backend.models.database import OccupancyPattern
+                    from backend.models.enums import PatternType as _PT
 
-                zone_summaries.append(
-                    f"- {zone.name}: temp={temp_str}, humidity={hum_str}, "
-                    f"lux={lux_str}, occupancy={occ_str}, comfort_range={comfort_str}"
+                    day_str = now_local.strftime("%a").lower()
+                    slot_now = now_local.hour * 12 + now_local.minute // 5
+                    slots_ahead = [slot_now + i for i in range(1, 7)]  # +5..+30 min
+                    p_result = await db.execute(
+                        sa_select(OccupancyPattern)
+                        .where(
+                            OccupancyPattern.zone_id == zone.id,
+                            OccupancyPattern.pattern_type == _PT.weekday,
+                        )
+                        .order_by(OccupancyPattern.created_at.desc())
+                        .limit(1)
+                    )
+                    pat = p_result.scalar_one_or_none()
+                    if pat and pat.schedule:
+                        next_probs: list[float] = []
+                        for entry in pat.schedule:
+                            bucket = entry.get("bucket", "")
+                            if not bucket.startswith(f"{day_str}:"):
+                                continue
+                            try:
+                                slot = int(bucket.split(":", 1)[1])
+                            except (ValueError, IndexError):
+                                continue
+                            prob = float(entry.get("probability", 0.0) or 0.0)
+                            if slot == slot_now:
+                                trend_now = prob
+                            if slot in slots_ahead:
+                                next_probs.append(prob)
+                        if next_probs:
+                            trend_next = max(next_probs)
+                except Exception:  # noqa: S110
+                    pass
+
+                # Fan state (any fan on in this zone widens comfort band).
+                fan_entities: list[str] = list(
+                    getattr(zone, "fan_entities", None) or []
                 )
+                fan_on = False
+                if fan_entities:
+                    try:
+                        import asyncio as _asyncio
 
-            # ── Current thermostat state ────────────────────────────────
-            thermostat_info = "unavailable"
+                        fan_results = await _asyncio.gather(
+                            *[ha_client.get_state(eid) for eid in fan_entities],
+                            return_exceptions=True,
+                        )
+                        for fres in fan_results:
+                            if isinstance(fres, BaseException):
+                                continue
+                            fst = str(getattr(fres, "state", "") or "").strip().lower()
+                            if fst in ("on", "auto", "high", "medium", "low"):
+                                fan_on = True
+                                break
+                    except Exception:  # noqa: S110
+                        pass
+
+                zone_data[str(zone.id)] = {
+                    "name": zone.name,
+                    "temp_c": temp_val,
+                    "hum": hum_val,
+                    "lux": lux_val,
+                    "occ": bool(stable_occ),
+                    "raw_occ": bool(inferred_occ),
+                    "fan_on": fan_on,
+                    "trend_now": trend_now,
+                    "trend_next": trend_next,
+                    "temp_min": temp_min_v,
+                    "temp_max": temp_max_v,
+                }
+
+            # ── Thermostat state ────────────────────────────────────────
+            hvac_mode: str = "unknown"
             current_target_c: float | None = None
+            thermostat_current_c: float | None = None
             try:
                 state = await ha_client.get_state(climate_entity)
-                hvac_mode = state.state
-                current_temp = state.attributes.get("current_temperature", "N/A")
-                current_target = state.attributes.get("temperature")
-                thermostat_info = (
-                    f"mode={hvac_mode}, current_temp={current_temp}, "
-                    f"target_temp={current_target}"
-                )
-                if current_target is not None:
-                    current_target_c = float(current_target)
+                hvac_mode = state.state or "unknown"
+                ct = state.attributes.get("current_temperature")
+                if ct is not None:
+                    thermostat_current_c = float(ct)
+                    if temp_unit == "F":
+                        thermostat_current_c = round((thermostat_current_c - 32) * 5 / 9, 2)
+                tgt = state.attributes.get("temperature")
+                if tgt is not None:
+                    current_target_c = float(tgt)
                     if temp_unit == "F":
                         current_target_c = round((current_target_c - 32) * 5 / 9, 2)
             except Exception as state_err:
                 logger.debug("Could not read thermostat state for AI mode: %s", state_err)
 
-            # ── Weather data from Redis cache ───────────────────────────
-            weather_info = "unavailable"
+            # ── Weather (Redis cache) ───────────────────────────────────
+            outdoor_c: float | None = None
+            weather_short = "N/A"
+            forecast_high_c: float | None = None
+            forecast_low_c: float | None = None
+            heavy_day_flag: str | None = None  # "hot" | "cold" | None
             if app_state.redis_client:
                 try:
                     cached = await app_state.redis_client.get("weather:current")
                     if cached:
-                        weather_data = _json.loads(cached)
-                        w = weather_data.get("data", {})
-                        weather_info = (
-                            f"temp={w.get('temperature', 'N/A')}°C, "
-                            f"humidity={w.get('humidity', 'N/A')}%, "
-                            f"condition={w.get('condition', 'N/A')}"
+                        wd = _json.loads(cached).get("data", {})
+                        ot = wd.get("temperature")
+                        if ot is not None:
+                            outdoor_c = float(ot)
+                        cond = wd.get("condition", "")
+                        weather_short = (
+                            f"{outdoor_c:.0f}°C {cond}".strip()
+                            if outdoor_c is not None
+                            else str(cond) or "N/A"
                         )
                 except Exception:  # noqa: S110
                     pass
+                # Forecast — next 12 h high/low for heavy-day preconditioning.
+                try:
+                    fcached = await app_state.redis_client.get("weather:forecast")
+                    if fcached:
+                        fd = _json.loads(fcached).get("data", [])
+                        highs: list[float] = []
+                        lows: list[float] = []
+                        for entry in fd[:12] if isinstance(fd, list) else []:
+                            if not isinstance(entry, dict):
+                                continue
+                            th = entry.get("temperature")
+                            tl = entry.get("templow")
+                            if th is not None:
+                                try:
+                                    highs.append(float(th))
+                                except (TypeError, ValueError):
+                                    pass
+                            if tl is not None:
+                                try:
+                                    lows.append(float(tl))
+                                except (TypeError, ValueError):
+                                    pass
+                        if highs:
+                            forecast_high_c = max(highs)
+                        if lows:
+                            forecast_low_c = min(lows)
+                        # Heavy day thresholds ~32°C hot, ~2°C cold.
+                        if forecast_high_c is not None and forecast_high_c >= 32.0:
+                            heavy_day_flag = "hot"
+                        elif forecast_low_c is not None and forecast_low_c <= 2.0:
+                            heavy_day_flag = "cold"
+                except Exception:  # noqa: S110
+                    pass
 
-            # ── Active schedules for today ──────────────────────────────
-            now_utc = datetime.now(UTC)
-            current_dow = now_utc.weekday()
-            schedule_result = await db.execute(
+            # ── Energy + solar telemetry (HA entities from settings) ────
+            async def _kv_get(key: str) -> str:
+                res = await db.execute(
+                    sa_select(SystemSetting).where(SystemSetting.key == key)
+                )
+                row = res.scalar_one_or_none()
+                if row and row.value:
+                    val = row.value.get("value", "")
+                    return str(val or "").strip()
+                return ""
+
+            energy_entity_id = await _kv_get("energy_entity")
+            solar_entity_id = await _kv_get("solar_production_entity")
+            grid_export_entity_id = await _kv_get("grid_export_entity")
+            battery_soc_entity_id = await _kv_get("battery_soc_entity")
+
+            energy_kw: float | None = None
+            solar_kw: float | None = None
+            grid_export_kw: float | None = None
+            battery_soc: float | None = None
+            energy_line = ""
+
+            async def _read_float(eid: str) -> float | None:
+                if not eid:
+                    return None
+                try:
+                    st = await ha_client.get_state(eid)
+                    return float(st.state)
+                except Exception:
+                    return None
+
+            try:
+                import asyncio as _asyncio
+
+                energy_kw, solar_kw, grid_export_kw, battery_soc = await _asyncio.gather(
+                    _read_float(energy_entity_id),
+                    _read_float(solar_entity_id),
+                    _read_float(grid_export_entity_id),
+                    _read_float(battery_soc_entity_id),
+                )
+            except Exception:  # noqa: S110
+                pass
+
+            energy_bits: list[str] = []
+            if solar_kw is not None:
+                energy_bits.append(f"solar {solar_kw:.1f}kW")
+            if energy_kw is not None:
+                energy_bits.append(f"house {energy_kw:.1f}kW")
+            if grid_export_kw is not None and grid_export_kw > 0:
+                energy_bits.append(f"exporting {grid_export_kw:.1f}kW")
+            if battery_soc is not None:
+                energy_bits.append(f"battery {battery_soc:.0f}%")
+            solar_surplus = (
+                solar_kw is not None
+                and energy_kw is not None
+                and solar_kw > energy_kw + 0.5
+            )
+            if solar_surplus:
+                energy_bits.append("SURPLUS (favor comfort)")
+            if energy_bits:
+                energy_line = ", ".join(energy_bits)
+
+            # ── Currently-active schedule (by local time) ───────────────
+            current_dow = now_local.weekday()
+            cur_t = now_local.time()
+            sched_result = await db.execute(
                 sa_select(Schedule).where(Schedule.is_enabled.is_(True))
             )
-            schedules = schedule_result.scalars().all()
-            schedule_summaries: list[str] = []
-            for sched in schedules:
-                if current_dow in (sched.days_of_week or []):
-                    schedule_summaries.append(
-                        f"- {sched.name}: {sched.start_time}"
-                        f"{'-' + sched.end_time if sched.end_time else ''} "
-                        f"target={sched.target_temp_c}°C"
+            all_schedules = list(sched_result.scalars().all())
+            active_schedule: Schedule | None = None
+            for sched in all_schedules:
+                if current_dow not in (sched.days_of_week or []):
+                    continue
+                try:
+                    s_h, s_m = map(int, sched.start_time.split(":"))
+                    start_t = _time(s_h, s_m)
+                except (ValueError, AttributeError):
+                    continue
+                end_t = _time(23, 59)
+                if sched.end_time:
+                    try:
+                        e_h, e_m = map(int, sched.end_time.split(":"))
+                        end_t = _time(e_h, e_m)
+                    except (ValueError, AttributeError):
+                        pass
+                in_window = (
+                    (cur_t >= start_t or cur_t <= end_t)
+                    if end_t < start_t
+                    else (start_t <= cur_t <= end_t)
+                )
+                if in_window and (
+                    active_schedule is None or sched.priority > active_schedule.priority
+                ):
+                    active_schedule = sched
+
+            # ── Focus vs constraint zones ───────────────────────────────
+            focus_zone_ids: set[str] = set()
+            schedule_target_c: float | None = None
+            if active_schedule is not None:
+                schedule_target_c = active_schedule.target_temp_c
+                for zid in active_schedule.zone_ids or []:
+                    if str(zid) in zone_data:
+                        focus_zone_ids.add(str(zid))
+
+            focus_zones = [(zid, zone_data[zid]) for zid in focus_zone_ids]
+            constraint_zones = [
+                (zid, zd) for zid, zd in zone_data.items() if zid not in focus_zone_ids
+            ]
+
+            def _in_band(zd: dict[str, Any]) -> bool:
+                t = zd.get("temp_c")
+                if t is None:
+                    return True  # no reading, don't block on it
+                lo, hi = zd.get("temp_min"), zd.get("temp_max")
+                if lo is not None and t < float(lo) - 0.5:
+                    return False
+                if hi is not None and t > float(hi) + 0.5:
+                    return False
+                return True
+
+            # ── Gate 1: steady-state skip ───────────────────────────────
+            focus_on_target = True
+            if schedule_target_c is not None and focus_zones:
+                for _, zd in focus_zones:
+                    t = zd.get("temp_c")
+                    if t is None:
+                        focus_on_target = False
+                        break
+                    if abs(float(t) - float(schedule_target_c)) > 0.5:
+                        focus_on_target = False
+                        break
+            elif not focus_zones:
+                focus_on_target = False  # no schedule, always let LLM think
+
+            constraints_ok = all(_in_band(zd) for _, zd in constraint_zones)
+
+            if focus_on_target and constraints_ok:
+                logger.debug(
+                    "Active-mode: steady-state (focus zones on target, constraints in band), "
+                    "skipping LLM call"
+                )
+                return
+
+            # ── Gate 2: change-gate hash + min-interval floor ───────────
+            def _round_half(v: float | None) -> str:
+                return "N" if v is None else f"{round(float(v) * 2) / 2:.1f}"
+
+            def _band(v: float | None, width: float = 2.0) -> str:
+                return "N" if v is None else f"{int(float(v) / width)}"
+
+            hash_material = _json.dumps(
+                {
+                    "sid": str(active_schedule.id) if active_schedule else None,
+                    "hvac": hvac_mode,
+                    "tgt": _round_half(current_target_c),
+                    "out": _band(outdoor_c),
+                    "focus": sorted(
+                        [
+                            f"{zid}:{_round_half(zd['temp_c'])}:{int(zd['occ'])}"
+                            for zid, zd in focus_zones
+                        ]
+                    ),
+                    "cons": sorted(
+                        [
+                            f"{zid}:{_round_half(zd['temp_c'])}:{int(_in_band(zd))}"
+                            for zid, zd in constraint_zones
+                        ]
+                    ),
+                },
+                sort_keys=True,
+            )
+            state_hash = _hashlib.sha1(hash_material.encode(), usedforsecurity=False).hexdigest()
+
+            last_state = _active_mode_state.get(climate_entity, {})
+            last_hash = last_state.get("hash")
+            last_call_at: datetime | None = last_state.get("last_call_at")
+            now_ts = datetime.now(UTC)
+
+            if last_hash == state_hash and last_call_at is not None:
+                elapsed = (now_ts - last_call_at).total_seconds()
+                if elapsed < 600:  # 10 min hard floor when state hasn't changed
+                    logger.debug(
+                        "Active-mode: state unchanged since last LLM call %.0fs ago, skipping",
+                        elapsed,
                     )
+                    return
 
-            # ── Build LLM prompt ────────────────────────────────────────
-            zones_text = "\n".join(zone_summaries) if zone_summaries else "No zone data available."
-            schedules_text = "\n".join(schedule_summaries) if schedule_summaries else "No active schedules today."
-
-            # ── Load user directives (chat memory) ──────────────────────
+            # ── Load user directives ────────────────────────────────────
             directives_text = ""
             try:
                 from sqlalchemy.orm import selectinload as _sil
@@ -2172,61 +2556,134 @@ async def execute_active_mode() -> None:
                 )
                 user_directives = dir_result.scalars().all()
                 if user_directives:
-                    lines = [
-                        "\n## User Preferences (from past conversations)\n"
-                        "IMPORTANT: Always respect these standing user preferences.\n"
-                    ]
+                    parts = ["## Standing preferences (always respect)"]
                     for ud in user_directives:
-                        zone_note = ""
-                        if ud.zone_id and ud.zone:
-                            zone_note = f" [zone: {ud.zone.name}]"
-                        lines.append(f"- [{ud.category}]{zone_note} {ud.directive}")
-                    directives_text = "\n".join(lines)
+                        zn = f" [{ud.zone.name}]" if ud.zone_id and ud.zone else ""
+                        parts.append(f"- [{ud.category}]{zn} {ud.directive}")
+                    directives_text = "\n".join(parts)
             except Exception as dir_err:
                 logger.debug("Could not load user directives for active mode: %s", dir_err)
 
+            # ── Compact prompt (user display unit throughout) ───────────
+            unit_sym = f"°{temp_unit}"
+
+            def _fmt_focus(zd: dict[str, Any]) -> str:
+                t_c = zd.get("temp_c")
+                t_disp = _c_to_disp(t_c, temp_unit)
+                tp = f"{t_disp:.1f}{unit_sym}" if t_disp is not None else "?"
+                occ = "occ" if zd["occ"] else "vac"
+                lo = _c_to_disp(zd.get("temp_min"), temp_unit)
+                hi = _c_to_disp(zd.get("temp_max"), temp_unit)
+                band = f" band {lo:.0f}-{hi:.0f}" if lo is not None and hi is not None else ""
+                extras: list[str] = []
+                if zd.get("fan_on"):
+                    extras.append("fan_on")
+                tn = zd.get("trend_next")
+                if not zd["occ"] and tn is not None and tn >= 0.6:
+                    extras.append(f"arriving_soon p{int(tn * 100)}")
+                extras_str = f" [{', '.join(extras)}]" if extras else ""
+                return f"{zd['name']}: {tp} ({occ}){band}{extras_str}"
+
+            def _fmt_constraint(zd: dict[str, Any]) -> str:
+                t_c = zd.get("temp_c")
+                t_disp = _c_to_disp(t_c, temp_unit)
+                tp = f"{t_disp:.1f}{unit_sym}" if t_disp is not None else "?"
+                occ = "occ" if zd["occ"] else "vac"
+                lo = _c_to_disp(zd.get("temp_min"), temp_unit)
+                hi = _c_to_disp(zd.get("temp_max"), temp_unit)
+                band = f" [{lo:.0f}-{hi:.0f}]" if lo is not None and hi is not None else ""
+                flag = "" if _in_band(zd) else " OUT_OF_BAND"
+                return f"{zd['name']}: {tp} ({occ}){band}{flag}"
+
+            focus_text = (
+                "\n".join(f"- {_fmt_focus(zd)}" for _, zd in focus_zones)
+                if focus_zones
+                else "- (none — no active schedule)"
+            )
+            constraint_text = (
+                "\n".join(f"- {_fmt_constraint(zd)}" for _, zd in constraint_zones)
+                if constraint_zones
+                else "- (none)"
+            )
+            sched_tgt_disp = _c_to_disp(schedule_target_c, temp_unit)
+            schedule_line = (
+                f"target {sched_tgt_disp:.1f}{unit_sym} for '{active_schedule.name}'"
+                if active_schedule and sched_tgt_disp is not None
+                else "no active schedule (freeform)"
+            )
+            therm_at_disp = _c_to_disp(thermostat_current_c, temp_unit)
+            therm_set_disp = _c_to_disp(current_target_c, temp_unit)
+            thermostat_line = (
+                f"mode={hvac_mode}, at={therm_at_disp:.1f}{unit_sym}, "
+                f"set={therm_set_disp:.1f}{unit_sym}"
+                if therm_at_disp is not None and therm_set_disp is not None
+                else f"mode={hvac_mode}"
+            )
+            outdoor_disp = _c_to_disp(outdoor_c, temp_unit)
+            weather_line = weather_short
+            if outdoor_disp is not None:
+                weather_line = f"{outdoor_disp:.0f}{unit_sym} {weather_short.split(' ', 1)[-1] if ' ' in weather_short else ''}".strip()
+            forecast_high_disp = _c_to_disp(forecast_high_c, temp_unit)
+            forecast_low_disp = _c_to_disp(forecast_low_c, temp_unit)
+            forecast_bits: list[str] = []
+            if forecast_high_disp is not None:
+                forecast_bits.append(f"high {forecast_high_disp:.0f}{unit_sym}")
+            if forecast_low_disp is not None:
+                forecast_bits.append(f"low {forecast_low_disp:.0f}{unit_sym}")
+            if heavy_day_flag == "hot":
+                forecast_bits.append("HEAVY_HOT_DAY (precondition cool now)")
+            elif heavy_day_flag == "cold":
+                forecast_bits.append("HEAVY_COLD_DAY (precondition heat now)")
+            forecast_line = ", ".join(forecast_bits) if forecast_bits else "n/a"
+            safety_lo_disp = _c_to_disp(safety_min, temp_unit)
+            safety_hi_disp = _c_to_disp(safety_max, temp_unit)
+
             system_prompt = (
-                "You are ClimateIQ's AI HVAC controller. Your job is to recommend "
-                "the optimal thermostat target temperature in °C based on the context "
-                "provided. Consider occupancy, comfort preferences, weather, energy "
-                "efficiency, current schedules, and ambient light levels.\n\n"
-                "Lux context: High lux (>500 lx) near windows indicates direct sunlight "
-                "and solar heat gain — consider lowering the target slightly in cooling "
-                "mode. Low lux (<50 lx) in occupied zones may indicate evening/night — "
-                "prioritize comfort. Unoccupied zones with low lux likely have no one "
-                "home — favor energy savings.\n\n"
-                "IMPORTANT: You MUST include a line in your response in exactly this "
-                "format: RECOMMENDED_TEMP: <number>\n"
-                "where <number> is the target temperature in °C (e.g. RECOMMENDED_TEMP: 22.0).\n"
-                "Also provide a brief one-sentence reason on a line starting with REASON:."
+                f"You are ClimateIQ's HVAC controller.  Pick the thermostat "
+                f"setpoint in {unit_sym} that hits the schedule's focus target "
+                "while keeping every constraint zone inside its comfort band, "
+                "avoids rapid on/off cycles, and respects energy signals.  "
+                "Rules: (1) if focus zones are all in band and no constraint "
+                "OUT_OF_BAND, prefer to hold the current setpoint; (2) treat "
+                "'arriving_soon' focus zones as if occupied — precondition; "
+                "(3) fan_on zones tolerate ~1.5°F above/below band; (4) if "
+                "HEAVY_HOT_DAY / HEAVY_COLD_DAY is flagged, precondition "
+                "toward target now; (5) if SURPLUS energy, favor comfort; "
+                "otherwise nudge conservatively.\n"
+                "Respond with two lines only:\n"
+                f"RECOMMENDED_TEMP: <number in {unit_sym}>\n"
+                "REASON: <one sentence>"
             )
+            user_prompt_parts = [
+                f"Now: {now_local.strftime('%H:%M %Z')}",
+                f"Schedule: {schedule_line}",
+                f"Thermostat: {thermostat_line}",
+                f"Weather now: {weather_line}",
+                f"Forecast: {forecast_line}",
+                f"Focus zones:\n{focus_text}",
+                f"Constraint zones:\n{constraint_text}",
+                (
+                    f"Safety: {safety_lo_disp:.0f}-{safety_hi_disp:.0f}{unit_sym}"
+                    if safety_lo_disp is not None and safety_hi_disp is not None
+                    else ""
+                ),
+            ]
+            if energy_line:
+                user_prompt_parts.append(f"Energy: {energy_line}")
+            if directives_text:
+                user_prompt_parts.append(directives_text)
+            user_prompt = "\n\n".join(p for p in user_prompt_parts if p)
 
-            user_prompt = (
-                f"Current time: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
-                f"## Zone Status\n{zones_text}\n\n"
-                f"## Thermostat\n{thermostat_info}\n\n"
-                f"## Weather\n{weather_info}\n\n"
-                f"## Today's Schedules\n{schedules_text}\n\n"
-                f"{directives_text}\n\n"
-                f"Safety limits: {safety_min}°C - {safety_max}°C\n\n"
-                "What target temperature (°C) should the thermostat be set to right now?"
-            )
-
-            # ── Call LLM ────────────────────────────────────────────────
+            # ── LLM call ────────────────────────────────────────────────
             recommended_temp_c: float | None = None
             reason = ""
-
             try:
-                # Reuse the chat route's provider selector so Active mode
-                # respects the user's chosen LLM (SystemConfig.llm_settings)
-                # and can fall back through the full provider chain
-                # including Ollama, llama.cpp, DeepSeek, and Grok.
                 from backend.api.routes.chat import get_llm_provider
 
                 try:
                     llm = await get_llm_provider(db)
                 except Exception as no_llm_err:
-                    logger.debug("No LLM provider configured for active-mode: %s", no_llm_err)
+                    logger.debug("No LLM provider for active-mode: %s", no_llm_err)
                     return
 
                 response = await llm.generate(
@@ -2234,39 +2691,102 @@ async def execute_active_mode() -> None:
                     user_prompt=user_prompt,
                 )
                 content = response.get("content", "")
-
-                # Parse RECOMMENDED_TEMP from response
                 temp_match = re.search(r"RECOMMENDED_TEMP:\s*([\d.]+)", content)
                 if temp_match:
-                    recommended_temp_c = float(temp_match.group(1))
-
-                # Parse REASON from response
+                    llm_val = float(temp_match.group(1))
+                    # The LLM answered in the user's display unit.  Convert
+                    # to Celsius for internal safety/constraint checks.
+                    recommended_temp_c = _disp_to_c(llm_val, temp_unit)
                 reason_match = re.search(r"REASON:\s*(.+)", content)
                 if reason_match:
                     reason = reason_match.group(1).strip()
-
             except Exception as llm_err:
                 logger.error("Active-mode LLM call failed: %s", llm_err)
-                # Fall back: do nothing (keep current settings)
                 return
+
+            # Even if we don't act, this counted as a real call.
+            _active_mode_state[climate_entity] = {
+                "hash": state_hash,
+                "last_call_at": now_ts,
+            }
 
             if recommended_temp_c is None:
                 logger.warning("Active-mode: LLM did not return a valid temperature")
                 return
 
-            # ── Apply safety clamps ─────────────────────────────────────
+            # ── Safety + constraint-guard clamps ────────────────────────
             recommended_temp_c = max(safety_min, min(safety_max, recommended_temp_c))
 
-            # ── Check if change is meaningful (> 0.5°C diff) ────────────
+            # Constraint guard: if the LLM's target would push a
+            # constraint zone further out of its comfort band than it
+            # already is (in the direction of the constraint), clamp
+            # back.  This is a soft box — focus can still dominate but
+            # we won't cook the basement (or freeze it).
+            constraint_mins = [
+                float(zd["temp_min"]) for _, zd in constraint_zones if zd.get("temp_min") is not None
+            ]
+            constraint_maxes = [
+                float(zd["temp_max"]) for _, zd in constraint_zones if zd.get("temp_max") is not None
+            ]
+            if constraint_mins:
+                floor_c = max(constraint_mins) - 1.5
+                if recommended_temp_c < floor_c:
+                    logger.info(
+                        "Active-mode: clamping recommendation %.1f°C up to %.1f°C to protect "
+                        "constraint zones",
+                        recommended_temp_c,
+                        floor_c,
+                    )
+                    recommended_temp_c = floor_c
+            if constraint_maxes:
+                ceil_c = min(constraint_maxes) + 1.5
+                if recommended_temp_c > ceil_c:
+                    logger.info(
+                        "Active-mode: clamping recommendation %.1f°C down to %.1f°C to protect "
+                        "constraint zones",
+                        recommended_temp_c,
+                        ceil_c,
+                    )
+                    recommended_temp_c = ceil_c
+
+            # ── Dead-band on setpoint change ────────────────────────────
             if current_target_c is not None and abs(current_target_c - recommended_temp_c) <= 0.5:
                 logger.debug(
-                    "Active-mode: recommended %.1f°C is within 0.5°C of current %.1f°C, skipping",
+                    "Active-mode: recommended %.1f°C within 0.5°C of current %.1f°C, skipping",
                     recommended_temp_c,
                     current_target_c,
                 )
                 return
 
-            # ── Convert and apply ───────────────────────────────────────
+            # ── Setpoint anti-oscillation (HVAC cycle protection) ───────
+            # Block a direction reversal (heat→cool or cool→heat intent) if
+            # the last real change was less than _SETPOINT_ANTI_OSCILLATION_S
+            # ago.  This is on top of the existing mode-switch cooldown and
+            # protects the HVAC from rapid cycles even inside a single mode.
+            hist = _active_mode_setpoint_history.get(climate_entity)
+            if hist is not None and current_target_c is not None:
+                last_dir = hist.get("direction")
+                last_at = hist.get("at")
+                new_dir = (
+                    "up" if recommended_temp_c > current_target_c else "down"
+                )
+                if (
+                    last_dir
+                    and last_dir != new_dir
+                    and isinstance(last_at, datetime)
+                    and (datetime.now(UTC) - last_at).total_seconds()
+                    < _SETPOINT_ANTI_OSCILLATION_S
+                ):
+                    logger.info(
+                        "Active-mode: blocking setpoint reversal (%s → %s) within "
+                        "%.0fs anti-oscillation window",
+                        last_dir,
+                        new_dir,
+                        _SETPOINT_ANTI_OSCILLATION_S,
+                    )
+                    return
+
+            # ── Apply ───────────────────────────────────────────────────
             target_for_ha = recommended_temp_c
             if temp_unit == "F":
                 target_for_ha = round(recommended_temp_c * 9 / 5 + 32, 1)
@@ -2277,15 +2797,27 @@ async def execute_active_mode() -> None:
                 logger.debug("Ecobee hold update (non-critical): %s", hold_err)
                 await ha_client.set_temperature(climate_entity, target_for_ha)
 
+            # Record this change so anti-oscillation can detect a reversal
+            # on the next tick.
+            if current_target_c is not None:
+                _active_mode_setpoint_history[climate_entity] = {
+                    "direction": (
+                        "up" if recommended_temp_c > current_target_c else "down"
+                    ),
+                    "at": datetime.now(UTC),
+                    "setpoint_c": recommended_temp_c,
+                }
+
             temp_display = f"{target_for_ha:.1f}°{'F' if temp_unit == 'F' else 'C'}"
             logger.info(
-                "Active-mode AI: Set %s to %s — %s",
+                "Active-mode AI: Set %s to %s — %s (focus=%d, constraint=%d)",
                 climate_entity,
                 temp_display,
                 reason or "no reason provided",
+                len(focus_zones),
+                len(constraint_zones),
             )
 
-            # ── Send notification ───────────────────────────────────────
             if _notification_service:
                 try:
                     await _notification_service.send_ha_notification(
@@ -2296,7 +2828,6 @@ async def execute_active_mode() -> None:
                 except Exception as notif_err:
                     logger.warning("Active-mode notification failed: %s", notif_err)
 
-            # ── Record device action ────────────────────────────────────
             try:
                 device_result = await db.execute(
                     sa_select(Device)
@@ -2314,6 +2845,10 @@ async def execute_active_mode() -> None:
                             "temperature": target_for_ha,
                             "unit": temp_unit,
                             "recommended_temp_c": recommended_temp_c,
+                            "focus_zones": [zd["name"] for _, zd in focus_zones],
+                            "schedule_id": (
+                                str(active_schedule.id) if active_schedule else None
+                            ),
                         },
                         reasoning=f"AI Mode: {reason or 'LLM recommendation'}",
                         mode=SystemMode.active,
@@ -2824,9 +3359,14 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
     """Infer whether a zone is occupied using multi-signal fusion.
 
     Combines:
-    1. Binary presence sensor (highest weight -- direct detection)
+    1. Binary presence sensor (direct detection)
     2. Lux level (indirect -- lights on in evening suggests occupancy)
     3. Time-of-day patterns from PatternEngine (learned probability)
+    4. **User-attached HA entities** on ``Zone.ha_entities``: any motion
+       sensor triggered in the last 5 min, or any light / switch / plug
+       currently ``on``, counts as an occupancy signal.  Weighted highest
+       because it comes straight from HA (no polling lag) and the user
+       curated the list.
 
     Returns True (occupied), False (vacant), or None (insufficient data).
     """
@@ -2836,16 +3376,23 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
 
     from backend.models.database import OccupancyPattern, SensorReading
     from backend.models.database import Sensor as _Sensor
+    from backend.models.database import Zone as _Zone
     from backend.models.enums import PatternType as _PT
 
     zone_uuid = uuid.UUID(str(zone_id)) if not isinstance(zone_id, uuid.UUID) else zone_id
 
-    # Gather sensor IDs for this zone
+    # Load the zone (for ha_entities) plus sensor IDs.
+    zone_row = await db.execute(  # type: ignore[attr-defined]
+        sa_select(_Zone).where(_Zone.id == zone_uuid).limit(1)
+    )
+    zone_obj = zone_row.scalar_one_or_none()
+    ha_entities: list[str] = list(getattr(zone_obj, "ha_entities", None) or []) if zone_obj else []
+
     sensor_result = await db.execute(  # type: ignore[attr-defined]
         sa_select(_Sensor.id).where(_Sensor.zone_id == zone_uuid)
     )
     sensor_ids = [row[0] for row in sensor_result.all()]
-    if not sensor_ids:
+    if not sensor_ids and not ha_entities:
         return None
 
     reading_cutoff = datetime.now(UTC) - _td(minutes=15)
@@ -2858,8 +3405,8 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
         )
         .order_by(SensorReading.recorded_at.desc())
         .limit(20)
-    )
-    readings = r_result.scalars().all()
+    ) if sensor_ids else None
+    readings = r_result.scalars().all() if r_result is not None else []
 
     # Extract latest values
     presence: bool | None = None
@@ -2921,19 +3468,74 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
     except Exception:
         logger.debug("Could not load occupancy pattern for zone %s", zone_id, exc_info=True)
 
+    # -- Signal 4: User-attached HA entities (weight: 0.7 -- dominant) --
+    # Any recent motion event OR any light/switch/plug currently "on" is
+    # treated as an occupancy signal.  Polls HA in parallel across all
+    # user-attached entities.  A single "on"/"detected" flips the score
+    # to 1.0; explicit "off" from every entity → 0.0; anything else
+    # (unavailable, etc.) is ignored.
+    ha_score: float | None = None
+    if ha_entities:
+        try:
+            import asyncio as _asyncio
+
+            import backend.api.dependencies as _deps
+
+            ha_client_ref = _deps._ha_client
+            if ha_client_ref is not None:
+                fresh_cutoff = datetime.now(UTC) - _td(minutes=5)
+                results = await _asyncio.gather(
+                    *[ha_client_ref.get_state(eid) for eid in ha_entities],
+                    return_exceptions=True,
+                )
+                any_on = False
+                any_off = False
+                for eid, res in zip(ha_entities, results, strict=False):
+                    if isinstance(res, BaseException):
+                        continue
+                    st_raw = getattr(res, "state", "") or ""
+                    st = str(st_raw).strip().lower()
+                    if st in ("on", "home", "detected", "open", "playing"):
+                        any_on = True
+                        break
+                    # Motion sensors that were on recently even if now off.
+                    if "motion" in eid.lower() or "occupancy" in eid.lower():
+                        lc = getattr(res, "last_changed", "") or ""
+                        if lc:
+                            try:
+                                lc_dt = datetime.fromisoformat(lc.replace("Z", "+00:00"))
+                                if lc_dt >= fresh_cutoff and st == "off":
+                                    # Motion detected very recently.
+                                    any_on = True
+                                    break
+                            except ValueError:
+                                pass
+                    if st in ("off", "not_home", "clear", "closed", "idle", "paused"):
+                        any_off = True
+                if any_on:
+                    ha_score = 1.0
+                elif any_off:
+                    ha_score = 0.0
+                # else: ha_score stays None (unavailable/unknown)
+        except Exception:
+            logger.debug("Could not poll HA occupancy entities for zone %s", zone_id, exc_info=True)
+
     # -- Weighted fusion --
     total_weight = 0.0
     weighted_sum = 0.0
 
+    if ha_score is not None:
+        weighted_sum += 0.7 * ha_score
+        total_weight += 0.7
     if presence_score is not None:
-        weighted_sum += 0.6 * presence_score
-        total_weight += 0.6
+        weighted_sum += 0.4 * presence_score
+        total_weight += 0.4
     if lux_score is not None:
-        weighted_sum += 0.2 * lux_score
-        total_weight += 0.2
+        weighted_sum += 0.15 * lux_score
+        total_weight += 0.15
     if pattern_score is not None:
-        weighted_sum += 0.2 * pattern_score
-        total_weight += 0.2
+        weighted_sum += 0.15 * pattern_score
+        total_weight += 0.15
 
     if total_weight == 0:
         return None

@@ -597,8 +597,24 @@ export const Dashboard = () => {
               Mode: <span className="font-bold capitalize text-foreground">{overrideStatus?.hvac_mode ?? '--'}</span>
             </span>
             <span className="text-xs text-muted-foreground">
-              Status: <span className={`font-bold ${overrideStatus?.is_override_active ? 'text-orange-500' : 'text-green-500'}`}>
-                {overrideStatus?.is_override_active ? 'Override Active' : 'Following Schedule'}
+              Status: <span className={`font-bold ${
+                overrideStatus?.is_override_active
+                  ? 'text-orange-500'
+                  : currentMode === 'active' || currentMode === 'follow_me'
+                    ? 'text-primary'
+                    : currentMode === 'learn'
+                      ? 'text-muted-foreground'
+                      : 'text-green-500'
+              }`}>
+                {overrideStatus?.is_override_active
+                  ? 'Override Active'
+                  : currentMode === 'active'
+                    ? 'AI Control'
+                    : currentMode === 'follow_me'
+                      ? 'Follow Me'
+                      : currentMode === 'learn'
+                        ? 'Learning'
+                        : 'Following Schedule'}
               </span>
             </span>
             {overrideStatus?.preset_mode && overrideStatus.preset_mode.toLowerCase() !== 'none' && (

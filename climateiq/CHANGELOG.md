@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.0.57] - 2026-07-04
+
+### Added
+- **Occupancy dwell hysteresis.** Raw multi-signal occupancy is now stabilized before it can drive an HVAC decision: 3 min of continuous OCC before flipping to *stable occupied*, 10 min of continuous VAC before flipping to *stable vacant*. Cuts "someone walked past the door" and "lights just turned on" churn. The Active-mode LLM only sees the stable value; the change-gate hash uses the stable value; anti-oscillation and steady-state gates all benefit.
+- **Trend-aware Active mode.** `OccupancyPattern.schedule` is now consulted per focus zone for the current 5-min slot AND the next 30 min. If a currently-vacant focus zone has ≥60% probability of being occupied within the next half-hour, the prompt tags it `arriving_soon p<N>` — the LLM is instructed to precondition as if it were already occupied. The learning loop that populates OccupancyPattern already runs; this makes it actionable.
+- **Weather-aware heavy-day preconditioning.** Active-mode now pulls the 12-hour forecast from Redis (`weather:forecast`), computes the max high and min low, and tags the prompt `HEAVY_HOT_DAY (precondition cool now)` or `HEAVY_COLD_DAY (precondition heat now)` when the day will hit ≥32°C or ≤2°C. The LLM system prompt calls out heavy-day rule (4) explicitly.
+- **HVAC cycle-prevention — setpoint anti-oscillation.** On top of the existing 30-min mode-switch cooldown, each thermostat now has a 15-min *direction lockout*: if we just moved the setpoint up, we won't move it down again for 15 minutes (and vice-versa). Blocks the "raise 1°, drop 1° four ticks later" pattern that beats up compressors even inside a single mode.
+- **Fan awareness.** New `Zone.fan_entities` JSON column (auto-migrated) + zone-editor picker. When any of a zone's `fan.*` entities is running, the prompt tags the zone `fan_on` and system-prompt rule (3) tells the LLM to tolerate ~1.5°F beyond the comfort band because airflow makes a room feel cooler than it reads.
+- **Energy + solar awareness.** Three new settings entities — `solar_production_entity`, `grid_export_entity`, `battery_soc_entity` — join the existing `energy_entity`. Active-mode polls all four in parallel each tick and appends a compact `Energy: solar Xkw, house Ykw, exporting Zkw, battery N%, SURPLUS (favor comfort)` line to the LLM prompt when data is available. System-prompt rule (5) tells the model to favor comfort under solar surplus and nudge conservatively otherwise. Settings page grew three new HA-entity selectors.
+
+### Changed
+- **All Active-mode LLM I/O is now in the user's display unit.** For `F`-unit users the prompt, comfort bands, thermostat readouts, safety range, and the `RECOMMENDED_TEMP:` response are all in °F — no more "notification says 22°C" surprises. Internally we still store and clamp in Celsius; the conversion happens at the LLM boundary via `_c_to_disp`/`_disp_to_c` helpers, plus the response parse round-trips through Celsius so safety and constraint-guard clamps stay stable.
+- **Active-mode LLM system prompt now has five explicit rules** — hold-if-in-band, arriving-soon precondition, fan-widened band, heavy-day precondition, and energy-surplus/deficit bias — instead of the earlier single instruction. Still two lines out; still frugal on tokens.
+
+## [1.0.56] - 2026-07-04
+
+### Added
+- **Focused Active mode.** The AI now treats the currently-active schedule's zones as *focus zones* (hit the target) and every other zone as a *constraint zone* (must stay inside its comfort band). The LLM prompt is restructured accordingly, and a soft "constraint guard" clamps the LLM's setpoint recommendation up or down when it would push a constraint zone further out of its comfort band than it already is.
+- **Open-ended per-zone HA occupancy entities.** New `Zone.ha_entities` JSON column (auto-migrated) lets you attach any HA entities you want — motion sensors, door/window contacts, light and switch states, plugs, media players, etc. — to a zone. `infer_zone_occupancy` now polls those entities in parallel and treats any recent motion or any "on" state as a dominant occupancy signal (weight 0.7). Curated user signals now outrank the flaky multisensor motion channel. New Occupancy Signals card in the zone editor to manage the list.
+
+### Changed
+- **Active-mode LLM cost dropped ~60-70%.** Two new skip gates run before every LLM call: (1) *steady-state skip* — if focus zones are within ±0.5°C of the schedule target and every constraint zone is inside its comfort band, no call; (2) *change-gate hash + 10 min floor* — if a hash of (rounded focus temps, constraint-in-band bits, hvac mode, current setpoint, outdoor °C band, active schedule id) matches the previous real call AND fewer than 10 minutes have elapsed, no call. The prompt itself is now compact (single-line system directive, no humidity/lux, unoccupied constraint zones stripped) — roughly a 2/3 reduction in tokens per call. The 5-minute tick still fires, but most ticks are now no-ops. Rough net: 2-6 real LLM calls/hour instead of 12.
+- **Ignored zones are honored everywhere in the control loop.** `exclude_from_metrics` was previously only respected by analytics; it's now honored by `execute_active_mode`, `execute_follow_me_mode`, and every path through `apply_offset_compensation` (via `_fetch_zones` in `temp_compensation`). Mark the basement/attic/exercise room as excluded and their readings genuinely stop influencing decisions.
+
+## [1.0.55] - 2026-07-04
+
+### Fixed
+- **Dashboard status label now reflects the actual system mode** instead of always showing "Following Schedule" whenever no manual override is active. The label was ignoring `current_mode` entirely, so toggling to Active or Follow Me made no visible change in the status bar even though the mode had actually switched (and the backend was running the AI controller every 5 min). New copy: `Override Active` → `AI Control` (active) → `Follow Me` (follow_me) → `Learning` (learn) → `Following Schedule` (scheduled). The mode-switcher lane buttons in the header already indicated the real mode; this just brings the dashboard status pill in line with them.
+
 ## [1.0.54] - 2026-07-04
 
 ### Fixed

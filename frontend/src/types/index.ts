@@ -83,6 +83,8 @@ export type ZoneBackend = {
   thermal_profile: Record<string, unknown>
   exclude_from_metrics: boolean
   exclude_months: number[]
+  ha_entities: string[]
+  fan_entities?: string[]
   is_currently_excluded: boolean
   created_at: string
   updated_at: string
@@ -351,6 +353,9 @@ export type SystemSettings = {
   climate_entities: string
   sensor_entities: string
   energy_entity: string
+  solar_production_entity?: string
+  grid_export_entity?: string
+  battery_soc_entity?: string
   max_temp_offset_f: number
   ai_advisor_enabled: boolean
   thermostat_temp_sensor: string
