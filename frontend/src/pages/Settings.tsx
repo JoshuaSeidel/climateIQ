@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { EntityCombobox } from '@/components/ui/EntityCombobox'
 import { api, BASE_PATH } from '@/lib/api'
 import type { SystemSettings, SystemMode, LLMProvidersResponse, WeatherEntity, HAEntity } from '@/types'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -618,18 +619,14 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
 
         <div>
           <label className="text-sm font-medium">Energy Entity</label>
-          <select
+          <EntityCombobox
             value={settings?.energy_entity ?? ''}
-            onChange={(e) => updateEnergyEntity.mutate(e.target.value)}
-            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
-          >
-            <option value="">None — energy tracking disabled</option>
-            {(sensorEntities ?? []).map((entity) => (
-              <option key={entity.entity_id} value={entity.entity_id}>
-                {entity.name} ({entity.entity_id}) — {entity.state}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => updateEnergyEntity.mutate(v)}
+            options={sensorEntities}
+            isLoading={sensorLoading}
+            noneLabel="None — energy tracking disabled"
+            placeholder="Search HA energy sensors..."
+          />
           <p className="mt-1 text-xs text-muted-foreground">
             Select an HA energy sensor entity (e.g. utility meter) for HVAC energy tracking
           </p>
@@ -640,18 +637,14 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
 
         <div>
           <label className="text-sm font-medium">Solar Production</label>
-          <select
+          <EntityCombobox
             value={settings?.solar_production_entity ?? ''}
-            onChange={(e) => updateSolarProductionEntity.mutate(e.target.value)}
-            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
-          >
-            <option value="">None — solar not tracked</option>
-            {(sensorEntities ?? []).map((entity) => (
-              <option key={entity.entity_id} value={entity.entity_id}>
-                {entity.name} ({entity.entity_id}) — {entity.state}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => updateSolarProductionEntity.mutate(v)}
+            options={sensorEntities}
+            isLoading={sensorLoading}
+            noneLabel="None — solar not tracked"
+            placeholder="Search HA solar production sensors..."
+          />
           <p className="mt-1 text-xs text-muted-foreground">
             HA sensor reporting current solar production (kW).  When production exceeds household
             usage, Active mode favors comfort over conservation.
@@ -663,18 +656,14 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
 
         <div>
           <label className="text-sm font-medium">Grid Export</label>
-          <select
+          <EntityCombobox
             value={settings?.grid_export_entity ?? ''}
-            onChange={(e) => updateGridExportEntity.mutate(e.target.value)}
-            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
-          >
-            <option value="">None</option>
-            {(sensorEntities ?? []).map((entity) => (
-              <option key={entity.entity_id} value={entity.entity_id}>
-                {entity.name} ({entity.entity_id}) — {entity.state}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => updateGridExportEntity.mutate(v)}
+            options={sensorEntities}
+            isLoading={sensorLoading}
+            noneLabel="None"
+            placeholder="Search HA grid-export sensors..."
+          />
           <p className="mt-1 text-xs text-muted-foreground">
             HA sensor for grid-export (kW).  Positive value = you are pushing energy back to the utility.
           </p>
@@ -685,18 +674,14 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
 
         <div>
           <label className="text-sm font-medium">Battery State-of-Charge</label>
-          <select
+          <EntityCombobox
             value={settings?.battery_soc_entity ?? ''}
-            onChange={(e) => updateBatterySocEntity.mutate(e.target.value)}
-            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
-          >
-            <option value="">None</option>
-            {(sensorEntities ?? []).map((entity) => (
-              <option key={entity.entity_id} value={entity.entity_id}>
-                {entity.name} ({entity.entity_id}) — {entity.state}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => updateBatterySocEntity.mutate(v)}
+            options={sensorEntities}
+            isLoading={sensorLoading}
+            noneLabel="None"
+            placeholder="Search HA battery SOC sensors..."
+          />
           <p className="mt-1 text-xs text-muted-foreground">
             HA sensor for home battery SOC (%).  Used to bias decisions when battery is full and cheap
             solar is being wasted, or when battery is low and grid draw would be costly.
@@ -708,18 +693,14 @@ function HomeAssistantTab({ settings }: { settings?: SystemSettings }) {
 
         <div>
           <label className="text-sm font-medium">Thermostat Temperature Sensor (override)</label>
-          <select
+          <EntityCombobox
             value={settings?.thermostat_temp_sensor ?? ''}
-            onChange={(e) => updateThermostatTempSensor.mutate(e.target.value)}
-            className="flex h-11 w-full rounded-xl border border-input bg-transparent px-4 text-sm dark:bg-[rgba(2,6,23,0.38)] dark:border-[rgba(148,163,184,0.22)]"
-          >
-            <option value="">None — use thermostat's built-in reading</option>
-            {(sensorEntities ?? []).map((entity) => (
-              <option key={entity.entity_id} value={entity.entity_id}>
-                {entity.name} ({entity.entity_id}) — {entity.state}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => updateThermostatTempSensor.mutate(v)}
+            options={sensorEntities}
+            isLoading={sensorLoading}
+            noneLabel="None — use thermostat's built-in reading"
+            placeholder="Search HA temperature sensors..."
+          />
           <p className="mt-1 text-xs text-muted-foreground">
             Use a separate HA sensor as the thermostat's "current temperature" reading. Workaround for the Ecobee/HomeKit integration bug where the thermostat's own value stops refreshing. Used for offset compensation only — zone control still uses each zone's own sensors.
           </p>

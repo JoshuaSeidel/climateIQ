@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.61] - 2026-07-04
+
+### Changed
+- **Searchable entity picker for energy, solar, grid, battery, thermostat-override sensors.** These five Settings selectors were plain HTML `<select>` dropdowns that scrolled the entire HA sensor registry — impossible to find anything in a house with hundreds of entities.  Replaced them with a new `EntityCombobox` component that type-filters as you go (matches on both friendly name and entity_id), shows the current value with an inline clear (`×`) button, and includes a "None" option at the top of the list.  Same underlying `/settings/ha/entities` data source — this is a pure UX change.
+
 ## [1.0.60] - 2026-07-04
 
 ### Changed
