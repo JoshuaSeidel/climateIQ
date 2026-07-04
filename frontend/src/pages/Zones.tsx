@@ -149,6 +149,7 @@ export const Zones = () => {
   const [haEntityDraft, setHaEntityDraft] = useState('')
   const [fanEntities, setFanEntities] = useState<string[]>([])
   const [fanEntityDraft, setFanEntityDraft] = useState('')
+  const [allowFanControl, setAllowFanControl] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
   // Fetch zones from backend
@@ -379,11 +380,19 @@ export const Zones = () => {
     },
   })
 
-  // Save Fan entities mutation
+  // Save Fan entities mutation (bundles the allow-fan-control toggle)
   const [fanEntitiesSaveStatus, setFanEntitiesSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const saveFanEntities = useMutation({
-    mutationFn: ({ id, fan_entities }: { id: string; fan_entities: string[] }) =>
-      api.put<ZoneBackend>(`/zones/${id}`, { fan_entities }),
+    mutationFn: ({
+      id,
+      fan_entities,
+      allow_fan_control,
+    }: {
+      id: string
+      fan_entities: string[]
+      allow_fan_control: boolean
+    }) =>
+      api.put<ZoneBackend>(`/zones/${id}`, { fan_entities, allow_fan_control }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['zones-raw'] })
       queryClient.invalidateQueries({ queryKey: ['zones'] })
@@ -442,6 +451,7 @@ export const Zones = () => {
     setHaEntityDraft('')
     setFanEntities(zoneRaw?.fan_entities ?? [])
     setFanEntityDraft('')
+    setAllowFanControl(zoneRaw?.allow_fan_control ?? false)
     setSelectedZoneId(zoneId)
     setViewMode('detail')
   }, [zonesRaw, unitKey])
@@ -1501,6 +1511,35 @@ export const Zones = () => {
                 </div>
               )}
 
+              <label
+                className={`flex items-start gap-3 rounded-lg border border-border/60 p-3 ${
+                  excludeFromMetrics ? 'opacity-60' : 'cursor-pointer'
+                }`}
+                title={
+                  excludeFromMetrics
+                    ? 'Ignored zones cannot delegate fan control to the AI.'
+                    : undefined
+                }
+              >
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4"
+                  checked={allowFanControl && !excludeFromMetrics}
+                  disabled={excludeFromMetrics || fanEntities.length === 0}
+                  onChange={(e) => setAllowFanControl(e.target.checked)}
+                />
+                <div className="text-sm">
+                  <div className="font-medium">Allow system fan control</div>
+                  <div className="text-xs text-muted-foreground">
+                    Active mode may drive these fans 0-100 % as a comfort helper.  The system
+                    captures your current fan speed as the baseline and will never lower a fan
+                    below that baseline — it only ever raises, and releases back to baseline
+                    when help is no longer needed.  {excludeFromMetrics ? 'Disabled while the zone is ignored.' : ''}
+                    {fanEntities.length === 0 && !excludeFromMetrics ? ' Add a fan entity above to enable this.' : ''}
+                  </div>
+                </div>
+              </label>
+
               <div className="flex items-center gap-3">
                 <Button
                   size="sm"
@@ -1510,6 +1549,7 @@ export const Zones = () => {
                       saveFanEntities.mutate({
                         id: selectedZoneId,
                         fan_entities: fanEntities,
+                        allow_fan_control: allowFanControl && !excludeFromMetrics,
                       })
                     }
                   }}

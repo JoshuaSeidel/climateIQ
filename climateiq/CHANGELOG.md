@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.58] - 2026-07-04
+
+### Added
+- **Floor-aware Active-mode prompt.** Focus and constraint zones are now grouped by `floor` in the LLM prompt (e.g. `Floor 2:`, `Floor 1:`, `Basement`, `(unset)`), and a new `Occupied floors: …` line surfaces the set of floors that currently have stable-occupied zones. System-prompt rule (6) tells the model to bias the setpoint toward the occupied floor(s) rather than averaging the whole house. Single-floor houses collapse gracefully to the pre-1.0.58 flat listing.
+- **Per-zone system fan control (opt-in, baseline-preserving).** New `Zone.allow_fan_control` boolean column (auto-migrated) and a toggle inside the Zones editor's Fan Entities card. When enabled, Active mode may ramp those `fan.*` entities 0–100 % via a new `FAN_ACTIONS:` line in the LLM output. Guardrails:
+  - Excluded zones (`exclude_from_metrics=True`) always deny — enforced both in the UI (checkbox disabled) and in the backend (`zone_allow_fan_control` gate).
+  - **Baseline preservation.** The first time we touch a fan we capture the user's pre-existing percentage as a baseline. We never write below that baseline; if the LLM asks for a lower value we no-op. On "release" (target ≤ baseline while we hold override), we restore *exactly* to the baseline instead of turning the fan off, so a fan the user had running at 50 % goes back to 50 %, not off. `fan.turn_off` is only used when the captured baseline was 0.
+  - Per-fan write cooldown of 5 min prevents flapping, and stale baselines (30 min of no LLM interaction) are dropped so we don't clobber a fresh user setting.
+- **`FAN_ACTIONS` LLM output line.** Response format grew from two lines to three: `RECOMMENDED_TEMP` / `FAN_ACTIONS: <zone>=<pct>|<zone>=<pct>` (omit if none) / `REASON`. System-prompt rule (7) tells the model to nudge fans on rooms that need extra help and to leave `fan_ctrl_ok` unmarked zones alone.
+
+### Changed
+- **Active-mode `zone_data` payload** now carries `floor`, `fan_entities`, and `allow_fan_control` for every focus and constraint zone, and the compact `[…]` extras tag now includes `fan_ctrl_ok` on eligible zones.
+
 ## [1.0.57] - 2026-07-04
 
 ### Added

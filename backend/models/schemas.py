@@ -55,6 +55,15 @@ class ZoneBase(BaseModel):
             "cooler than its measured temperature."
         ),
     )
+    allow_fan_control: bool = Field(
+        default=False,
+        description=(
+            "When True, Active mode is allowed to actively drive fan speeds "
+            "in this zone as a cooling/heating helper.  Always disabled at "
+            "runtime for zones with exclude_from_metrics=True.  System will "
+            "never lower the fan below its speed at takeover time."
+        ),
+    )
 
 
 class ZoneCreate(ZoneBase):
@@ -74,6 +83,7 @@ class ZoneUpdate(BaseModel):
     exclude_months: list[int] | None = None
     ha_entities: list[str] | None = None
     fan_entities: list[str] | None = None
+    allow_fan_control: bool | None = None
 
 
 class SensorBase(BaseModel):

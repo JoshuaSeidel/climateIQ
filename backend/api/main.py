@@ -115,6 +115,17 @@ _OCCUPANCY_DWELL_VAC_S: int = 10 * 60
 _active_mode_setpoint_history: dict[str, dict[str, Any]] = {}
 _SETPOINT_ANTI_OSCILLATION_S: int = 15 * 60
 
+# Fan control baseline tracking.  When Active mode drives a fan above the
+# user's baseline speed, we capture the baseline the FIRST time we take
+# over, and we NEVER drive the fan below that baseline again.  On release
+# we restore to the captured baseline (never turn_off unless the baseline
+# itself was 0).  Baseline stays sticky as long as an override is active;
+# once we release and the fan is untouched by us for
+# _FAN_BASELINE_STALE_S seconds, next takeover captures a fresh baseline.
+_fan_baseline: dict[str, dict[str, Any]] = {}
+_FAN_BASELINE_STALE_S: int = 30 * 60
+_FAN_CHANGE_MIN_INTERVAL_S: int = 5 * 60  # per-fan cooldown between our writes
+
 
 def _stable_occupancy(zone_id: str, raw: bool) -> bool:
     """Hysteresis wrapper around raw occupancy signal.
@@ -155,6 +166,146 @@ def _disp_to_c(u: float | None, unit: str) -> float | None:
     if u is None:
         return None
     return round((u - 32) * 5 / 9, 2) if unit == "F" else round(u, 2)
+
+
+async def _read_fan_percent(ha_client_ref: Any, entity_id: str) -> int | None:
+    """Return the current fan percentage for an entity, or None on error.
+
+    Accepts an HA fan.  Off/unknown → 0.  ``percentage`` attribute wins;
+    falls back to state alone (on/off) if attribute is missing.
+    """
+    try:
+        st = await ha_client_ref.get_state(entity_id)
+    except Exception:
+        return None
+    if st is None:
+        return None
+    pct_raw = st.attributes.get("percentage") if hasattr(st, "attributes") else None
+    if pct_raw is not None:
+        try:
+            return max(0, min(100, round(float(pct_raw))))
+        except (TypeError, ValueError):
+            pass
+    state_raw = str(getattr(st, "state", "") or "").strip().lower()
+    if state_raw == "on":
+        return 100
+    return 0
+
+
+async def _apply_fan_target(
+    ha_client_ref: Any,
+    entity_id: str,
+    target_pct: int,
+    zone_allowed: bool,
+) -> tuple[bool, str]:
+    """Move a fan toward ``target_pct`` while never dropping below baseline.
+
+    ``target_pct`` is clamped to [0,100].  Returns ``(changed, note)`` where
+    ``note`` is a short human-readable log fragment.
+
+    Baseline rules:
+    * Take-over: if there is no active override, read the fan's current
+      percent — that is the baseline — before any raise.
+    * Raise-only from baseline: never call fan.set_percentage(v) where
+      ``v < baseline``.  We may pin at baseline as an idle state.
+    * Release: setting target_pct <= baseline while override is active
+      restores exactly to baseline (never turn_off unless baseline was 0).
+    """
+    if not zone_allowed:
+        return False, "zone_not_allowed"
+
+    target_pct = max(0, min(100, int(target_pct)))
+    now = datetime.now(UTC)
+    hist = _fan_baseline.get(entity_id)
+
+    # Stale-baseline sweep: if we released a while ago, forget the baseline.
+    if (
+        hist is not None
+        and not hist.get("override_active")
+        and isinstance(hist.get("released_at"), datetime)
+        and (now - hist["released_at"]).total_seconds() > _FAN_BASELINE_STALE_S
+    ):
+        hist = None
+        _fan_baseline.pop(entity_id, None)
+
+    # Per-fan cooldown to avoid flapping.
+    if hist is not None:
+        last_change = hist.get("last_change_at")
+        if (
+            isinstance(last_change, datetime)
+            and (now - last_change).total_seconds() < _FAN_CHANGE_MIN_INTERVAL_S
+        ):
+            return False, "cooldown"
+
+    # Capture baseline on first takeover.
+    if hist is None:
+        current = await _read_fan_percent(ha_client_ref, entity_id)
+        if current is None:
+            return False, "read_failed"
+        # No-op if target is at or below the baseline and we haven't
+        # started an override yet.  There is nothing to raise.
+        if target_pct <= current:
+            return False, f"no_takeover_needed(baseline={current}, target={target_pct})"
+        hist = {
+            "baseline_pct": int(current),
+            "override_active": False,
+            "last_change_at": None,
+            "released_at": None,
+        }
+        _fan_baseline[entity_id] = hist
+
+    baseline = int(hist["baseline_pct"])
+    override_active = bool(hist.get("override_active"))
+
+    # Enforce baseline floor.
+    effective_target = max(baseline, target_pct)
+
+    # Read current so we can no-op if there's no meaningful change.
+    current = await _read_fan_percent(ha_client_ref, entity_id)
+    if current is None:
+        return False, "read_failed"
+
+    # Release path: target at/below baseline while overriding → restore.
+    if target_pct <= baseline and override_active:
+        try:
+            if baseline == 0:
+                await ha_client_ref.call_service(
+                    "fan", "turn_off",
+                    target={"entity_id": entity_id},
+                )
+            else:
+                await ha_client_ref.call_service(
+                    "fan", "set_percentage",
+                    target={"entity_id": entity_id},
+                    service_data={"percentage": baseline},
+                )
+        except Exception as exc:
+            return False, f"release_failed:{exc}"
+        hist["override_active"] = False
+        hist["last_change_at"] = now
+        hist["released_at"] = now
+        return True, f"release_to_baseline({baseline})"
+
+    # Ramp path: raise (or hold) toward effective_target.
+    if effective_target == current:
+        # No write needed but keep the override flag consistent.
+        if effective_target > baseline:
+            hist["override_active"] = True
+        return False, f"already_at({current})"
+
+    try:
+        await ha_client_ref.call_service(
+            "fan", "set_percentage",
+            target={"entity_id": entity_id},
+            service_data={"percentage": effective_target},
+        )
+    except Exception as exc:
+        return False, f"set_failed:{exc}"
+    hist["override_active"] = effective_target > baseline
+    hist["last_change_at"] = now
+    if not hist["override_active"]:
+        hist["released_at"] = now
+    return True, f"ramp_to({effective_target}, baseline={baseline})"
 
 
 # ============================================================================
@@ -2264,14 +2415,28 @@ async def execute_active_mode() -> None:
                     except Exception:  # noqa: S110
                         pass
 
+                # Fan control eligibility: allow_fan_control is a per-zone
+                # opt-in, and it is always denied for excluded zones.  Since
+                # excluded zones are already filtered out above (they are
+                # not in ``zones``), the exclude gate is a belt-and-braces
+                # check.
+                zone_allow_fan_control = bool(
+                    getattr(zone, "allow_fan_control", False)
+                    and not getattr(zone, "is_currently_excluded", False)
+                    and fan_entities
+                )
+
                 zone_data[str(zone.id)] = {
                     "name": zone.name,
+                    "floor": getattr(zone, "floor", None),
                     "temp_c": temp_val,
                     "hum": hum_val,
                     "lux": lux_val,
                     "occ": bool(stable_occ),
                     "raw_occ": bool(inferred_occ),
                     "fan_on": fan_on,
+                    "fan_entities": fan_entities,
+                    "allow_fan_control": zone_allow_fan_control,
                     "trend_now": trend_now,
                     "trend_next": trend_next,
                     "temp_min": temp_min_v,
@@ -2593,17 +2758,89 @@ async def execute_active_mode() -> None:
                 hi = _c_to_disp(zd.get("temp_max"), temp_unit)
                 band = f" [{lo:.0f}-{hi:.0f}]" if lo is not None and hi is not None else ""
                 flag = "" if _in_band(zd) else " OUT_OF_BAND"
-                return f"{zd['name']}: {tp} ({occ}){band}{flag}"
+                extras: list[str] = []
+                if zd.get("fan_on"):
+                    extras.append("fan_on")
+                if zd.get("allow_fan_control"):
+                    extras.append("fan_ctrl_ok")
+                extras_str = f" [{', '.join(extras)}]" if extras else ""
+                return f"{zd['name']}: {tp} ({occ}){band}{flag}{extras_str}"
+
+            # Extend focus formatter to also declare fan_ctrl_ok for zones
+            # where Active mode is allowed to drive the fan.
+            def _fmt_focus_v2(zd: dict[str, Any]) -> str:
+                base = _fmt_focus(zd)
+                if zd.get("allow_fan_control"):
+                    # Splice the fan_ctrl_ok tag into an existing [...]
+                    # extras group, or append a new one.
+                    if base.endswith("]"):
+                        return base[:-1] + ", fan_ctrl_ok]"
+                    return base + " [fan_ctrl_ok]"
+                return base
+
+            def _group_by_floor(
+                items: list[tuple[str, dict[str, Any]]],
+            ) -> list[tuple[str, list[dict[str, Any]]]]:
+                """Group zone tuples by floor.  Returns [(label, [zd, ...])]."""
+                buckets: dict[str, list[dict[str, Any]]] = {}
+                for _, zd in items:
+                    fl = zd.get("floor")
+                    key = f"Floor {fl}" if fl is not None else "Floor (unset)"
+                    buckets.setdefault(key, []).append(zd)
+
+                def _sort_key(k: str) -> tuple[int, int]:
+                    # Sort numerically when possible so "Floor 1" < "Floor 2"
+                    # but "Floor (unset)" sorts last.
+                    if k == "Floor (unset)":
+                        return (1, 0)
+                    try:
+                        return (0, int(k.replace("Floor ", "")))
+                    except ValueError:
+                        return (0, 999)
+
+                return [(k, buckets[k]) for k in sorted(buckets, key=_sort_key)]
+
+            def _render_group(
+                items: list[tuple[str, dict[str, Any]]],
+                fmt: Any,
+            ) -> str:
+                if not items:
+                    return ""
+                groups = _group_by_floor(items)
+                # If everything is on a single floor with a defined number,
+                # skip the floor sub-header to keep the prompt compact.
+                if (
+                    len(groups) == 1
+                    and groups[0][0] != "Floor (unset)"
+                ):
+                    return "\n".join(f"- {fmt(zd)}" for zd in groups[0][1])
+                lines: list[str] = []
+                for label, zds in groups:
+                    lines.append(f"  {label}:")
+                    for zd in zds:
+                        lines.append(f"    - {fmt(zd)}")
+                return "\n".join(lines)
 
             focus_text = (
-                "\n".join(f"- {_fmt_focus(zd)}" for _, zd in focus_zones)
+                _render_group(focus_zones, _fmt_focus_v2)
                 if focus_zones
                 else "- (none — no active schedule)"
             )
             constraint_text = (
-                "\n".join(f"- {_fmt_constraint(zd)}" for _, zd in constraint_zones)
+                _render_group(constraint_zones, _fmt_constraint)
                 if constraint_zones
                 else "- (none)"
+            )
+
+            # Occupied-floor hint for LLM rule 6.
+            occupied_floors: set[int] = set()
+            for zd in zone_data.values():
+                if zd["occ"] and zd.get("floor") is not None:
+                    occupied_floors.add(int(zd["floor"]))
+            occupied_floors_line = (
+                ", ".join(f"Floor {f}" for f in sorted(occupied_floors))
+                if occupied_floors
+                else "none"
             )
             sched_tgt_disp = _c_to_disp(schedule_target_c, temp_unit)
             schedule_line = (
@@ -2649,9 +2886,16 @@ async def execute_active_mode() -> None:
                 "(3) fan_on zones tolerate ~1.5°F above/below band; (4) if "
                 "HEAVY_HOT_DAY / HEAVY_COLD_DAY is flagged, precondition "
                 "toward target now; (5) if SURPLUS energy, favor comfort; "
-                "otherwise nudge conservatively.\n"
-                "Respond with two lines only:\n"
+                "otherwise nudge conservatively; (6) when only one floor is "
+                "occupied, bias the setpoint toward that floor's zones; (7) "
+                "for zones tagged fan_ctrl_ok you MAY drive the fan 0-100 "
+                "as extra comfort help — pick 100 when the zone is more than "
+                "1.5°F out of band, ~75 when 0.5-1.5°F off, and 0 to release. "
+                "System will never lower a fan below its baseline speed.\n"
+                "Respond with these lines only:\n"
                 f"RECOMMENDED_TEMP: <number in {unit_sym}>\n"
+                "FAN_ACTIONS: <zone_name>=<0-100>|<zone_name>=<0-100>  "
+                "(omit or leave empty if no fan changes)\n"
                 "REASON: <one sentence>"
             )
             user_prompt_parts = [
@@ -2660,6 +2904,7 @@ async def execute_active_mode() -> None:
                 f"Thermostat: {thermostat_line}",
                 f"Weather now: {weather_line}",
                 f"Forecast: {forecast_line}",
+                f"Occupied floors: {occupied_floors_line}",
                 f"Focus zones:\n{focus_text}",
                 f"Constraint zones:\n{constraint_text}",
                 (
@@ -2700,6 +2945,47 @@ async def execute_active_mode() -> None:
                 reason_match = re.search(r"REASON:\s*(.+)", content)
                 if reason_match:
                     reason = reason_match.group(1).strip()
+
+                # ── FAN_ACTIONS parsing + baseline-safe apply ───────────
+                fan_line_match = re.search(r"FAN_ACTIONS:\s*(.*)", content)
+                if fan_line_match:
+                    raw_line = fan_line_match.group(1).strip()
+                    # Build a name → zd lookup for zones that opted-in.
+                    fan_ok_zones: dict[str, dict[str, Any]] = {
+                        str(zd["name"]).strip().lower(): zd
+                        for zd in zone_data.values()
+                        if zd.get("allow_fan_control")
+                    }
+                    if raw_line and fan_ok_zones:
+                        pairs = [p.strip() for p in raw_line.split("|") if p.strip()]
+                        for pair in pairs:
+                            if "=" not in pair:
+                                continue
+                            name_part, pct_part = pair.split("=", 1)
+                            zone_key = name_part.strip().lower()
+                            try:
+                                pct_target = round(float(pct_part.strip()))
+                            except (TypeError, ValueError):
+                                continue
+                            matched_zd = fan_ok_zones.get(zone_key)
+                            if matched_zd is None:
+                                logger.debug(
+                                    "Active-mode: LLM asked to fan '%s' but "
+                                    "that zone is not fan_ctrl_ok — ignoring",
+                                    name_part,
+                                )
+                                continue
+                            for fan_eid in matched_zd.get("fan_entities") or []:
+                                changed, note = await _apply_fan_target(
+                                    ha_client, fan_eid, pct_target, True,
+                                )
+                                logger.info(
+                                    "Active-mode fan %s → %d%% [%s] (%s)",
+                                    fan_eid,
+                                    pct_target,
+                                    "changed" if changed else "no-op",
+                                    note,
+                                )
             except Exception as llm_err:
                 logger.error("Active-mode LLM call failed: %s", llm_err)
                 return

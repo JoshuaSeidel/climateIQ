@@ -85,6 +85,7 @@ export type ZoneBackend = {
   exclude_months: number[]
   ha_entities: string[]
   fan_entities?: string[]
+  allow_fan_control?: boolean
   is_currently_excluded: boolean
   created_at: string
   updated_at: string

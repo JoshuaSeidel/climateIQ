@@ -100,6 +100,13 @@ class Zone(Base):
     # signal, not occupancy signal.
     fan_entities: Mapped[list[str]] = mapped_column(JSONB, default=list)
 
+    # When True, Active mode is allowed to actively drive fan speeds in this
+    # zone as a cooling/heating helper.  Always disabled at runtime when the
+    # zone is excluded from metrics (basement/attic/etc.).  Fan control never
+    # lowers a fan below the speed it was at when the system took over — see
+    # ``_fan_baseline`` in ``backend/api/main.py``.
+    allow_fan_control: Mapped[bool] = mapped_column(Boolean(), default=False)
+
     sensors: Mapped[list[Sensor]] = relationship(
         back_populates="zone", cascade="all, delete-orphan"
     )
@@ -739,6 +746,15 @@ async def init_db() -> None:
             ))
         except Exception:
             _db_logger.warning("Could not add fan_entities column to zones")
+
+        # --- Migration: add allow_fan_control column to zones if missing ----
+        try:
+            await conn.execute(text(
+                "ALTER TABLE zones "
+                "ADD COLUMN IF NOT EXISTS allow_fan_control BOOLEAN DEFAULT FALSE"
+            ))
+        except Exception:
+            _db_logger.warning("Could not add allow_fan_control column to zones")
 
         # --- Migration: add zone priority column if missing ------------------
         try:
