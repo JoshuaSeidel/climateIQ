@@ -209,6 +209,12 @@ def _require_litellm() -> Any:
     try:
         import litellm
 
+        # Silently drop model-specific unsupported params (e.g. GPT-5 rejects
+        # temperature != 1; Anthropic rejects certain OpenAI-only params).
+        # Without this, a chat call with the "wrong" model raises
+        # UnsupportedParamsError before we get a chance to fall back.
+        litellm.drop_params = True
+
         return litellm
     except Exception as e:  # pragma: no cover
         raise RuntimeError("litellm is required. Install with: pip install litellm") from e

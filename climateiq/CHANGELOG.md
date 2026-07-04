@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.54] - 2026-07-04
+
+### Fixed
+- **GPT-5 (and other picky models) no longer crash chat with UnsupportedParamsError.** GPT-5 rejects `temperature != 1`; we were sending `temperature=0.7` from the default LLMProvider and LiteLLM raised before we could recover. Set `litellm.drop_params = True` at import time so LiteLLM silently drops any model-specific unsupported params (temperature, top_p, etc.) instead of erroring. Works for any picky model — GPT-5, o1, o3, Anthropic reasoning variants, etc.
+
 ## [1.0.53] - 2026-07-03
 
 ### Fixed
