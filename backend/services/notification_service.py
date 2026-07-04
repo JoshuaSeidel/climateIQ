@@ -8,6 +8,7 @@ comfort issues).
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -19,6 +20,7 @@ from backend.integrations.ha_client import HAClient, HAClientError
 logger = logging.getLogger(__name__)
 
 _WEBHOOK_TIMEOUT = 10.0  # seconds
+_DEFAULT_THROTTLE_MIN_INTERVAL_S = 30 * 60  # 30 minutes
 
 
 # ---------------------------------------------------------------------------
@@ -68,10 +70,19 @@ class NotificationService:
         ha_client: HAClient,
         *,
         history_limit: int = 100,
+        throttle_min_interval_s: float = _DEFAULT_THROTTLE_MIN_INTERVAL_S,
     ) -> None:
         self._ha = ha_client
         self._history: list[NotificationRecord] = []
         self._history_limit = history_limit
+        # Per-key (title, target) throttle: suppress duplicates and rate-cap
+        # bursts.  A send is emitted only when the message text differs from
+        # the last send AND at least ``throttle_min_interval_s`` seconds
+        # have elapsed since it.  Pass 0 to disable.  Callers can bypass
+        # per-call with ``bypass_throttle=True`` (used by domain helpers
+        # that already dedupe upstream, e.g. sensor-offline alerts).
+        self._throttle_min_interval_s = float(throttle_min_interval_s)
+        self._last_sent: dict[tuple[str, str], tuple[float, str]] = {}
 
     # ------------------------------------------------------------------
     # Public API — Home Assistant notifications
@@ -82,6 +93,8 @@ class NotificationService:
         title: str,
         message: str,
         target: str | None = None,
+        *,
+        bypass_throttle: bool = False,
     ) -> None:
         """Send a notification through Home Assistant's notify service.
 
@@ -92,7 +105,33 @@ class NotificationService:
                     default ``notify.notify`` service.  If a string like
                     ``"mobile_app_phone"``, calls
                     ``notify.mobile_app_phone``.
+            bypass_throttle: When True, skip the change-only / min-interval
+                    filter.  Use for one-shot events (e.g. anomaly alerts)
+                    that already have their own upstream dedup.
         """
+        # ── Throttle ──────────────────────────────────────────────────
+        # Suppress if the exact message was just sent, or if we're inside
+        # the min-interval window.  Applies to Active/Follow-me setpoint
+        # notifications where the tick fires every 5 min but the HVAC
+        # state rarely changes materially.
+        if not bypass_throttle and self._throttle_min_interval_s > 0:
+            key = (title, target or "")
+            last = self._last_sent.get(key)
+            if last is not None:
+                last_at, last_msg = last
+                if message == last_msg:
+                    logger.debug(
+                        "HA notification suppressed (unchanged): [%s] %s",
+                        title, message[:80],
+                    )
+                    return
+                if time.monotonic() - last_at < self._throttle_min_interval_s:
+                    logger.debug(
+                        "HA notification suppressed (min-interval %.0fs): [%s] %s",
+                        self._throttle_min_interval_s, title, message[:80],
+                    )
+                    return
+
         service_name = target if target else "notify"
         data: dict[str, Any] = {
             "title": title,
@@ -115,6 +154,9 @@ class NotificationService:
                 service_name,
             )
             record.success = True
+            # Record the successful send for future throttle decisions.
+            if not bypass_throttle and self._throttle_min_interval_s > 0:
+                self._last_sent[(title, target or "")] = (time.monotonic(), message)
         except HAClientError as exc:
             logger.error("Failed to send HA notification: %s", exc)
             record.success = False

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.60] - 2026-07-04
+
+### Changed
+- **HA notification throttle: 30-min floor + change-only.** Active-mode and Follow-me were firing an HA push every 5-minute tick whenever the setpoint crossed the 0.5°C dead-band, even when the new value was identical to what we'd just sent.  `NotificationService.send_ha_notification` now keeps a per-(title, target) memo of the last successfully-sent message and its timestamp; a new send is emitted only when **both** (a) the message text differs from the last one **and** (b) at least 30 minutes have elapsed since it.  Result: the "AI Mode → 72°F …" and "Follow-Me Mode → …" notifications fire on real state changes, capped at ~2/hour per key, instead of every tick.
+- Schedule and sensor-offline notifications are unaffected in practice — they already dedupe upstream and their titles vary per schedule / sensor, so they miss the throttle key.  Callers can pass `bypass_throttle=True` for one-shot events that shouldn't be filtered.
+
 ## [1.0.59] - 2026-07-04
 
 ### Added
