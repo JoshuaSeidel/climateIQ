@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.59] - 2026-07-04
+
+### Added
+- **Searchable HA fan-entity picker in the zone editor.** The Fan Entities card now hits `/settings/ha/entities?domain=fan` and shows a dropdown of your Home Assistant fans as you type — the same UX as the sensor form's HA Entity picker. Click to attach, or type/paste a raw entity_id and press Enter for anything not auto-discovered. Already-attached fans are filtered out of the dropdown so you can't add the same fan twice.
+
 ## [1.0.58] - 2026-07-04
 
 ### Added

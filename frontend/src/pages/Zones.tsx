@@ -113,6 +113,9 @@ export const Zones = () => {
   const [entitySearch, setEntitySearch] = useState('')
   const [entityPickerOpen, setEntityPickerOpen] = useState(false)
   const entityPickerRef = useRef<HTMLDivElement>(null)
+  const [fanEntitySearch, setFanEntitySearch] = useState('')
+  const [fanEntityPickerOpen, setFanEntityPickerOpen] = useState(false)
+  const fanEntityPickerRef = useRef<HTMLDivElement>(null)
   const [showDevicePicker, setShowDevicePicker] = useState(false)
   const [deviceSearch, setDeviceSearch] = useState('')
   const [debouncedDeviceSearch, setDebouncedDeviceSearch] = useState('')
@@ -136,6 +139,18 @@ export const Zones = () => {
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [entityPickerOpen])
+
+  // Close fan entity picker on outside click
+  useEffect(() => {
+    if (!fanEntityPickerOpen) return
+    const handler = (e: MouseEvent) => {
+      if (fanEntityPickerRef.current && !fanEntityPickerRef.current.contains(e.target as Node)) {
+        setFanEntityPickerOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [fanEntityPickerOpen])
   const [comfortPrefs, setComfortPrefs] = useState<ComfortPrefs>({
     temp_min: '20',
     temp_max: '24',
@@ -210,6 +225,14 @@ export const Zones = () => {
       return [...sensors, ...binary]
     },
     enabled: viewMode === 'detail' && showSensorForm,
+  })
+
+  // Fetch HA fan entities for the fan picker
+  const { data: haFanEntities } = useQuery<HAEntity[]>({
+    queryKey: ['ha-entities', 'fan'],
+    queryFn: () => api.get<HAEntity[]>('/settings/ha/entities', { domain: 'fan' }),
+    enabled: viewMode === 'detail',
+    staleTime: 60_000,
   })
 
   const { data: haDevices, isFetching: devicesFetching, isLoading: devicesLoading } = useQuery<HADevice[]>({
@@ -1456,35 +1479,111 @@ export const Zones = () => {
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Input
-                  placeholder="fan.living_room_ceiling, fan.desk_fan..."
-                  value={fanEntityDraft}
-                  onChange={(e) => setFanEntityDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
+              <div className="relative" ref={fanEntityPickerRef}>
+                <div className="flex items-center gap-2">
+                  <Input
+                    placeholder="Search HA fan entities or paste an entity_id..."
+                    value={fanEntityPickerOpen ? fanEntitySearch : fanEntityDraft}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setFanEntityDraft(v)
+                      setFanEntitySearch(v)
+                      if (!fanEntityPickerOpen) setFanEntityPickerOpen(true)
+                    }}
+                    onFocus={() => {
+                      setFanEntitySearch(fanEntityDraft)
+                      setFanEntityPickerOpen(true)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        const v = fanEntityDraft.trim()
+                        if (v && !fanEntities.includes(v)) {
+                          setFanEntities([...fanEntities, v])
+                        }
+                        setFanEntityDraft('')
+                        setFanEntitySearch('')
+                        setFanEntityPickerOpen(false)
+                      }
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
                       const v = fanEntityDraft.trim()
                       if (v && !fanEntities.includes(v)) {
                         setFanEntities([...fanEntities, v])
                       }
                       setFanEntityDraft('')
-                    }
-                  }}
-                />
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    const v = fanEntityDraft.trim()
-                    if (v && !fanEntities.includes(v)) {
-                      setFanEntities([...fanEntities, v])
-                    }
-                    setFanEntityDraft('')
-                  }}
-                >
-                  <Plus className="mr-1 h-3 w-3" /> Add
-                </Button>
+                      setFanEntitySearch('')
+                      setFanEntityPickerOpen(false)
+                    }}
+                  >
+                    <Plus className="mr-1 h-3 w-3" /> Add
+                  </Button>
+                </div>
+
+                {fanEntityPickerOpen && (
+                  <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-border bg-background shadow-lg dark:border-[rgba(148,163,184,0.2)] dark:bg-[rgba(10,12,16,0.95)] dark:backdrop-blur-xl">
+                    {(() => {
+                      const q = fanEntitySearch.trim().toLowerCase()
+                      const available = (haFanEntities ?? []).filter(
+                        (e) => !fanEntities.includes(e.entity_id),
+                      )
+                      const matched = q
+                        ? available.filter(
+                            (e) =>
+                              e.entity_id.toLowerCase().includes(q) ||
+                              e.name.toLowerCase().includes(q),
+                          )
+                        : available
+                      if ((haFanEntities ?? []).length === 0) {
+                        return (
+                          <div className="px-3 py-2 text-sm text-muted-foreground">
+                            No <code>fan.*</code> entities found in Home Assistant.
+                          </div>
+                        )
+                      }
+                      if (matched.length === 0) {
+                        return (
+                          <div className="px-3 py-2 text-sm text-muted-foreground">
+                            {q
+                              ? `No fans matching "${fanEntitySearch}"`
+                              : 'All discovered fans are already attached.'}
+                          </div>
+                        )
+                      }
+                      return matched.map((entity) => (
+                        <button
+                          key={entity.entity_id}
+                          type="button"
+                          className="block w-full px-3 py-2 text-left text-sm hover:bg-muted"
+                          onClick={() => {
+                            if (!fanEntities.includes(entity.entity_id)) {
+                              setFanEntities([...fanEntities, entity.entity_id])
+                            }
+                            setFanEntityDraft('')
+                            setFanEntitySearch('')
+                            setFanEntityPickerOpen(false)
+                          }}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-medium">{entity.name}</div>
+                              <div className="truncate text-xs text-muted-foreground">
+                                {entity.entity_id}
+                              </div>
+                            </div>
+                            <span className="ml-2 shrink-0 text-xs text-muted-foreground">
+                              {entity.state}
+                            </span>
+                          </div>
+                        </button>
+                      ))
+                    })()}
+                  </div>
+                )}
               </div>
 
               {fanEntities.length === 0 ? (
