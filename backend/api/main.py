@@ -1770,7 +1770,11 @@ async def maintain_climate_offset() -> None:
 
                 # Safety vet (unconditional — catches physically impossible LLM outputs)
                 max_offset_f = await get_max_offset_setting(db)
-                vetted = SafetyProtocol.vet(decision, desired_temp_c, max_offset_f, hvac_mode)
+                vetted = SafetyProtocol.vet(
+                    decision, desired_temp_c, max_offset_f, hvac_mode,
+                    zone_avg_c=avg_zone_c,
+                    thermostat_c=thermostat_c,
+                )
 
                 # Seasonal lock filter — if the user has locked the season to a
                 # specific direction (e.g. summer→cool) and the outdoor safety

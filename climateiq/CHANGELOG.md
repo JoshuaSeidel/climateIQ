@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.63] - 2026-09-01
+
+### Fixed
+- **Heat would not turn on when rooms were below target.** With the schedule wanting 69°F and zones at 66°F, the offset formula correctly computed a 72°F setpoint — then the LLM advisor overrode it to 68°F. The thermostat's own sensor read 69°F, so 68°F was already satisfied and `hvac_action` sat at `idle` while the rooms stayed cold. `SafetyProtocol.vet()` only bounded the advisor's setpoint to the schedule target ±`max_temp_offset_f`, so 68°F passed as "safe" despite being physically incapable of running the HVAC. Added a directional-effectiveness rule: when the zones are more than 1°F off target, an `adjust` setpoint is forced past the thermostat's current reading by one whole °F (and never onto the wrong side of the schedule target) — raised in heat mode, lowered in cool mode. The existing absolute (55-90°F) and max-offset caps are re-applied afterward, so the new floor can never breach them. `vet()` now takes `zone_avg_c` and `thermostat_c`; when either is unavailable the rule is skipped and prior behaviour stands.
+
 ## [1.0.62] - 2026-07-04
 
 ### Fixed

@@ -42,6 +42,8 @@ _LLM_MAX_TOKENS = 250
 _LLM_TEMPERATURE = 0.1        # low temp → deterministic, factual decisions
 _SAFETY_ABS_MIN_C = 12.78     # 55°F — physical safety floor
 _SAFETY_ABS_MAX_C = 32.22     # 90°F — physical safety ceiling
+_ONE_DEGREE_F_C = 5.0 / 9.0   # 1°F — smallest step a thermostat acts on
+_DIRECTION_DEADBAND_C = 0.6   # ~1°F — matches _auto_select_hvac_mode's dead-band
 
 
 # ---------------------------------------------------------------------------
@@ -690,8 +692,16 @@ class SafetyProtocol:
         desired_temp_c: float,
         max_offset_f: float,
         hvac_mode: str,
+        *,
+        zone_avg_c: float | None = None,
+        thermostat_c: float | None = None,
     ) -> AdvisorDecision:
-        """Enforce hard physical limits on any advisor decision."""
+        """Enforce hard physical limits on any advisor decision.
+
+        ``zone_avg_c`` and ``thermostat_c`` enable the directional-effectiveness
+        rule (Rule 3): a setpoint the thermostat has already satisfied cannot
+        move the zones, no matter how reasonable the advisor's prose sounds.
+        """
         if decision.action not in ("adjust",):
             # hold / wait: no setpoint change, nothing to vet
             return decision
@@ -699,14 +709,15 @@ class SafetyProtocol:
         sp = decision.setpoint_c
         orig_sp = sp
         changed = False
+        violation = ""
 
         # Rule 1: absolute physical bounds (55-90°F)
         if sp < _SAFETY_ABS_MIN_C:
             sp = _SAFETY_ABS_MIN_C
-            changed = True
+            changed, violation = True, "absolute bounds"
         elif sp > _SAFETY_ABS_MAX_C:
             sp = _SAFETY_ABS_MAX_C
-            changed = True
+            changed, violation = True, "absolute bounds"
 
         # Rule 2: max offset from schedule target
         max_offset_c = max_offset_f * 5.0 / 9.0
@@ -714,12 +725,44 @@ class SafetyProtocol:
         high = desired_temp_c + max_offset_c
         if sp < low:
             sp = low
-            changed = True
+            changed, violation = True, "max-offset rule"
         elif sp > high:
             sp = high
-            changed = True
+            changed, violation = True, "max-offset rule"
 
-        # Rule 3: wait cap
+        # Rule 3: directional effectiveness.
+        #
+        # The thermostat satisfies its setpoint against its OWN sensor.  In heat
+        # mode it only fires while reading < setpoint; in cool mode only while
+        # reading > setpoint.  An advisor setpoint at or below the thermostat's
+        # reading (heat) leaves the HVAC idle while the zones sit below target --
+        # the system silently does nothing.  When the zones are meaningfully off
+        # target, force the setpoint to at least the value that makes the HVAC
+        # actually run: past the thermostat reading by one whole °F (the smallest
+        # step a thermostat acts on), and never on the wrong side of the schedule
+        # target.
+        if zone_avg_c is not None:
+            zone_error_c = desired_temp_c - zone_avg_c
+            if "heat" in hvac_mode and zone_error_c > _DIRECTION_DEADBAND_C:
+                floor_c = desired_temp_c
+                if thermostat_c is not None:
+                    floor_c = max(floor_c, thermostat_c + _ONE_DEGREE_F_C)
+                if sp < floor_c:
+                    sp = floor_c
+                    changed, violation = True, "directional-effectiveness rule (heat)"
+            elif "cool" in hvac_mode and zone_error_c < -_DIRECTION_DEADBAND_C:
+                ceil_c = desired_temp_c
+                if thermostat_c is not None:
+                    ceil_c = min(ceil_c, thermostat_c - _ONE_DEGREE_F_C)
+                if sp > ceil_c:
+                    sp = ceil_c
+                    changed, violation = True, "directional-effectiveness rule (cool)"
+
+        # Re-apply the hard caps -- Rule 3 may have pushed past them.
+        sp = min(max(sp, low), high)
+        sp = min(max(sp, _SAFETY_ABS_MIN_C), _SAFETY_ABS_MAX_C)
+
+        # Rule 4: wait cap
         if decision.action == "wait" and decision.wait_until:
             cap = datetime.now(UTC) + timedelta(minutes=_MAX_WAIT_MINUTES)
             if decision.wait_until > cap:
@@ -741,7 +784,7 @@ class SafetyProtocol:
                 "— violated %s",
                 orig_sp, _c_to_f(orig_sp),
                 sp, _c_to_f(sp),
-                "absolute bounds" if sp in (_SAFETY_ABS_MIN_C, _SAFETY_ABS_MAX_C) else "max-offset rule",
+                violation or "safety bounds",
             )
             decision = AdvisorDecision(
                 action=decision.action,
