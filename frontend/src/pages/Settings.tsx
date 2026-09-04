@@ -32,6 +32,9 @@ import {
   BookOpen,
   Snowflake,
   Flame,
+  Clock,
+  Plus,
+  Trash2,
 } from 'lucide-react'
 
 type SettingsTab = 'general' | 'homeassistant' | 'llm' | 'modes' | 'logic' | 'backup' | 'about'
@@ -1185,7 +1188,351 @@ function ModesTab({ settings }: { settings?: SystemSettings }) {
       </Card>
 
       <SeasonalLockCard />
+      <HvacTimeWindowsCard />
     </div>
+  )
+}
+
+// ============================================================================
+// HVAC time-of-day direction windows (shared by the standalone card and by
+// the per-season overrides inside Seasonal Lock)
+// ============================================================================
+interface TimeWindowT {
+  name: string
+  start_time: string
+  end_time: string
+  days_of_week: number[]
+  allow_heat: boolean
+  allow_cool: boolean
+  escape_below_c: number | null
+  escape_above_c: number | null
+}
+
+interface HvacWindowsConfigT {
+  enabled: boolean
+  windows: TimeWindowT[]
+}
+
+interface HvacWindowsStateT {
+  enabled: boolean
+  allow_heat: boolean
+  allow_cool: boolean
+  active_window: string | null
+  source: string
+  escape_active: boolean
+  zone_avg_c: number | null
+  local_time: string
+  reason: string
+}
+
+interface HvacWindowsResponse {
+  config: HvacWindowsConfigT
+  state: HvacWindowsStateT
+}
+
+const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
+const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+const newWindow = (): TimeWindowT => ({
+  name: '',
+  start_time: '21:00',
+  end_time: '07:00',
+  days_of_week: [],
+  allow_heat: true,
+  allow_cool: false,
+  escape_below_c: null,
+  escape_above_c: null,
+})
+
+/** Editor for a list of time windows.  Used standalone and per-season. */
+function WindowListEditor({
+  windows,
+  onChange,
+  isF,
+  unitLabel,
+}: {
+  windows: TimeWindowT[]
+  onChange: (next: TimeWindowT[]) => void
+  isF: boolean
+  unitLabel: string
+}) {
+  const update = (idx: number, patch: Partial<TimeWindowT>) =>
+    onChange(windows.map((w, i) => (i === idx ? { ...w, ...patch } : w)))
+
+  const toggleDay = (idx: number, day: number) => {
+    const cur = windows[idx].days_of_week
+    const next = cur.includes(day) ? cur.filter((d) => d !== day) : [...cur, day].sort()
+    update(idx, { days_of_week: next })
+  }
+
+  return (
+    <div className="space-y-3">
+      {windows.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          No windows yet. Any time not covered by a window allows both heat and cool.
+        </p>
+      )}
+
+      {windows.map((w, idx) => (
+        <div
+          key={idx}
+          className="rounded-lg border border-border/60 p-3 space-y-3 dark:border-[rgba(148,163,184,0.15)]"
+        >
+          <div className="flex items-center gap-2">
+            <Input
+              value={w.name}
+              onChange={(e) => update(idx, { name: e.target.value })}
+              placeholder="Window name (e.g. Overnight)"
+              className="h-8 flex-1 text-sm font-medium"
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => onChange(windows.filter((_, i) => i !== idx))}
+              className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+              aria-label="Remove window"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {/* Time range */}
+          <div className="flex items-end gap-2 text-xs">
+            <div className="space-y-1">
+              <label className="text-muted-foreground">From</label>
+              <Input
+                type="time"
+                value={w.start_time}
+                onChange={(e) => update(idx, { start_time: e.target.value })}
+                className="h-8 w-28 text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-muted-foreground">To</label>
+              <Input
+                type="time"
+                value={w.end_time}
+                onChange={(e) => update(idx, { end_time: e.target.value })}
+                className="h-8 w-28 text-xs"
+              />
+            </div>
+            {w.start_time > w.end_time && (
+              <span className="pb-2 text-[11px] text-muted-foreground">
+                spans midnight
+              </span>
+            )}
+          </div>
+
+          {/* Days */}
+          <div className="space-y-1 text-xs">
+            <label className="text-muted-foreground">
+              Days {w.days_of_week.length === 0 && '(every day)'}
+            </label>
+            <div className="flex gap-1">
+              {DAY_LABELS.map((d, i) => (
+                <Button
+                  key={i}
+                  size="sm"
+                  variant={w.days_of_week.includes(i) ? 'default' : 'outline'}
+                  onClick={() => toggleDay(idx, i)}
+                  className="h-7 w-7 p-0 text-xs"
+                  title={DAY_NAMES[i]}
+                >
+                  {d}
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          {/* Allowed directions */}
+          <div className="space-y-1 text-xs">
+            <label className="text-muted-foreground">Allowed during this window</label>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant={w.allow_heat ? 'default' : 'outline'}
+                onClick={() => update(idx, { allow_heat: !w.allow_heat })}
+                className="h-7 px-2 text-xs"
+              >
+                <Flame className="mr-1 h-3 w-3" />
+                Heat {w.allow_heat ? 'on' : 'off'}
+              </Button>
+              <Button
+                size="sm"
+                variant={w.allow_cool ? 'default' : 'outline'}
+                onClick={() => update(idx, { allow_cool: !w.allow_cool })}
+                className="h-7 px-2 text-xs"
+              >
+                <Snowflake className="mr-1 h-3 w-3" />
+                Cool {w.allow_cool ? 'on' : 'off'}
+              </Button>
+            </div>
+            {!w.allow_heat && !w.allow_cool && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                Nothing will run in this window unless an escape valve trips.
+              </p>
+            )}
+          </div>
+
+          {/* Escape valves — only meaningful for a blocked direction */}
+          {!w.allow_heat && (
+            <div className="space-y-1 text-xs">
+              <label className="text-muted-foreground">
+                Allow heat anyway if zones drop to or below (°{unitLabel}) — optional
+              </label>
+              <Input
+                type="number"
+                value={cToDisplay(w.escape_below_c, isF)}
+                onChange={(e) => update(idx, { escape_below_c: displayToC(e.target.value, isF) })}
+                placeholder="leave blank for a hard block"
+                className="h-8 max-w-[200px] text-xs"
+              />
+            </div>
+          )}
+          {!w.allow_cool && (
+            <div className="space-y-1 text-xs">
+              <label className="text-muted-foreground">
+                Allow cool anyway if zones rise to or above (°{unitLabel}) — optional
+              </label>
+              <Input
+                type="number"
+                value={cToDisplay(w.escape_above_c, isF)}
+                onChange={(e) => update(idx, { escape_above_c: displayToC(e.target.value, isF) })}
+                placeholder="leave blank for a hard block"
+                className="h-8 max-w-[200px] text-xs"
+              />
+            </div>
+          )}
+        </div>
+      ))}
+
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => onChange([...windows, newWindow()])}
+        className="h-8 text-xs"
+      >
+        <Plus className="mr-1 h-3 w-3" /> Add window
+      </Button>
+    </div>
+  )
+}
+
+function HvacTimeWindowsCard() {
+  const queryClient = useQueryClient()
+  const tempUnit = useSettingsStore((s) => s.temperatureUnit)
+  const isF = tempUnit === 'fahrenheit'
+  const unitLabel = isF ? 'F' : 'C'
+
+  const { data, isLoading } = useQuery<HvacWindowsResponse>({
+    queryKey: ['hvac-time-windows'],
+    queryFn: () => api.get<HvacWindowsResponse>('/settings/hvac-time-windows'),
+  })
+
+  const [draft, setDraft] = useState<HvacWindowsConfigT | null>(null)
+  const [draftKey, setDraftKey] = useState<string>('')
+  if (data && draftKey !== JSON.stringify(data.config)) {
+    setDraft(structuredClone(data.config))
+    setDraftKey(JSON.stringify(data.config))
+  }
+
+  const save = useMutation({
+    mutationFn: (cfg: HvacWindowsConfigT) =>
+      api.put<HvacWindowsResponse>('/settings/hvac-time-windows', cfg),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['hvac-time-windows'] })
+    },
+  })
+
+  const state = data?.state
+  const cfg = draft
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Clock className="h-5 w-5 text-primary" />
+          <CardTitle>Heat / Cool Time Windows</CardTitle>
+        </div>
+        <CardDescription>
+          Decide which direction the HVAC may run at each time of day — e.g. heat
+          available overnight but never during the afternoon. Works with the seasonal
+          lock off. Any time not covered by a window allows both directions, and each
+          window can carry a temperature escape valve so a block never lets the house
+          run away.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading || !cfg ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+          </div>
+        ) : (
+          <>
+            {/* Right-now status */}
+            {state && (
+              <div className="rounded-lg border border-border/40 bg-muted/30 p-3 text-sm dark:bg-[rgba(2,6,23,0.35)] dark:border-[rgba(148,163,184,0.15)]">
+                <div className="font-medium">
+                  Right now: {state.allow_heat ? 'heat' : null}
+                  {state.allow_heat && state.allow_cool ? ' + ' : null}
+                  {state.allow_cool ? 'cool' : null}
+                  {!state.allow_heat && !state.allow_cool ? 'no HVAC' : ' allowed'}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {state.active_window
+                    ? `Window "${state.active_window}" (${state.source})`
+                    : 'No window covers this time'}
+                  {state.local_time ? ` — local time ${state.local_time}` : null}
+                </div>
+                {state.escape_active && (
+                  <div className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                    Escape valve active
+                  </div>
+                )}
+                {state.reason && (
+                  <div className="mt-1 text-xs text-muted-foreground italic">{state.reason}</div>
+                )}
+              </div>
+            )}
+
+            <label className="flex items-center justify-between rounded-lg border border-border/60 p-3 dark:border-[rgba(148,163,184,0.15)]">
+              <div>
+                <div className="text-sm font-medium">Enable time windows</div>
+                <p className="text-xs text-muted-foreground">
+                  A season with its own windows (in Seasonal Lock above) overrides these
+                  while that season is active.
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={cfg.enabled}
+                onChange={(e) => setDraft({ ...cfg, enabled: e.target.checked })}
+                className="h-4 w-4"
+              />
+            </label>
+
+            <WindowListEditor
+              windows={cfg.windows}
+              onChange={(windows) => setDraft({ ...cfg, windows })}
+              isF={isF}
+              unitLabel={unitLabel}
+            />
+
+            <div className="flex items-center gap-2">
+              <Button onClick={() => save.mutate(cfg)} disabled={save.isPending}>
+                {save.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Save
+              </Button>
+              {save.isSuccess && (
+                <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                  <Check className="h-3 w-3" /> Saved
+                </span>
+              )}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
@@ -1203,6 +1550,7 @@ interface SeasonCfg {
   preferred_mode: SeasonModePref
   override_outdoor_below_c: number | null
   override_outdoor_above_c: number | null
+  windows: TimeWindowT[]
 }
 
 interface SeasonalLockConfigT {
@@ -1445,6 +1793,26 @@ function SeasonalLockCard() {
                       />
                     </div>
                   )}
+
+                  {/* Per-season time windows — override the standalone list
+                      while this season is active. */}
+                  <div className="space-y-2 border-t border-border/40 pt-3 dark:border-[rgba(148,163,184,0.12)]">
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <Clock className="h-3 w-3" />
+                      Time windows for {s.name || 'this season'} (optional)
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      {(s.windows?.length ?? 0) > 0
+                        ? 'These replace the standalone Heat / Cool Time Windows while this season is active.'
+                        : 'Leave empty to use the standalone Heat / Cool Time Windows below.'}
+                    </p>
+                    <WindowListEditor
+                      windows={s.windows ?? []}
+                      onChange={(windows) => updateSeason(idx, { windows })}
+                      isF={isF}
+                      unitLabel={unitLabel}
+                    />
+                  </div>
                 </div>
               ))}
             </div>

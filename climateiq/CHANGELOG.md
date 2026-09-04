@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.64] - 2026-09-01
+
+### Added
+- **Heat / Cool time windows — control which direction may run at each time of day.** Independent of the seasonal lock, so it works with the lock switched off. The motivating case: it is still technically summer, but the nights turn cold — heat should be available overnight to hold the schedule target and never during the day.
+  - New `backend/core/mode_windows.py` resolves the permitted directions for the current moment. Each window carries a time range (spanning midnight is supported), an optional day-of-week filter, `allow_heat` / `allow_cool` flags, and optional temperature escape valves (`escape_below_c` / `escape_above_c`) so a block can never let the house run away.
+  - **Two layers.** Per-season windows (a new `windows` list on each seasonal-lock season) override the standalone list while that season is active, so the day/night rules can change automatically as the year turns. The standalone list is the base layer and is used whenever no season override applies.
+  - **Restrictions, never grants.** Any time not covered by a window allows both directions, so an incomplete window list can never leave the house with no HVAC. Every failure path fails open.
+  - **Enforcement.** `_switch_hvac_mode_if_needed()` is the single choke point for thermostat mode writes and now refuses to switch into a blocked direction, leaving the thermostat in whatever mode it is already in. When the thermostat is *already* sitting in a now-blocked mode, the setpoint is instead parked one whole °F on the satisfied side of the thermostat's own reading (bounded by the schedule target) so the HVAC idles without a forced mode change. Applied across all six setpoint write paths: preconditioning, scheduled fire, immediate apply, climate maintenance, Follow-me, and Active mode.
+  - New `GET`/`PUT /settings/hvac-time-windows` endpoints returning the config plus the live computed state, and a "Heat / Cool Time Windows" card in Settings → Modes with a shared window editor reused for the per-season overrides.
+
 ## [1.0.63] - 2026-09-01
 
 ### Fixed

@@ -710,6 +710,9 @@ async def _switch_hvac_mode_if_needed(
     *,
     override_cooldown: bool = False,
     cooldown_s: int | None = None,
+    db: Any = None,
+    zone_avg_c: float | None = None,
+    zone_ids: list[Any] | None = None,
 ) -> None:
     """Switch the thermostat to target_mode only when it is not already in that mode.
 
@@ -722,6 +725,11 @@ async def _switch_hvac_mode_if_needed(
 
     cooldown_s lets callers pass the user-configured cooldown in seconds.
     Defaults to _MODE_SWITCH_COOLDOWN_S when not provided.
+
+    This is the single choke point for every thermostat mode write, so the
+    time-of-day direction windows are enforced here: when ``db`` is supplied
+    and the current window forbids ``target_mode``, the switch is refused and
+    the thermostat is left in whatever mode it is already in.
     """
     effective_cooldown_s = cooldown_s if cooldown_s is not None else _MODE_SWITCH_COOLDOWN_S
     try:
@@ -729,6 +737,21 @@ async def _switch_hvac_mode_if_needed(
         current = (state.state or "").lower() if state else ""
         if current == target_mode:
             return
+
+        # Time-of-day direction windows — never switch INTO a blocked direction.
+        if db is not None:
+            from backend.core.mode_windows import is_mode_allowed
+
+            allowed, window_state = await is_mode_allowed(
+                db, ha_client, target_mode,
+                zone_avg_c=zone_avg_c, zone_ids=zone_ids,
+            )
+            if not allowed:
+                logger.info(
+                    "%s: mode switch %s → %s blocked by time window — %s",
+                    context, current or "unknown", target_mode, window_state.reason,
+                )
+                return
 
         # Cooldown: block rapid reversals (e.g. heat → cool → heat within minutes).
         # Bypassed when the current mode is actively working against the target.
@@ -1109,6 +1132,16 @@ async def execute_schedules() -> None:
                             except Exception as _comp_err:
                                 logger.debug("Preconditioning offset compensation (non-critical): %s", _comp_err)
 
+                            from backend.core.mode_windows import (
+                                clamp_setpoint_for_blocked_direction,
+                            )
+
+                            precond_temp_c = await clamp_setpoint_for_blocked_direction(
+                                db, ha_client, climate_entity,
+                                precond_temp_c, schedule.target_temp_c,
+                                zone_ids=schedule.zone_ids or None,
+                                context=f"Preconditioning (schedule '{schedule.name}')",
+                            )
                             target_temp_pre = precond_temp_c
                             if temp_unit == "F":
                                 target_temp_pre = round(precond_temp_c * 9 / 5 + 32, 1)
@@ -1149,6 +1182,8 @@ async def execute_schedules() -> None:
                         f"Schedule '{schedule.name}'",
                         override_cooldown=_mode_urgent,
                         cooldown_s=_cooldown_s,
+                        db=db,
+                        zone_ids=schedule.zone_ids or None,
                     )
 
                 # Apply offset compensation before converting units
@@ -1168,6 +1203,15 @@ async def execute_schedules() -> None:
                     logger.debug("Offset compensation failed (non-critical): %s", comp_err)
 
                 # Convert temperature to HA units
+                from backend.core.mode_windows import clamp_setpoint_for_blocked_direction
+
+                adjusted_temp_c = await clamp_setpoint_for_blocked_direction(
+                    db, ha_client, climate_entity,
+                    adjusted_temp_c, schedule.target_temp_c,
+                    hvac_mode=sched_hvac_mode,
+                    zone_ids=schedule.zone_ids or None,
+                    context=f"Schedule '{schedule.name}'",
+                )
                 target_temp = adjusted_temp_c
                 if temp_unit == "F":
                     target_temp = round(adjusted_temp_c * 9 / 5 + 32, 1)
@@ -1465,6 +1509,8 @@ async def apply_schedule_now(schedule: _Schedule) -> None:
                     f"Schedule '{getattr(schedule, 'name', '?')}' (immediate apply)",
                     override_cooldown=_mode_urgent,
                     cooldown_s=_cooldown_s,
+                    db=db,
+                    zone_ids=getattr(schedule, "zone_ids", None) or None,
                 )
 
             # --- Offset compensation ---
@@ -1487,6 +1533,15 @@ async def apply_schedule_now(schedule: _Schedule) -> None:
             except Exception as comp_err:
                 logger.debug("apply_schedule_now offset compensation (non-critical): %s", comp_err)
 
+            from backend.core.mode_windows import clamp_setpoint_for_blocked_direction
+
+            adjusted_temp_c = await clamp_setpoint_for_blocked_direction(
+                db, ha_client, climate_entity,
+                adjusted_temp_c, schedule.target_temp_c,
+                hvac_mode=sched_hvac_mode,
+                zone_ids=getattr(schedule, "zone_ids", None) or None,
+                context=f"Schedule '{getattr(schedule, 'name', '?')}' (immediate apply)",
+            )
             target_temp = adjusted_temp_c
             if temp_unit == "F":
                 target_temp = round(adjusted_temp_c * 9 / 5 + 32, 1)
@@ -1681,6 +1736,8 @@ async def maintain_climate_offset() -> None:
                     f"Climate maintenance (schedule '{active_schedule.name}')",
                     override_cooldown=_mode_urgent,
                     cooldown_s=_cooldown_s,
+                    db=db,
+                    zone_ids=zone_ids,
                 )
 
             # ── Apply offset compensation (dead-band + formula) ─────────
@@ -1818,6 +1875,9 @@ async def maintain_climate_offset() -> None:
                             ha_client, climate_entity, vetted.hvac_mode,
                             f"Climate maintenance (advisor, schedule '{active_schedule.name}')",
                             cooldown_s=_cooldown_s,
+                            db=db,
+                            zone_avg_c=avg_zone_c,
+                            zone_ids=zone_ids,
                         )
                     else:
                         logger.debug(
@@ -1872,6 +1932,17 @@ async def maintain_climate_offset() -> None:
                 )
 
             # ── Convert and send ────────────────────────────────────────
+            from backend.core.mode_windows import clamp_setpoint_for_blocked_direction
+
+            final_adjusted_c = await clamp_setpoint_for_blocked_direction(
+                db, ha_client, climate_entity,
+                final_adjusted_c, desired_temp_c,
+                hvac_mode=hvac_mode or sched_hvac_mode,
+                thermostat_c=thermostat_c,
+                zone_avg_c=avg_zone_c,
+                zone_ids=zone_ids,
+                context=f"Climate maintenance (schedule '{active_schedule.name}')",
+            )
             target_for_ha = final_adjusted_c
             if temp_unit == "F":
                 target_for_ha = round(final_adjusted_c * 9 / 5 + 32, 1)
@@ -2104,6 +2175,13 @@ async def execute_follow_me_mode() -> None:
                 # Proceed anyway — we'll set the temperature
 
             # ── Convert and apply ───────────────────────────────────────
+            from backend.core.mode_windows import clamp_setpoint_for_blocked_direction
+
+            adjusted_temp_c = await clamp_setpoint_for_blocked_direction(
+                db, ha_client, climate_entity,
+                adjusted_temp_c, target_temp_c,
+                context="Follow-me",
+            )
             target_for_ha = adjusted_temp_c
             if temp_unit == "F":
                 target_for_ha = round(adjusted_temp_c * 9 / 5 + 32, 1)
@@ -3156,6 +3234,14 @@ async def execute_active_mode() -> None:
                 )
 
             # ── Apply ───────────────────────────────────────────────────
+            from backend.core.mode_windows import clamp_setpoint_for_blocked_direction
+
+            recommended_temp_c = await clamp_setpoint_for_blocked_direction(
+                db, ha_client, climate_entity,
+                recommended_temp_c,
+                schedule_target_c if schedule_target_c is not None else recommended_temp_c,
+                context="Active-mode",
+            )
             target_for_ha = recommended_temp_c
             if temp_unit == "F":
                 target_for_ha = round(recommended_temp_c * 9 / 5 + 32, 1)

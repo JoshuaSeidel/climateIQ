@@ -19,6 +19,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from backend.core.mode_windows import TimeWindow
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +40,10 @@ class Season(BaseModel):
     override_outdoor_below_c: float | None = None
     # Heat season override: allow cool when outdoor temp ≥ this (°C).
     override_outdoor_above_c: float | None = None
+    # Optional time-of-day windows that override the standalone
+    # ``hvac_time_windows`` config while this season is active.  Empty list =
+    # fall back to the standalone windows.  See backend/core/mode_windows.py.
+    windows: list[TimeWindow] = Field(default_factory=list)
 
     @field_validator("preferred_mode", mode="before")
     @classmethod

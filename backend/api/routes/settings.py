@@ -104,6 +104,13 @@ _KV_DEFAULTS: dict[str, Any] = {
             },
         ],
     },
+    # Time-of-day HVAC direction windows — stored as a structured JSON object.
+    # See backend.core.mode_windows for the schema.  Use the dedicated
+    # /settings/hvac-time-windows endpoints to read/update.
+    "hvac_time_windows": {
+        "enabled": False,
+        "windows": [],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -416,6 +423,48 @@ async def update_seasonal_lock(
     await _upsert_kv(db, "seasonal_lock", cfg.model_dump())
     await db.commit()
     state = await compute_lock_state(db, _ha_client)
+    return {"config": cfg.model_dump(), "state": state.model_dump()}
+
+
+# ---------------------------------------------------------------------------
+# Time-of-day HVAC direction windows
+# ---------------------------------------------------------------------------
+@router.get("/hvac-time-windows")
+async def get_hvac_time_windows(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Return the time-window config + which directions are allowed right now."""
+    from backend.api.dependencies import _ha_client
+    from backend.core.mode_windows import compute_window_state, load_config
+
+    cfg = await load_config(db)
+    state = await compute_window_state(db, _ha_client)
+    return {"config": cfg.model_dump(), "state": state.model_dump()}
+
+
+@router.put("/hvac-time-windows")
+async def update_hvac_time_windows(
+    payload: dict[str, Any],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Replace the time-window config.  Validates against the schema."""
+    from backend.api.dependencies import _ha_client
+    from backend.core.mode_windows import (
+        ModeWindowConfig,
+        compute_window_state,
+    )
+
+    try:
+        cfg = ModeWindowConfig.model_validate(payload)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid hvac_time_windows payload: {exc}",
+        ) from exc
+
+    await _upsert_kv(db, "hvac_time_windows", cfg.model_dump())
+    await db.commit()
+    state = await compute_window_state(db, _ha_client)
     return {"config": cfg.model_dump(), "state": state.model_dump()}
 
 
