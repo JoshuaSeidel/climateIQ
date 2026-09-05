@@ -1367,6 +1367,12 @@ function WindowListEditor({
                 Cool {w.allow_cool ? 'on' : 'off'}
               </Button>
             </div>
+            {w.allow_heat && w.allow_cool && (
+              <p className="text-[11px] text-muted-foreground">
+                Both directions on the table — the system picks whichever the zones
+                need, ignoring any seasonal lock for this window.
+              </p>
+            )}
             {!w.allow_heat && !w.allow_cool && (
               <p className="text-[11px] text-amber-600 dark:text-amber-400">
                 Nothing will run in this window unless an escape valve trips.
@@ -1459,7 +1465,9 @@ function HvacTimeWindowsCard() {
           available overnight but never during the afternoon. Works with the seasonal
           lock off. Any time not covered by a window allows both directions, and each
           window can carry a temperature escape valve so a block never lets the house
-          run away.
+          run away. While a window is active it takes precedence over the seasonal
+          lock — that is how "summer prefers cool, but heat is available overnight"
+          works.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -1565,6 +1573,8 @@ interface SeasonalLockStateT {
   locked_mode: 'heat' | 'cool' | null
   outdoor_temp_c: number | null
   override_active: boolean
+  window_suspended: boolean
+  active_window: string | null
   reason: string
 }
 
@@ -1656,9 +1666,11 @@ function SeasonalLockCard() {
                 <div className="mt-1 text-xs text-muted-foreground">
                   {state.locked_mode
                     ? `Currently locked to: ${state.locked_mode.toUpperCase()}`
-                    : state.override_active
-                      ? `Override active (outdoor ${cToDisplay(state.outdoor_temp_c, isF)}°${unitLabel})`
-                      : 'No lock in effect'}
+                    : state.window_suspended
+                      ? `Lock suspended — time window "${state.active_window}" is active`
+                      : state.override_active
+                        ? `Override active (outdoor ${cToDisplay(state.outdoor_temp_c, isF)}°${unitLabel})`
+                        : 'No lock in effect'}
                 </div>
                 {state.reason && (
                   <div className="mt-1 text-xs text-muted-foreground italic">{state.reason}</div>
@@ -1803,7 +1815,7 @@ function SeasonalLockCard() {
                     </div>
                     <p className="text-[11px] text-muted-foreground">
                       {(s.windows?.length ?? 0) > 0
-                        ? 'These replace the standalone Heat / Cool Time Windows while this season is active.'
+                        ? 'These replace the standalone Heat / Cool Time Windows while this season is active. While one of them covers the current time, it decides which directions may run and this season\'s lock stands down.'
                         : 'Leave empty to use the standalone Heat / Cool Time Windows below.'}
                     </p>
                     <WindowListEditor

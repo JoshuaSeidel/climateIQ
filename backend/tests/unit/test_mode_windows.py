@@ -254,3 +254,78 @@ async def test_escape_valve_reopens_a_blocked_direction(stub_configs):
 
     cold = await _state(TUE_NOON, zone_avg_c=_c(58))
     assert cold.allow_heat and cold.escape_active
+
+
+# --- interaction with the seasonal lock ------------------------------------
+# An active window is the more specific statement of intent, so it takes
+# precedence: the season lock stands down while a window covers the moment.
+
+SUMMER_OVERNIGHT = TimeWindow(
+    name="Overnight", start_time="19:00", end_time="07:00",
+    allow_heat=True, allow_cool=True,
+)
+
+
+def _summer_locked_to_cool(windows):
+    from backend.core.seasonal_lock import Season, SeasonalLockConfig
+
+    return SeasonalLockConfig(
+        enabled=True,
+        seasons=[Season(
+            name="Summer", start_month=5, start_day=1,
+            end_month=9, end_day=30, preferred_mode="cool",
+            windows=windows,
+        )],
+    )
+
+
+async def _lock_state(now, stub):
+    from backend.core.seasonal_lock import compute_lock_state
+
+    return await compute_lock_state(None, None, now=now)
+
+
+@pytest.mark.asyncio
+async def test_window_permitting_heat_suspends_a_cool_season_lock(stub_configs):
+    """The reported bug: an overnight window allowing heat, still 'locked to cool'."""
+    stub_configs["seasonal"] = _summer_locked_to_cool([SUMMER_OVERNIGHT])
+
+    night = await _lock_state(TUE_2300, stub_configs)
+    assert night.window_suspended
+    assert night.locked_mode is None       # <- was "cool" before the fix
+    assert night.active_window == "Overnight"
+
+    # Sensor-driven selection is then free to pick heat.
+    st = await _state(TUE_2300)
+    assert st.allow_heat
+
+
+@pytest.mark.asyncio
+async def test_season_lock_still_applies_outside_the_window(stub_configs):
+    stub_configs["seasonal"] = _summer_locked_to_cool([SUMMER_OVERNIGHT])
+
+    day = await _lock_state(TUE_NOON, stub_configs)
+    assert not day.window_suspended
+    assert day.locked_mode == "cool"
+
+
+@pytest.mark.asyncio
+async def test_season_lock_unaffected_when_no_windows_defined(stub_configs):
+    stub_configs["seasonal"] = _summer_locked_to_cool([])
+
+    for moment in (TUE_NOON, TUE_2300):
+        st = await _lock_state(moment, stub_configs)
+        assert st.locked_mode == "cool"
+        assert not st.window_suspended
+
+
+@pytest.mark.asyncio
+async def test_window_restricting_to_heat_only_also_suspends_the_lock(stub_configs):
+    stub_configs["seasonal"] = _summer_locked_to_cool([
+        TimeWindow(name="heat-only", start_time="19:00", end_time="07:00",
+                   allow_heat=True, allow_cool=False),
+    ])
+    night = await _lock_state(TUE_2300, stub_configs)
+    assert night.locked_mode is None
+    st = await _state(TUE_2300)
+    assert st.allow_heat and not st.allow_cool

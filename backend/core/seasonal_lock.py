@@ -14,7 +14,7 @@ sensor-driven mode selection.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -216,6 +216,10 @@ class SeasonalLockState(BaseModel):
     locked_mode: Literal["heat", "cool"] | None = None
     outdoor_temp_c: float | None = None
     override_active: bool = False
+    # True when a time-of-day window forbids the season's preferred direction,
+    # so the lock stands down and sensor-driven selection takes over.
+    window_suspended: bool = False
+    active_window: str | None = None
     reason: str = ""
 
 
@@ -223,9 +227,14 @@ async def compute_lock_state(
     db: Any,
     ha_client: Any,
     *,
-    now: date | None = None,
+    now: date | datetime | None = None,
 ) -> SeasonalLockState:
-    """Return the full computed seasonal lock state for the current moment."""
+    """Return the full computed seasonal lock state for the current moment.
+
+    ``now`` accepts a ``datetime`` as well as a ``date``; a datetime is also
+    threaded into the time-window check so callers (and tests) can evaluate a
+    specific moment rather than "right now".
+    """
     cfg = await load_config(db)
     state = SeasonalLockState(enabled=cfg.enabled)
     if not cfg.enabled:
@@ -272,6 +281,32 @@ async def compute_lock_state(
                 f"{season.override_outdoor_above_c:.1f}°C — cool allowed"
             )
             return state
+
+    # An active time-of-day window is the more specific statement of intent, so
+    # it takes precedence over the season.  While a window covers the current
+    # moment, that window alone defines which directions may run and the
+    # seasonal lock stands down to sensor-driven selection (which is itself
+    # window-gated, so it can only pick a permitted direction).
+    #
+    # This is what makes "summer prefers cool, but overnight I want heat
+    # available" work: the overnight window permits heat, so the season's cool
+    # lock must not veto it.  Outside the window the lock applies as normal.
+    try:
+        from backend.core.mode_windows import compute_window_state
+
+        window_state = await compute_window_state(
+            db, ha_client, now=today if isinstance(today, datetime) else None
+        )
+        if window_state.active_window is not None:
+            state.window_suspended = True
+            state.active_window = window_state.active_window
+            state.reason = (
+                f"season '{season.name}' prefers {season.preferred_mode}, but "
+                f"{window_state.reason} — window takes precedence, lock suspended"
+            )
+            return state
+    except Exception as exc:
+        logger.debug("seasonal_lock: time-window check skipped (%s)", exc)
 
     # Lock is in effect.
     state.locked_mode = season.preferred_mode

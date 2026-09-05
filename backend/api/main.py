@@ -780,6 +780,21 @@ async def _switch_hvac_mode_if_needed(
         logger.warning("%s: could not set HVAC mode to '%s': %s", context, target_mode, _me)
 
 
+async def _mode_allowed(
+    db: Any,
+    ha_client: Any,
+    mode: str,
+    zone_ids: list[Any] | None = None,
+    zone_avg_c: float | None = None,
+) -> tuple[bool, Any]:
+    """Thin wrapper around the time-window gate, for use inside mode selection."""
+    from backend.core.mode_windows import is_mode_allowed
+
+    return await is_mode_allowed(
+        db, ha_client, mode, zone_avg_c=zone_avg_c, zone_ids=zone_ids
+    )
+
+
 async def _auto_select_hvac_mode(
     ha_client: Any,
     climate_entity: str,
@@ -819,6 +834,17 @@ async def _auto_select_hvac_mode(
         control_mode, _cd = await _get_hvac_control_settings(db)
         on_forbidden_mode = current_mode in ("auto", "heat_cool")
         if control_mode in ("heat", "cool"):
+            # A time window can veto the user's global direction lock, but must
+            # not silently grant the opposite direction the lock forbids —
+            # assert nothing and leave the thermostat where it is.
+            _allowed, _win = await _mode_allowed(db, ha_client, control_mode, zone_ids)
+            if not _allowed:
+                logger.info(
+                    "hvac_control_mode='%s' blocked by time window — %s; "
+                    "leaving mode unchanged",
+                    control_mode, _win.reason,
+                )
+                return None, False
             if control_mode in supported:
                 # Urgent when the thermostat is currently in auto/heat_cool or
                 # in the opposite direction — the user explicitly asked for
@@ -891,24 +917,25 @@ async def _auto_select_hvac_mode(
 
         urgent = wrong_direction or on_forbidden_mode
 
-        if pick_heat:
-            if "heat" in supported:
-                return "heat", urgent
-            logger.warning(
-                "Auto-select wants heat but thermostat doesn't support it "
-                "(supported=%s) — leaving mode unchanged",
-                sorted(supported),
-            )
-            return None, False
-        if pick_cool:
-            if "cool" in supported:
-                return "cool", urgent
-            logger.warning(
-                "Auto-select wants cool but thermostat doesn't support it "
-                "(supported=%s) — leaving mode unchanged",
-                sorted(supported),
-            )
-            return None, False
+        picked = "heat" if pick_heat else "cool" if pick_cool else None
+        if picked is not None:
+            if picked not in supported:
+                logger.warning(
+                    "Auto-select wants %s but thermostat doesn't support it "
+                    "(supported=%s) — leaving mode unchanged",
+                    picked, sorted(supported),
+                )
+                return None, False
+            # Time-of-day windows have the final say on direction.
+            _allowed, _win = await _mode_allowed(db, ha_client, picked, zone_ids, zone_avg)
+            if not _allowed:
+                logger.info(
+                    "Auto-select wants %s but it is blocked by time window — %s; "
+                    "leaving mode unchanged",
+                    picked, _win.reason,
+                )
+                return None, False
+            return picked, urgent
 
         return None, False  # near target, already on heat or cool — no change
     except Exception as _ae:

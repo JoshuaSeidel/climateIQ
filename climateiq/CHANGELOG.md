@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.65] - 2026-09-05
+
+### Fixed
+- **A time window permitting heat was ignored by the seasonal lock — "still locked to cool".** With Seasonal Lock on, Summer locked to `cool`, and a Summer `Overnight` window (19:00–07:00) allowing both heat and cool, `compute_lock_state()` still returned `locked_mode: "cool"` all night, so heat could never be selected.
+  - Root cause: windows shipped in 1.0.64 as pure **restrictions**. `allow_heat: true` meant "heat is not forbidden here", not "heat is available here", so a window that blocked nothing left the season's cool lock fully in force. `_auto_select_hvac_mode()` returned the locked mode before windows were ever consulted, so the window could only veto a switch, never redirect one.
+  - **An active window now takes precedence over the seasonal lock.** While a window covers the current moment it alone defines which directions may run, and the season lock stands down to sensor-driven selection — which is itself window-gated, so it can only pick a permitted direction. Outside every window the lock applies exactly as before, and a season with no windows is completely unaffected.
+  - `SeasonalLockState` gains `window_suspended` and `active_window`, surfaced in the Seasonal Lock status banner ("Lock suspended — time window X is active") instead of the misleading "Currently locked to: COOL".
+  - `_auto_select_hvac_mode()` now also gates its final pick on the windows, so a blocked direction is never asserted as the mode for offset compensation. A time window can veto the user's global `hvac_control_mode` direction lock, but never silently grants the opposite direction — it leaves the thermostat unchanged instead.
+  - `compute_lock_state()` accepts a `datetime` for `now` (previously `date` only) and threads it into the window check, so a specific moment can be evaluated.
+
 ## [1.0.64] - 2026-09-01
 
 ### Added
