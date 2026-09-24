@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.70] - 2026-09-24
+
+### Changed
+- **esp32-dial: face redesigned to actually match climate-cluster-card.** Replaced the plain gray arcs with the card's instrument-cluster gauge: 270° ticked scale with temperature labels, mode-colored arc up to the setpoint, amber span from setpoint to current room temp, deep-navy background, and the card's exact MODE_COLORS (cool `#27d3ff`, heat `#ff9a2e`, heat/cool `#7ee787`, dry `#2fe0c4`, auto, off). Mode color now shows at all times, not only while running. Center stack mirrors the card: schedule zone name on top, mode word (COOL/HEAT/…), big setpoint number, breathing HEATING/COOLING status, small `ROOM x.x°` readout.
+- **Room temp is the zone-sensor average, never the thermostat.** The dial now reads `schedule_avg_temp` (fallback `all_zones_avg_temp`) for the ROOM readout; the thermostat's own `current_temp` is no longer displayed anywhere — it's an offset-compensation implementation detail, irrelevant to the user.
+
 ## [1.0.69] - 2026-09-24
 
 ### Fixed

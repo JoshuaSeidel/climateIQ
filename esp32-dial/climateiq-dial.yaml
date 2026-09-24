@@ -69,9 +69,15 @@ http_request:
   verify_ssl: false
 
 globals:
-  - id: g_current_temp
+  - id: g_room_avg            # schedule zones' live sensor avg (the "room temp")
     type: float
     initial_value: "0"
+  - id: g_all_zones_avg
+    type: float
+    initial_value: "0"
+  - id: g_breathe             # animation phase for the active-mode ring
+    type: bool
+    initial_value: "false"
   - id: g_target_temp        # thermostat setpoint reported by climateIQ
     type: float
     initial_value: "0"
@@ -85,6 +91,9 @@ globals:
     type: bool
     initial_value: "false"
   - id: g_hvac_action
+    type: std::string
+    initial_value: '""'
+  - id: g_zone_names
     type: std::string
     initial_value: '""'
   - id: g_hvac_mode
@@ -178,6 +187,15 @@ binary_sensor:
           - script.execute: resume_schedule
 
 interval:
+  # breathing ring while heating/cooling/dialing (climate-cluster-card "Breeze")
+  - interval: 700ms
+    then:
+      - lambda: |-
+          bool active = id(g_editing) || id(g_hvac_action) == "heating" || id(g_hvac_action) == "cooling";
+          if (active) {
+            id(g_breathe) = !id(g_breathe);
+            id(refresh_ui).execute();
+          }
   - interval: 10s
     then:
       - if:
@@ -281,12 +299,15 @@ script:
                   }
                   id(g_online) = true;
                   json::parse_json(body, [](JsonObject root) -> bool {
-                    if (!root["current_temp"].isNull())
-                      id(g_current_temp) = root["current_temp"].as<float>();
+                    if (!root["schedule_avg_temp"].isNull())
+                      id(g_room_avg) = root["schedule_avg_temp"].as<float>();
+                    if (!root["all_zones_avg_temp"].isNull())
+                      id(g_all_zones_avg) = root["all_zones_avg_temp"].as<float>();
                     if (!root["target_temp"].isNull())
                       id(g_target_temp) = root["target_temp"].as<float>();
                     if (!root["schedule_target_temp"].isNull())
                       id(g_schedule_target) = root["schedule_target_temp"].as<float>();
+                    id(g_zone_names)  = root["schedule_zone_names"].isNull() ? "" : std::string(root["schedule_zone_names"].as<const char*>());
                     id(g_hvac_mode)   = root["hvac_mode"].isNull()   ? "" : std::string(root["hvac_mode"].as<const char*>());
                     id(g_hvac_action) = root["hvac_action"].isNull() ? "" : std::string(root["hvac_action"].as<const char*>());
                     id(g_override_active) = !root["is_override_active"].isNull() && root["is_override_active"].as<bool>();
@@ -301,28 +322,47 @@ script:
   - id: refresh_ui
     then:
       - lambda: |-
-          // accent color by state, matching climate-cluster-card mode coloring
-          lv_color_t accent;
+          // climate-cluster-card MODE_COLORS, verbatim from its source
           std::string action = id(g_hvac_action);
           std::string mode = id(g_hvac_mode);
-          if (id(g_editing))                accent = lv_color_hex(0xFFD54F); // amber while dialing
-          else if (action == "heating")     accent = lv_color_hex(0xFF8A50); // heat orange
-          else if (action == "cooling")     accent = lv_color_hex(0x4FC3F7); // cool blue
-          else if (mode == "off")           accent = lv_color_hex(0x616161);
-          else                              accent = lv_color_hex(0x9E9E9E); // idle gray
+          lv_color_t mode_color;
+          const char* mode_word;
+          if      (mode == "cool")      { mode_color = lv_color_hex(0x27D3FF); mode_word = "COOL"; }
+          else if (mode == "heat")      { mode_color = lv_color_hex(0xFF9A2E); mode_word = "HEAT"; }
+          else if (mode == "heat_cool") { mode_color = lv_color_hex(0x7EE787); mode_word = "HEAT/COOL"; }
+          else if (mode == "dry")       { mode_color = lv_color_hex(0x2FE0C4); mode_word = "DRY"; }
+          else if (mode == "fan_only")  { mode_color = lv_color_hex(0xEEF3F8); mode_word = "FAN"; }
+          else if (mode == "auto")      { mode_color = lv_color_hex(0xFFDC5A); mode_word = "AUTO"; }
+          else if (mode == "off")       { mode_color = lv_color_hex(0x6A7480); mode_word = "OFF"; }
+          else                          { mode_color = lv_color_hex(0x8B95A2); mode_word = ""; }
+          lv_color_t accent = id(g_editing) ? lv_color_hex(0xFFD54F) : mode_color;
 
           float shown_target = id(g_editing) ? id(g_edit_temp)
                              : (id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp));
+          float room = id(g_room_avg) > 0 ? id(g_room_avg) : id(g_all_zones_avg);
 
-          lv_arc_set_value(id(target_arc), (int) roundf(shown_target));
-          lv_obj_set_style_arc_color(id(target_arc), accent, LV_PART_INDICATOR);
-
-          if (!id(g_online)) {
-            lv_label_set_text(id(current_label), "--");
-            lv_label_set_text(id(status_label), "OFFLINE");
-            lv_obj_set_style_text_color(id(status_label), lv_color_hex(0xEF5350), 0);
+          // gauge: mode-colored arc from scale start to the setpoint,
+          // amber span between setpoint and current room temp (like the card)
+          // ESPHome's meter maps indicators onto LVGL 9 scale sections; the
+          // generated per-indicator style object is what carries the arc color
+          int t = (int) roundf(shown_target);
+          lv_scale_section_set_range(id(target_ind), (int32_t) ${temp_min}, t);
+          lv_style_set_arc_color(meter_arc_target_ind_style, accent);
+          if (id(g_online) && room > 0) {
+            lv_scale_section_set_range(id(span_ind),
+                (int32_t) roundf(std::min(shown_target, room)),
+                (int32_t) roundf(std::max(shown_target, room)));
           } else {
-            lv_label_set_text_fmt(id(current_label), "%.0f°", id(g_current_temp));
+            lv_scale_section_set_range(id(span_ind), t, t);
+          }
+          lv_obj_refresh_style(id(gauge), LV_PART_MAIN, LV_STYLE_PROP_ANY);
+          lv_obj_invalidate(id(gauge));
+
+          // center stack
+          if (id(g_online)) {
+            lv_label_set_text_fmt(id(set_big), "%.0f", shown_target);
+            lv_label_set_text(id(mode_word_label), id(g_editing) ? "SET" : mode_word);
+            lv_obj_set_style_text_color(id(mode_word_label), accent, 0);
             std::string status;
             if (id(g_editing))               status = "TURN TO SET";
             else if (action == "heating")    status = "HEATING";
@@ -332,84 +372,117 @@ script:
             else                             status = "IDLE";
             lv_label_set_text(id(status_label), status.c_str());
             lv_obj_set_style_text_color(id(status_label), accent, 0);
+            if (room > 0) lv_label_set_text_fmt(id(room_label), "ROOM %.1f°", room);
+            else          lv_label_set_text(id(room_label), "ROOM --");
+            std::string zones = id(g_zone_names);
+            lv_label_set_text(id(zone_label), zones.empty() ? "climateIQ" : zones.c_str());
+          } else {
+            lv_label_set_text(id(set_big), "--");
+            lv_label_set_text(id(mode_word_label), "");
+            lv_label_set_text(id(status_label), "OFFLINE");
+            lv_obj_set_style_text_color(id(status_label), lv_color_hex(0xEF5350), 0);
+            lv_label_set_text(id(room_label), "");
+            lv_label_set_text(id(zone_label), "climateIQ");
           }
-          lv_label_set_text_fmt(id(set_label), "Set %.0f°", shown_target);
-          lv_obj_set_style_text_color(id(set_label), accent, 0);
+          // breathing status while running/dialing (card's animated status dot)
+          bool active = id(g_editing) || action == "heating" || action == "cooling";
+          lv_obj_set_style_text_opa(id(status_label), (!active || id(g_breathe)) ? LV_OPA_COVER : LV_OPA_40, 0);
 
 lvgl:
   id: lvgl_main
   displays: [round_display]
   buffer_size: 25%
   color_depth: 16
-  bg_color: 0x101418
-  style_definitions:
-    - id: cluster_text
-      text_color: 0xECEFF1
+  bg_color: 0x111A2E
+  default_font: montserrat_12
   pages:
     - id: main_page
-      bg_color: 0x101418
+      bg_color: 0x111A2E
       widgets:
-        # outer decorative scale ring (climate-cluster-card outer ring)
-        - arc:
-            id: scale_arc
+        # instrument-cluster gauge: 270° ticked scale with temperature labels
+        - meter:
+            id: gauge
             align: CENTER
-            width: 236
-            height: 236
-            start_angle: 120
-            end_angle: 60
-            arc_width: 4
-            arc_color: 0x2A3138
-            adjustable: false
-            indicator:
-              arc_width: 4
-              arc_opa: TRANSP
-            knob:
-              bg_opa: TRANSP
-        # inner target-temperature ring
-        - arc:
-            id: target_arc
-            align: CENTER
-            width: 210
-            height: 210
-            min_value: ${temp_min}
-            max_value: ${temp_max}
-            value: ${temp_min}
-            start_angle: 120
-            end_angle: 60
-            arc_width: 14
-            arc_rounded: true
-            arc_color: 0x232A31
-            adjustable: false
-            indicator:
-              arc_width: 14
-              arc_rounded: true
-              arc_color: 0x9E9E9E
-            knob:
-              bg_opa: TRANSP
+            width: 240
+            height: 240
+            bg_opa: TRANSP
+            border_opa: TRANSP
+            scales:
+              - range_from: ${temp_min}
+                range_to: ${temp_max}
+                angle_range: 270
+                rotation: 135
+                ticks:
+                  count: 31
+                  width: 1
+                  length: 8
+                  color: 0x546070
+                  major:
+                    stride: 5
+                    width: 2
+                    length: 13
+                    color: 0x8B95A2
+                    label_gap: 14
+                indicators:
+                  # faint full track behind the colored arcs
+                  - arc:
+                      id: track_ind
+                      color: 0x232B3D
+                      r_mod: -22
+                      width: 12
+                      start_value: ${temp_min}
+                      end_value: ${temp_max}
+                  # amber span between setpoint and room temp
+                  - arc:
+                      id: span_ind
+                      color: 0xF2933A
+                      r_mod: -22
+                      width: 12
+                      start_value: ${temp_min}
+                      end_value: ${temp_min}
+                  # mode-colored arc up to the setpoint
+                  - arc:
+                      id: target_ind
+                      color: 0x8B95A2
+                      r_mod: -22
+                      width: 12
+                      start_value: ${temp_min}
+                      end_value: ${temp_min}
         - label:
-            id: current_label
+            id: zone_label
             align: CENTER
-            y: -18
+            y: -68
+            width: 150
+            text_align: CENTER
+            long_mode: DOT
+            text: "climateIQ"
+            text_font: montserrat_12
+            text_color: 0x9AA5B1
+        - label:
+            id: mode_word_label
+            align: CENTER
+            y: -44
+            text: ""
+            text_font: montserrat_16
+            text_color: 0x27D3FF
+        - label:
+            id: set_big
+            align: CENTER
+            y: 0
             text: "--"
             text_font: montserrat_48
-            styles: cluster_text
-        - label:
-            id: set_label
-            align: CENTER
-            y: 26
-            text: "Set --"
-            text_font: montserrat_20
-            text_color: 0x9E9E9E
+            text_color: 0xF2F5F8
         - label:
             id: status_label
             align: CENTER
-            y: 58
+            y: 42
             text: "CONNECTING"
             text_font: montserrat_14
-            text_color: 0x9E9E9E
+            text_color: 0x8B95A2
         - label:
+            id: room_label
             align: CENTER
-            y: 86
-            text: "climateIQ"
+            y: 66
+            text: ""
             text_font: montserrat_12
-            text_color: 0x546E7A
+            text_color: 0xC6D3DF
