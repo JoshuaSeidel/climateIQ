@@ -1,0 +1,403 @@
+# ClimateIQ Rotary Dial — ESPHome firmware
+#
+# Hardware: GrowCube / VIEWE 1.28" ESP32-C3 round knob display
+#           (VIEWE UEDX24240013-MD50E: GC9A01 240x240 IPS, rotary encoder + push button)
+#
+# Talks directly to the climateIQ backend REST API (port 8420):
+#   GET  /api/v1/system/override      -> live state (temps arrive in your display unit)
+#   POST /api/v1/system/override      -> set a manual hold {"temperature": X}
+#   POST /api/v1/system/quick-action  -> {"action": "resume"} returns to schedule
+#
+# Controls:
+#   Rotate        -> adjust target temp (sent automatically 2s after you stop turning)
+#   Short press   -> send the pending target immediately
+#   Long press 1s -> cancel hold / resume schedule
+#
+# Look is modeled on climate-cluster-card: dark instrument-cluster face, outer scale
+# ring, mode-colored target arc, big center current temp with "Set:" readout below.
+
+substitutions:
+  name: climateiq-dial
+  friendly_name: ClimateIQ Dial
+  # Base URL of the climateIQ backend (host running the add-on / docker stack)
+  climateiq_base_url: "http://homeassistant.local:8420"
+  # Only needed if CLIMATEIQ_API_KEY is set on the backend; otherwise leave as-is
+  # (the header is ignored when no key is configured server-side).
+  climateiq_api_key: ""
+  # Dial range/step in YOUR display unit (F shown; use e.g. 15/28/1 for Celsius)
+  temp_min: "55"
+  temp_max: "85"
+  temp_step: "1"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: arduino
+
+logger:
+  # UART logging conflicts with SPI pin 1 on some batches; USB logging only
+  baud_rate: 0
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "ClimateIQ-Dial"
+
+captive_portal:
+
+http_request:
+  timeout: 5s
+  verify_ssl: false
+
+globals:
+  - id: g_current_temp
+    type: float
+    initial_value: "0"
+  - id: g_target_temp        # thermostat setpoint reported by climateIQ
+    type: float
+    initial_value: "0"
+  - id: g_schedule_target
+    type: float
+    initial_value: "0"
+  - id: g_edit_temp          # value being dialed in
+    type: float
+    initial_value: "0"
+  - id: g_editing            # true while the user is turning / a send is pending
+    type: bool
+    initial_value: "false"
+  - id: g_hvac_action
+    type: std::string
+    initial_value: '""'
+  - id: g_hvac_mode
+    type: std::string
+    initial_value: '""'
+  - id: g_override_active
+    type: bool
+    initial_value: "false"
+  - id: g_online
+    type: bool
+    initial_value: "false"
+
+spi:
+  id: spi_bus
+  clk_pin: 1
+  mosi_pin: 0
+
+display:
+  - platform: ili9xxx
+    model: GC9A01A
+    id: round_display
+    spi_id: spi_bus
+    cs_pin: 10
+    dc_pin: 4
+    reset_pin: 2
+    invert_colors: true
+    auto_clear_enabled: false
+    update_interval: never
+
+output:
+  - platform: ledc
+    id: backlight_output
+    inverted: true
+    pin: 8
+    frequency: 5000Hz
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: "Backlight"
+    output: backlight_output
+    restore_mode: RESTORE_DEFAULT_ON
+
+sensor:
+  - platform: rotary_encoder
+    id: dial_encoder
+    pin_a: 6
+    pin_b: 7
+    resolution: 2
+    internal: true
+    on_clockwise:
+      - script.execute:
+          id: adjust_temp
+          delta: ${temp_step}
+    on_anticlockwise:
+      - script.execute:
+          id: adjust_temp
+          delta: -${temp_step}
+
+binary_sensor:
+  - platform: gpio
+    id: dial_button
+    internal: true
+    pin:
+      number: 9
+      inverted: true
+    filters:
+      - delayed_on: 30ms
+      - delayed_off: 30ms
+    on_multi_click:
+      # Short press: send pending target now (or force a refresh if not editing)
+      - timing:
+          - ON for at most 800ms
+          - OFF for at least 50ms
+        then:
+          - if:
+              condition:
+                lambda: return id(g_editing);
+              then:
+                - script.stop: send_override_debounced
+                - script.execute: send_override
+              else:
+                - script.execute: poll_status
+      # Long press: cancel hold, resume schedule
+      - timing:
+          - ON for at least 1s
+        then:
+          - script.execute: resume_schedule
+
+interval:
+  - interval: 10s
+    then:
+      - if:
+          condition:
+            not:
+              script.is_running: send_override_debounced
+          then:
+            - script.execute: poll_status
+
+script:
+  # ---- rotate handling -------------------------------------------------------
+  - id: adjust_temp
+    parameters:
+      delta: float
+    then:
+      - lambda: |-
+          if (!id(g_editing)) {
+            // seed the edit value from what the schedule wants (fall back to setpoint)
+            float seed = id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp);
+            if (seed <= 0) seed = (${temp_min} + ${temp_max}) / 2.0f;
+            id(g_edit_temp) = seed;
+            id(g_editing) = true;
+          }
+          id(g_edit_temp) = clamp(id(g_edit_temp) + delta, (float) ${temp_min}, (float) ${temp_max});
+      - script.execute: refresh_ui
+      - script.stop: send_override_debounced
+      - script.execute: send_override_debounced
+
+  - id: send_override_debounced
+    mode: restart
+    then:
+      - delay: 2s
+      - script.execute: send_override
+
+  # ---- API calls -------------------------------------------------------------
+  - id: send_override
+    then:
+      - http_request.post:
+          url: ${climateiq_base_url}/api/v1/system/override
+          request_headers:
+            Content-Type: application/json
+            Authorization: "Bearer ${climateiq_api_key}"
+          body: !lambda |-
+            char buf[48];
+            snprintf(buf, sizeof(buf), "{\"temperature\": %.1f}", id(g_edit_temp));
+            return std::string(buf);
+          on_response:
+            then:
+              - lambda: |-
+                  if (response->status_code == 200) {
+                    ESP_LOGI("dial", "Override set to %.1f", id(g_edit_temp));
+                    id(g_target_temp) = id(g_edit_temp);
+                    id(g_override_active) = true;
+                  } else {
+                    ESP_LOGW("dial", "Override failed: HTTP %d", response->status_code);
+                  }
+                  id(g_editing) = false;
+          on_error:
+            then:
+              - lambda: |-
+                  ESP_LOGW("dial", "Override request error");
+                  id(g_editing) = false;
+                  id(g_online) = false;
+      - script.execute: refresh_ui
+      - script.execute: poll_status
+
+  - id: resume_schedule
+    then:
+      - lambda: id(g_editing) = false;
+      - script.stop: send_override_debounced
+      - http_request.post:
+          url: ${climateiq_base_url}/api/v1/system/quick-action
+          request_headers:
+            Content-Type: application/json
+            Authorization: "Bearer ${climateiq_api_key}"
+          body: '{"action": "resume"}'
+          on_response:
+            then:
+              - lambda: |-
+                  if (response->status_code == 200) {
+                    ESP_LOGI("dial", "Resumed schedule");
+                    id(g_override_active) = false;
+                  }
+      - script.execute: poll_status
+
+  - id: poll_status
+    mode: queued
+    then:
+      - http_request.get:
+          url: ${climateiq_base_url}/api/v1/system/override
+          request_headers:
+            Authorization: "Bearer ${climateiq_api_key}"
+          capture_response: true
+          max_response_buffer_size: 2kB
+          on_response:
+            then:
+              - lambda: |-
+                  if (response->status_code != 200) {
+                    id(g_online) = false;
+                    return;
+                  }
+                  id(g_online) = true;
+                  json::parse_json(body, [](JsonObject root) -> bool {
+                    if (!root["current_temp"].isNull())
+                      id(g_current_temp) = root["current_temp"].as<float>();
+                    if (!root["target_temp"].isNull())
+                      id(g_target_temp) = root["target_temp"].as<float>();
+                    if (!root["schedule_target_temp"].isNull())
+                      id(g_schedule_target) = root["schedule_target_temp"].as<float>();
+                    id(g_hvac_mode)   = root["hvac_mode"].isNull()   ? "" : std::string(root["hvac_mode"].as<const char*>());
+                    id(g_hvac_action) = root["hvac_action"].isNull() ? "" : std::string(root["hvac_action"].as<const char*>());
+                    id(g_override_active) = !root["is_override_active"].isNull() && root["is_override_active"].as<bool>();
+                    return true;
+                  });
+          on_error:
+            then:
+              - lambda: id(g_online) = false;
+      - script.execute: refresh_ui
+
+  # ---- render ---------------------------------------------------------------
+  - id: refresh_ui
+    then:
+      - lambda: |-
+          // accent color by state, matching climate-cluster-card mode coloring
+          lv_color_t accent;
+          std::string action = id(g_hvac_action);
+          std::string mode = id(g_hvac_mode);
+          if (id(g_editing))                accent = lv_color_hex(0xFFD54F); // amber while dialing
+          else if (action == "heating")     accent = lv_color_hex(0xFF8A50); // heat orange
+          else if (action == "cooling")     accent = lv_color_hex(0x4FC3F7); // cool blue
+          else if (mode == "off")           accent = lv_color_hex(0x616161);
+          else                              accent = lv_color_hex(0x9E9E9E); // idle gray
+
+          float shown_target = id(g_editing) ? id(g_edit_temp)
+                             : (id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp));
+
+          lv_arc_set_value(id(target_arc), (int) roundf(shown_target));
+          lv_obj_set_style_arc_color(id(target_arc), accent, LV_PART_INDICATOR);
+
+          if (!id(g_online)) {
+            lv_label_set_text(id(current_label), "--");
+            lv_label_set_text(id(status_label), "OFFLINE");
+            lv_obj_set_style_text_color(id(status_label), lv_color_hex(0xEF5350), 0);
+          } else {
+            lv_label_set_text_fmt(id(current_label), "%.0f°", id(g_current_temp));
+            std::string status;
+            if (id(g_editing))               status = "TURN TO SET";
+            else if (action == "heating")    status = "HEATING";
+            else if (action == "cooling")    status = "COOLING";
+            else if (mode == "off")          status = "OFF";
+            else if (id(g_override_active))  status = "HOLD";
+            else                             status = "IDLE";
+            lv_label_set_text(id(status_label), status.c_str());
+            lv_obj_set_style_text_color(id(status_label), accent, 0);
+          }
+          lv_label_set_text_fmt(id(set_label), "Set %.0f°", shown_target);
+          lv_obj_set_style_text_color(id(set_label), accent, 0);
+
+lvgl:
+  id: lvgl_main
+  displays: [round_display]
+  buffer_size: 25%
+  color_depth: 16
+  bg_color: 0x101418
+  style_definitions:
+    - id: cluster_text
+      text_color: 0xECEFF1
+  pages:
+    - id: main_page
+      bg_color: 0x101418
+      widgets:
+        # outer decorative scale ring (climate-cluster-card outer ring)
+        - arc:
+            id: scale_arc
+            align: CENTER
+            width: 236
+            height: 236
+            start_angle: 120
+            end_angle: 60
+            arc_width: 4
+            arc_color: 0x2A3138
+            adjustable: false
+            indicator:
+              arc_width: 4
+              arc_opa: TRANSP
+            knob:
+              bg_opa: TRANSP
+        # inner target-temperature ring
+        - arc:
+            id: target_arc
+            align: CENTER
+            width: 210
+            height: 210
+            min_value: ${temp_min}
+            max_value: ${temp_max}
+            value: ${temp_min}
+            start_angle: 120
+            end_angle: 60
+            arc_width: 14
+            arc_rounded: true
+            arc_color: 0x232A31
+            adjustable: false
+            indicator:
+              arc_width: 14
+              arc_rounded: true
+              arc_color: 0x9E9E9E
+            knob:
+              bg_opa: TRANSP
+        - label:
+            id: current_label
+            align: CENTER
+            y: -18
+            text: "--"
+            text_font: montserrat_48
+            styles: cluster_text
+        - label:
+            id: set_label
+            align: CENTER
+            y: 26
+            text: "Set --"
+            text_font: montserrat_20
+            text_color: 0x9E9E9E
+        - label:
+            id: status_label
+            align: CENTER
+            y: 58
+            text: "CONNECTING"
+            text_font: montserrat_14
+            text_color: 0x9E9E9E
+        - label:
+            align: CENTER
+            y: 86
+            text: "climateIQ"
+            text_font: montserrat_12
+            text_color: 0x546E7A

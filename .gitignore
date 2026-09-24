@@ -130,3 +130,7 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+
+# ESPHome device secrets (real wifi creds)
+esp32-dial/secrets.yaml
+esp32-dial/.esphome/

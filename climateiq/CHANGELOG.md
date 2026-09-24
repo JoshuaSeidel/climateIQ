@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.66] - 2026-09-24
+
+### Added
+- **`esp32-dial/` — physical rotary dial controller.** ESPHome + LVGL firmware for the GrowCube / VIEWE 1.28" ESP32-C3 round knob display (GC9A01 240×240, rotary encoder + push button), with a face styled on climate-cluster-card (outer scale ring, mode-colored target arc, center current temp). Talks straight to the backend REST API: polls `GET /api/v1/system/override` every 10s; rotating sets a manual hold via `POST /api/v1/system/override` (debounced 2s); short press sends immediately; long press resumes the schedule via `POST /api/v1/system/quick-action`. Supports optional `CLIMATEIQ_API_KEY` bearer auth. No backend/frontend changes.
+
 ## [1.0.65] - 2026-09-05
 
 ### Fixed
