@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.68] - 2026-09-24
+
+### Fixed
+- **esp32-dial: reach the backend and secure the device.** First on-device boot showed three issues:
+  - HTTP `Connection reset by peer` — the dial targeted port 8420, but in HA add-on mode uvicorn binds `0.0.0.0:8099` (`host_network: true`). Default `climateiq_base_url` is now `http://homeassistant.local:8099`.
+  - CST816 touch never responds on this unit (I2C SCL held low, empty bus scan, 8 s boot stall) — touchscreen removed; all interaction is via the knob.
+  - ESPHome API had no encryption and OTA no password — both now required via `secrets.yaml` (`api_encryption_key`, `ota_password`).
+
 ## [1.0.67] - 2026-09-24
 
 ### Fixed
