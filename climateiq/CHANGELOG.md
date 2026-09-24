@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.69] - 2026-09-24
+
+### Fixed
+- **esp32-dial: black screen — panel power was never enabled.** On the CrowPanel/GrowCube 1.28" the display panel's power rail is gated by **GPIO1**; without driving it the screen stays dark even though SPI init completes (exactly what the boot log showed). Added `enable_pin: GPIO1` and restored `invert_colors: true` (lost in the ili9xxx→mipi_spi switch), per the confirmed-working community config for this board. Firmware now compile-verified locally before release.
+
 ## [1.0.68] - 2026-09-24
 
 ### Fixed

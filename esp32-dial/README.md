@@ -52,8 +52,12 @@ entity), and falls back to a `ClimateIQ-Dial` setup AP if Wi-Fi is unconfigured.
 
 ## Pinout (GrowCube / CrowPanel 1.28" ESP32-S3)
 
-GC9A01 SPI: CLK 10, MOSI 11, CS 9, DC 3, RST 14 · backlight PWM 46 ·
-encoder A/B 45/42 · button 41 (active low).
+GC9A01 SPI: CLK 10, MOSI 11, CS 9, DC 3, RST 14 · **panel power enable 1** (screen
+stays black without it) · backlight PWM 46 · encoder A/B 45/42 · button 41
+(active low) · power LED 40 (inverted).
+
+If the board ever boot-loops after flashing, hold the BOOT button on the back while
+powering on, then reflash — a known recovery quirk on this hardware.
 
 Touch is not configured: on this unit the CST816 never answers (I2C SCL held low,
 bus scan empty), so the touchscreen was dropped — it added an 8 s boot stall and a
