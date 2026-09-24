@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.73] - 2026-09-24
+
+### Changed
+- **esp32-dial: big center number is now the room average; the setpoint moved to the bottom** as an accent-colored `SET 68°` readout (updates live while dialing). The schedule zone-names label at the top of the dial (removed in 1.0.72) stays gone.
+
 ## [1.0.72] - 2026-09-24
 
 ### Changed

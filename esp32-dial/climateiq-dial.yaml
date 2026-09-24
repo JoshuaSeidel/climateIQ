@@ -389,7 +389,9 @@ script:
           float room = id(g_room_avg) > 0 ? id(g_room_avg) : id(g_all_zones_avg);
 
           if (id(g_online)) {
-            lv_label_set_text_fmt(id(set_big), "%.0f", shown_target);
+            // big center number = live room average; setpoint lives at the bottom
+            if (room > 0) lv_label_set_text_fmt(id(set_big), "%.1f", room);
+            else          lv_label_set_text(id(set_big), "--");
             lv_label_set_text(id(mode_word_label), id(g_editing) ? "SET" : mode_word);
             lv_obj_set_style_text_color(id(mode_word_label), accent, 0);
             std::string status;
@@ -401,8 +403,8 @@ script:
             else                             status = "IDLE";
             lv_label_set_text(id(status_label), status.c_str());
             lv_obj_set_style_text_color(id(status_label), accent, 0);
-            if (room > 0) lv_label_set_text_fmt(id(room_label), "ROOM %.1f\xC2\xB0", room);
-            else          lv_label_set_text(id(room_label), "ROOM --");
+            lv_label_set_text_fmt(id(room_label), "SET %.0f\xC2\xB0", shown_target);
+            lv_obj_set_style_text_color(id(room_label), accent, 0);
             std::string fan = id(g_fan_mode);
             if (fan.empty()) {
               lv_label_set_text(id(fan_label), "");
