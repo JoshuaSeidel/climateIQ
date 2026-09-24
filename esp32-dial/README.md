@@ -10,8 +10,13 @@ temperature with a `Set` readout.
 
 ## Controls
 
+The dial boots **locked** — press the knob once to unlock. It re-locks after 10 s of
+inactivity; while locked, turning flashes "PRESS TO UNLOCK" and button presses only
+unlock (they never perform an action).
+
 | Input | Action |
 |---|---|
+| Press (locked) | Unlock the dial |
 | Rotate | Adjust target temperature (auto-sends 2 s after you stop turning) |
 | Short press | Send the pending target immediately (or force a refresh) |
 | Double press | Toggle thermostat fan: auto ↔ on |

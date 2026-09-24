@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.75] - 2026-09-24
+
+### Changed
+- esp32-dial README: document the control lock (press-to-unlock, 10 s auto-relock). No code changes.
+
 ## [1.0.74] - 2026-09-24
 
 ### Added
