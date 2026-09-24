@@ -75,9 +75,12 @@ globals:
   - id: g_all_zones_avg
     type: float
     initial_value: "0"
-  - id: g_breathe             # animation phase for the active-mode ring
-    type: bool
-    initial_value: "false"
+  - id: g_disp_target         # animated (displayed) setpoint, eases toward target
+    type: float
+    initial_value: "0"
+  - id: g_disp_room           # animated (displayed) room temp
+    type: float
+    initial_value: "0"
   - id: g_target_temp        # thermostat setpoint reported by climateIQ
     type: float
     initial_value: "0"
@@ -91,9 +94,6 @@ globals:
     type: bool
     initial_value: "false"
   - id: g_hvac_action
-    type: std::string
-    initial_value: '""'
-  - id: g_zone_names
     type: std::string
     initial_value: '""'
   - id: g_fan_mode
@@ -198,15 +198,31 @@ binary_sensor:
           - script.execute: resume_schedule
 
 interval:
-  # breathing ring while heating/cooling/dialing (climate-cluster-card "Breeze")
-  - interval: 700ms
+  # 25 fps animation tick: eases the arcs toward their new values and drives
+  # the glow/shimmer while the HVAC runs (climate-cluster-card "Breeze")
+  - interval: 40ms
     then:
       - lambda: |-
+          float tgt = id(g_editing) ? id(g_edit_temp)
+                    : (id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp));
+          float room = id(g_room_avg) > 0 ? id(g_room_avg) : id(g_all_zones_avg);
           bool active = id(g_editing) || id(g_hvac_action) == "heating" || id(g_hvac_action) == "cooling";
-          if (active) {
-            id(g_breathe) = !id(g_breathe);
-            id(refresh_ui).execute();
+          bool moving = false;
+          if (tgt > 0) {
+            if (id(g_disp_target) <= 0) id(g_disp_target) = tgt;             // first data: snap
+            else if (fabsf(id(g_disp_target) - tgt) > 0.02f) {
+              id(g_disp_target) += (tgt - id(g_disp_target)) * 0.18f;        // ease-out sweep
+              moving = true;
+            }
           }
+          if (room > 0) {
+            if (id(g_disp_room) <= 0) id(g_disp_room) = room;
+            else if (fabsf(id(g_disp_room) - room) > 0.02f) {
+              id(g_disp_room) += (room - id(g_disp_room)) * 0.18f;
+              moving = true;
+            }
+          }
+          if (active || moving) id(draw_gauge).execute();
   - interval: 10s
     then:
       - if:
@@ -339,7 +355,6 @@ script:
                       id(g_target_temp) = root["target_temp"].as<float>();
                     if (!root["schedule_target_temp"].isNull())
                       id(g_schedule_target) = root["schedule_target_temp"].as<float>();
-                    id(g_zone_names)  = root["schedule_zone_names"].isNull() ? "" : std::string(root["schedule_zone_names"].as<const char*>());
                     id(g_fan_mode)    = root["fan_mode"].isNull() ? "" : std::string(root["fan_mode"].as<const char*>());
                     id(g_hvac_mode)   = root["hvac_mode"].isNull()   ? "" : std::string(root["hvac_mode"].as<const char*>());
                     id(g_hvac_action) = root["hvac_action"].isNull() ? "" : std::string(root["hvac_action"].as<const char*>());
@@ -355,7 +370,6 @@ script:
   - id: refresh_ui
     then:
       - lambda: |-
-          // climate-cluster-card MODE_COLORS, verbatim from its source
           std::string action = id(g_hvac_action);
           std::string mode = id(g_hvac_mode);
           lv_color_t mode_color;
@@ -374,40 +388,21 @@ script:
                              : (id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp));
           float room = id(g_room_avg) > 0 ? id(g_room_avg) : id(g_all_zones_avg);
 
-          // gauge: mode-colored arc from scale start to the setpoint,
-          // amber span between setpoint and current room temp (like the card)
-          // ESPHome's meter maps indicators onto LVGL 9 scale sections; the
-          // generated per-indicator style object is what carries the arc color
-          int t = (int) roundf(shown_target);
-          lv_scale_section_set_range(id(target_ind), (int32_t) ${temp_min}, t);
-          lv_style_set_arc_color(meter_arc_target_ind_style, accent);
-          if (id(g_online) && room > 0) {
-            lv_scale_section_set_range(id(span_ind),
-                (int32_t) roundf(std::min(shown_target, room)),
-                (int32_t) roundf(std::max(shown_target, room)));
-          } else {
-            lv_scale_section_set_range(id(span_ind), t, t);
-          }
-          lv_obj_refresh_style(id(gauge), LV_PART_MAIN, LV_STYLE_PROP_ANY);
-          lv_obj_invalidate(id(gauge));
-
-          // center stack
           if (id(g_online)) {
             lv_label_set_text_fmt(id(set_big), "%.0f", shown_target);
             lv_label_set_text(id(mode_word_label), id(g_editing) ? "SET" : mode_word);
             lv_obj_set_style_text_color(id(mode_word_label), accent, 0);
             std::string status;
             if (id(g_editing))               status = "TURN TO SET";
-            else if (action == "heating")    status = "HEATING";
-            else if (action == "cooling")    status = "COOLING";
+            else if (action == "heating")    status = "\xE2\x97\x8F HEATING";
+            else if (action == "cooling")    status = "\xE2\x97\x8F COOLING";
             else if (mode == "off")          status = "OFF";
             else if (id(g_override_active))  status = "HOLD";
             else                             status = "IDLE";
             lv_label_set_text(id(status_label), status.c_str());
             lv_obj_set_style_text_color(id(status_label), accent, 0);
-            if (room > 0) lv_label_set_text_fmt(id(room_label), "ROOM %.1f°", room);
+            if (room > 0) lv_label_set_text_fmt(id(room_label), "ROOM %.1f\xC2\xB0", room);
             else          lv_label_set_text(id(room_label), "ROOM --");
-            // fan chip (card control rail): blue when forced ON, gray on AUTO
             std::string fan = id(g_fan_mode);
             if (fan.empty()) {
               lv_label_set_text(id(fan_label), "");
@@ -417,8 +412,6 @@ script:
               lv_obj_set_style_text_color(id(fan_label),
                   fan_on ? lv_color_hex(0x27D3FF) : lv_color_hex(0x6A7480), 0);
             }
-            std::string zones = id(g_zone_names);
-            lv_label_set_text(id(zone_label), zones.empty() ? "climateIQ" : zones.c_str());
           } else {
             lv_label_set_text(id(set_big), "--");
             lv_label_set_text(id(mode_word_label), "");
@@ -426,11 +419,177 @@ script:
             lv_obj_set_style_text_color(id(status_label), lv_color_hex(0xEF5350), 0);
             lv_label_set_text(id(room_label), "");
             lv_label_set_text(id(fan_label), "");
-            lv_label_set_text(id(zone_label), "climateIQ");
           }
-          // breathing status while running/dialing (card's animated status dot)
+      - script.execute: draw_gauge
+
+  # Hand-rendered gauge on a canvas: gradient arcs with glow, ticks, room
+  # pointer and shimmer — the parts of climate-cluster-card plain LVGL
+  # widgets can't do.
+  - id: draw_gauge
+    then:
+      - lambda: |-
+          static constexpr float T_MIN = ${temp_min}, T_MAX = ${temp_max};
+          static constexpr float A_START = 135.0f, A_SWEEP = 270.0f;
+          auto v2a = [](float v) {
+            v = clamp(v, T_MIN, T_MAX);
+            return A_START + A_SWEEP * (v - T_MIN) / (T_MAX - T_MIN);
+          };
+          auto mix = [](lv_color_t a, lv_color_t b, uint8_t t) { return lv_color_mix(a, b, t); };
+          const lv_color_t BG = lv_color_hex(0x111A2E);
+
+          std::string action = id(g_hvac_action);
+          std::string mode = id(g_hvac_mode);
+          lv_color_t mode_color;
+          if      (mode == "cool")      mode_color = lv_color_hex(0x27D3FF);
+          else if (mode == "heat")      mode_color = lv_color_hex(0xFF9A2E);
+          else if (mode == "heat_cool") mode_color = lv_color_hex(0x7EE787);
+          else if (mode == "dry")       mode_color = lv_color_hex(0x2FE0C4);
+          else if (mode == "fan_only")  mode_color = lv_color_hex(0xEEF3F8);
+          else if (mode == "auto")      mode_color = lv_color_hex(0xFFDC5A);
+          else                          mode_color = lv_color_hex(0x6A7480);
+          lv_color_t accent = id(g_editing) ? lv_color_hex(0xFFD54F) : mode_color;
           bool active = id(g_editing) || action == "heating" || action == "cooling";
-          lv_obj_set_style_text_opa(id(status_label), (!active || id(g_breathe)) ? LV_OPA_COVER : LV_OPA_40, 0);
+
+          float tgt  = id(g_disp_target);
+          float room = id(g_disp_room);
+
+          lv_canvas_fill_bg(id(gauge_canvas), BG, LV_OPA_COVER);
+          lv_layer_t layer;
+          lv_canvas_init_layer(id(gauge_canvas), &layer);
+
+          lv_draw_arc_dsc_t d;
+          lv_draw_arc_dsc_init(&d);
+          d.center.x = 120; d.center.y = 120;
+          d.radius = 104; d.width = 12; d.rounded = 1;
+
+          // ticks (drawn as 1.5-degree arc slivers on an outer radius)
+          for (int tv = (int) T_MIN; tv <= (int) T_MAX; tv++) {
+            bool major = (tv % 5) == 0;
+            lv_draw_arc_dsc_t tk;
+            lv_draw_arc_dsc_init(&tk);
+            tk.center.x = 120; tk.center.y = 120;
+            tk.radius = 119; tk.width = major ? 12 : 7;
+            tk.color = major ? lv_color_hex(0x8B95A2) : lv_color_hex(0x3A4358);
+            float a = v2a((float) tv);
+            tk.start_angle = a - 0.5f; tk.end_angle = a + 0.5f;
+            lv_draw_arc(&layer, &tk);
+          }
+
+          // numeric scale labels at major ticks (like the card's 65/70/75...)
+          for (int tv = (int) T_MIN; tv <= (int) T_MAX; tv += 5) {
+            float a = v2a((float) tv) * (float) M_PI / 180.0f;
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%d", tv);
+            lv_draw_label_dsc_t lb;
+            lv_draw_label_dsc_init(&lb);
+            lb.font = &lv_font_montserrat_12;
+            lb.color = lv_color_hex(0x6A7480);
+            lb.text = buf;
+            lb.align = LV_TEXT_ALIGN_CENTER;
+            int lx = 120 + (int)(86.0f * cosf(a));
+            int ly = 120 + (int)(86.0f * sinf(a));
+            lv_area_t area = {lx - 14, ly - 7, lx + 14, ly + 7};
+            lv_draw_label(&layer, &lb, &area);
+          }
+
+          // full track
+          d.color = lv_color_hex(0x1D2740); d.opa = LV_OPA_COVER;
+          d.start_angle = A_START; d.end_angle = A_START + A_SWEEP;
+          lv_draw_arc(&layer, &d);
+
+          if (id(g_online) && tgt > 0) {
+            float a_end = v2a(tgt);
+            // breathing glow under the mode arc (soft halo, pulses when running)
+            float phase = active ? (0.5f + 0.5f * sinf(millis() / 550.0f)) : 0.35f;
+            lv_draw_arc_dsc_t g;
+            lv_draw_arc_dsc_init(&g);
+            g.center.x = 120; g.center.y = 120; g.rounded = 1;
+            g.radius = 108; g.width = 22;
+            g.color = accent; g.opa = (lv_opa_t)(28 + 40 * phase);
+            g.start_angle = A_START; g.end_angle = a_end;
+            lv_draw_arc(&layer, &g);
+
+            // gradient mode arc: dark near the scale start -> bright at the tip
+            lv_color_t base = mix(accent, BG, 140);            // 55% toward bg
+            lv_color_t tip  = mix(lv_color_hex(0xFFFFFF), accent, 90); // lightened
+            const int SEGS = 28;
+            for (int i = 0; i < SEGS; i++) {
+              float f0 = (float) i / SEGS, f1 = (float) (i + 1) / SEGS;
+              lv_draw_arc_dsc_t s;
+              lv_draw_arc_dsc_init(&s);
+              s.center.x = 120; s.center.y = 120;
+              s.radius = 104; s.width = 12;
+              s.rounded = (i == 0 || i == SEGS - 1) ? 1 : 0;
+              s.color = mix(tip, base, (uint8_t)(255 * f1));
+              s.opa = LV_OPA_COVER;
+              s.start_angle = A_START + (a_end - A_START) * f0;
+              s.end_angle   = A_START + (a_end - A_START) * f1 + 0.7f; // overlap: no seams
+              lv_draw_arc(&layer, &s);
+            }
+
+            // shimmer: a bright pulse travelling along the arc while running
+            if (active) {
+              float sh = fmodf(millis() / 1800.0f, 1.0f);
+              float shc = A_START + (a_end - A_START) * sh;
+              lv_draw_arc_dsc_t sm;
+              lv_draw_arc_dsc_init(&sm);
+              sm.center.x = 120; sm.center.y = 120;
+              sm.radius = 104; sm.width = 12; sm.rounded = 1;
+              sm.color = mix(lv_color_hex(0xFFFFFF), accent, 150);
+              sm.opa = LV_OPA_60;
+              sm.start_angle = shc - 7; sm.end_angle = shc + 7;
+              if (sm.start_angle >= A_START && sm.end_angle <= a_end)
+                lv_draw_arc(&layer, &sm);
+            }
+
+            // amber span from setpoint to room temp ("work to do", like the card)
+            if (room > 0 && fabsf(room - tgt) > 0.15f) {
+              float a_room = v2a(room);
+              lv_color_t am0 = lv_color_hex(0xF2933A), am1 = lv_color_hex(0xFFB55E);
+              const int RSEG = 14;
+              float lo = std::min(a_room, a_end), hi = std::max(a_room, a_end);
+              for (int i = 0; i < RSEG; i++) {
+                float f0 = (float) i / RSEG, f1 = (float) (i + 1) / RSEG;
+                lv_draw_arc_dsc_t s;
+                lv_draw_arc_dsc_init(&s);
+                s.center.x = 120; s.center.y = 120;
+                s.radius = 104; s.width = 8;
+                s.rounded = (i == 0 || i == RSEG - 1) ? 1 : 0;
+                s.color = mix(am1, am0, (uint8_t)(255 * f1));
+                s.opa = LV_OPA_90;
+                s.start_angle = lo + (hi - lo) * f0;
+                s.end_angle   = lo + (hi - lo) * f1 + 0.7f;
+                lv_draw_arc(&layer, &s);
+              }
+              // white room pointer dot with dark outline (the "80° ROOM" marker)
+              lv_draw_arc_dsc_t p;
+              lv_draw_arc_dsc_init(&p);
+              float pr = 104.0f;
+              p.center.x = 120 + (int)(pr * cosf(a_room * (float) M_PI / 180.0f));
+              p.center.y = 120 + (int)(pr * sinf(a_room * (float) M_PI / 180.0f));
+              p.radius = 8; p.width = 8; p.rounded = 0;
+              p.start_angle = 0; p.end_angle = 360;
+              p.color = BG; p.opa = LV_OPA_COVER;
+              lv_draw_arc(&layer, &p);
+              p.radius = 6; p.width = 6;
+              p.color = lv_color_hex(0xF2F5F8);
+              lv_draw_arc(&layer, &p);
+            }
+
+            // bright cap dot at the setpoint tip (the card's teardrop tip)
+            lv_draw_arc_dsc_t c;
+            lv_draw_arc_dsc_init(&c);
+            float cr = 104.0f;
+            c.center.x = 120 + (int)(cr * cosf(a_end * (float) M_PI / 180.0f));
+            c.center.y = 120 + (int)(cr * sinf(a_end * (float) M_PI / 180.0f));
+            c.radius = 9; c.width = 9; c.rounded = 0;
+            c.start_angle = 0; c.end_angle = 360;
+            c.color = mix(lv_color_hex(0xFFFFFF), accent, 60); c.opa = LV_OPA_COVER;
+            lv_draw_arc(&layer, &c);
+          }
+
+          lv_canvas_finish_layer(id(gauge_canvas), &layer);
+          lv_obj_invalidate(id(gauge_canvas));
 
 lvgl:
   id: lvgl_main
@@ -443,65 +602,12 @@ lvgl:
     - id: main_page
       bg_color: 0x111A2E
       widgets:
-        # instrument-cluster gauge: 270° ticked scale with temperature labels
-        - meter:
-            id: gauge
+        # hand-rendered gauge layer (gradient arcs, glow, ticks, markers)
+        - canvas:
+            id: gauge_canvas
             align: CENTER
             width: 240
             height: 240
-            bg_opa: TRANSP
-            border_opa: TRANSP
-            scales:
-              - range_from: ${temp_min}
-                range_to: ${temp_max}
-                angle_range: 270
-                rotation: 135
-                ticks:
-                  count: 31
-                  width: 1
-                  length: 8
-                  color: 0x546070
-                  major:
-                    stride: 5
-                    width: 2
-                    length: 13
-                    color: 0x8B95A2
-                    label_gap: 14
-                indicators:
-                  # faint full track behind the colored arcs
-                  - arc:
-                      id: track_ind
-                      color: 0x232B3D
-                      r_mod: -22
-                      width: 12
-                      start_value: ${temp_min}
-                      end_value: ${temp_max}
-                  # amber span between setpoint and room temp
-                  - arc:
-                      id: span_ind
-                      color: 0xF2933A
-                      r_mod: -22
-                      width: 12
-                      start_value: ${temp_min}
-                      end_value: ${temp_min}
-                  # mode-colored arc up to the setpoint
-                  - arc:
-                      id: target_ind
-                      color: 0x8B95A2
-                      r_mod: -22
-                      width: 12
-                      start_value: ${temp_min}
-                      end_value: ${temp_min}
-        - label:
-            id: zone_label
-            align: CENTER
-            y: -68
-            width: 150
-            text_align: CENTER
-            long_mode: DOT
-            text: "climateIQ"
-            text_font: montserrat_12
-            text_color: 0x9AA5B1
         - label:
             id: mode_word_label
             align: CENTER

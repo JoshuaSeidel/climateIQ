@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.72] - 2026-09-24
+
+### Changed
+- **esp32-dial: hand-rendered gauge with gradients, glow, and animation.** Plain LVGL widgets couldn't reproduce the climate-cluster-card look, so the gauge is now drawn on a canvas: mode-colored arc with a dark→bright gradient along its sweep and rounded caps, a soft breathing glow halo that pulses while heating/cooling, a bright shimmer pulse travelling along the arc while running, amber gradient span from setpoint to room temp with a white room-pointer dot, a bright cap dot at the setpoint tip, and canvas-drawn tick marks. Arc values ease smoothly (25 fps) instead of jumping when the setpoint or room temp changes.
+
 ## [1.0.71] - 2026-09-24
 
 ### Added
