@@ -96,6 +96,9 @@ globals:
   - id: g_zone_names
     type: std::string
     initial_value: '""'
+  - id: g_fan_mode
+    type: std::string
+    initial_value: '""'
   - id: g_hvac_mode
     type: std::string
     initial_value: '""'
@@ -167,10 +170,18 @@ binary_sensor:
       - delayed_on: 30ms
       - delayed_off: 30ms
     on_multi_click:
+      # Double press: toggle fan auto <-> on
+      - timing:
+          - ON for at most 400ms
+          - OFF for at most 300ms
+          - ON for at most 400ms
+          - OFF for at least 100ms
+        then:
+          - script.execute: toggle_fan
       # Short press: send pending target now (or force a refresh if not editing)
       - timing:
           - ON for at most 800ms
-          - OFF for at least 50ms
+          - OFF for at least 350ms
         then:
           - if:
               condition:
@@ -262,6 +273,27 @@ script:
       - script.execute: refresh_ui
       - script.execute: poll_status
 
+  - id: toggle_fan
+    then:
+      - http_request.post:
+          url: ${climateiq_base_url}/api/v1/system/fan
+          request_headers:
+            Content-Type: application/json
+            Authorization: "Bearer ${climateiq_api_key}"
+          body: !lambda |-
+            const char* next = id(g_fan_mode) == "on" ? "auto" : "on";
+            return std::string("{\"mode\": \"") + next + "\"}";
+          on_response:
+            then:
+              - lambda: |-
+                  if (response->status_code == 200) {
+                    id(g_fan_mode) = id(g_fan_mode) == "on" ? "auto" : "on";
+                    ESP_LOGI("dial", "Fan mode -> %s", id(g_fan_mode).c_str());
+                  } else {
+                    ESP_LOGW("dial", "Fan toggle failed: HTTP %d", response->status_code);
+                  }
+      - script.execute: refresh_ui
+
   - id: resume_schedule
     then:
       - lambda: id(g_editing) = false;
@@ -308,6 +340,7 @@ script:
                     if (!root["schedule_target_temp"].isNull())
                       id(g_schedule_target) = root["schedule_target_temp"].as<float>();
                     id(g_zone_names)  = root["schedule_zone_names"].isNull() ? "" : std::string(root["schedule_zone_names"].as<const char*>());
+                    id(g_fan_mode)    = root["fan_mode"].isNull() ? "" : std::string(root["fan_mode"].as<const char*>());
                     id(g_hvac_mode)   = root["hvac_mode"].isNull()   ? "" : std::string(root["hvac_mode"].as<const char*>());
                     id(g_hvac_action) = root["hvac_action"].isNull() ? "" : std::string(root["hvac_action"].as<const char*>());
                     id(g_override_active) = !root["is_override_active"].isNull() && root["is_override_active"].as<bool>();
@@ -374,6 +407,16 @@ script:
             lv_obj_set_style_text_color(id(status_label), accent, 0);
             if (room > 0) lv_label_set_text_fmt(id(room_label), "ROOM %.1f°", room);
             else          lv_label_set_text(id(room_label), "ROOM --");
+            // fan chip (card control rail): blue when forced ON, gray on AUTO
+            std::string fan = id(g_fan_mode);
+            if (fan.empty()) {
+              lv_label_set_text(id(fan_label), "");
+            } else {
+              bool fan_on = fan == "on";
+              lv_label_set_text_fmt(id(fan_label), "FAN %s", fan_on ? "ON" : "AUTO");
+              lv_obj_set_style_text_color(id(fan_label),
+                  fan_on ? lv_color_hex(0x27D3FF) : lv_color_hex(0x6A7480), 0);
+            }
             std::string zones = id(g_zone_names);
             lv_label_set_text(id(zone_label), zones.empty() ? "climateIQ" : zones.c_str());
           } else {
@@ -382,6 +425,7 @@ script:
             lv_label_set_text(id(status_label), "OFFLINE");
             lv_obj_set_style_text_color(id(status_label), lv_color_hex(0xEF5350), 0);
             lv_label_set_text(id(room_label), "");
+            lv_label_set_text(id(fan_label), "");
             lv_label_set_text(id(zone_label), "climateIQ");
           }
           // breathing status while running/dialing (card's animated status dot)
@@ -486,3 +530,11 @@ lvgl:
             text: ""
             text_font: montserrat_12
             text_color: 0xC6D3DF
+        # fan chip sits in the gauge's bottom gap; double-press the knob to toggle
+        - label:
+            id: fan_label
+            align: CENTER
+            y: 96
+            text: ""
+            text_font: montserrat_12
+            text_color: 0x6A7480

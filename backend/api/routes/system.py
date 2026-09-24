@@ -1268,6 +1268,99 @@ async def set_manual_override(
     }
 
 
+@router.post("/fan")
+async def set_fan_mode(
+    payload: dict[str, Any],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Set the thermostat fan mode (e.g. ``auto`` / ``on`` on Ecobee)."""
+    import logging as _logging
+
+    from backend.api.dependencies import _ha_client
+    from backend.config import SETTINGS
+    from backend.integrations.ha_client import HAClientError
+    from backend.models.database import Device, DeviceAction, SystemSetting
+    from backend.models.enums import ActionType, TriggerType
+
+    _logger = _logging.getLogger(__name__)
+
+    mode = payload.get("mode")
+    if not mode or not isinstance(mode, str):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="mode is required (e.g. 'auto' or 'on')",
+        )
+    mode = mode.strip().lower()
+
+    if _ha_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Home Assistant client not connected",
+        )
+
+    # Resolve the climate entity (same resolution as the override endpoints)
+    climate_entity: str | None = None
+    result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "climate_entities")
+    )
+    row = result.scalar_one_or_none()
+    if row and row.value:
+        raw_val = row.value.get("value", "")
+        if raw_val:
+            climate_entity = raw_val.split(",")[0].strip()
+    if not climate_entity and SETTINGS.climate_entities:
+        climate_entity = SETTINGS.climate_entities.split(",")[0].strip()
+    if not climate_entity:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No climate entity configured. Set climate_entities in add-on settings.",
+        )
+
+    # Validate against the entity's supported fan modes when available
+    try:
+        state = await _ha_client.get_state(climate_entity)
+        supported = state.attributes.get("fan_modes")
+        if supported and mode not in [str(m).lower() for m in supported]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported fan mode '{mode}'. Supported: {supported}",
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _logger.debug("Fan mode validation skipped (state fetch failed): %s", exc)
+
+    try:
+        await _ha_client.set_fan_mode(climate_entity, mode)
+    except HAClientError as exc:
+        _logger.error("Set fan mode failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to set fan mode: {exc}",
+        ) from exc
+
+    # Audit trail (best-effort)
+    try:
+        dev_result = await db.execute(
+            select(Device).where(Device.ha_entity_id == climate_entity)
+        )
+        device = dev_result.scalar_one_or_none()
+        if device:
+            db.add(
+                DeviceAction(
+                    device_id=device.id,
+                    triggered_by=TriggerType.user_override,
+                    action_type=ActionType.set_fan_speed,
+                    parameters={"fan_mode": mode},
+                )
+            )
+            await db.commit()
+    except Exception as audit_err:
+        _logger.debug("Audit trail recording (non-critical): %s", audit_err)
+
+    return {"success": True, "message": f"Fan mode set to {mode}", "fan_mode": mode}
+
+
 # ---------------------------------------------------------------------------
 # GET /system/debug/offset-calculation — debug offset calculation
 # ---------------------------------------------------------------------------
@@ -1494,6 +1587,8 @@ async def get_override_status(
         hvac_mode = state.state if hasattr(state, "state") else None
         preset_mode = attrs.get("preset_mode")
         hvac_action = attrs.get("hvac_action")
+        fan_mode = attrs.get("fan_mode")
+        fan_modes = attrs.get("fan_modes")
 
         # Ecobee in heat_cool/auto reports target_temp_low/high separately
         # instead of `temperature`.  Pick the active side based on current
@@ -1695,6 +1790,8 @@ async def get_override_status(
             "hvac_mode": hvac_mode,
             "hvac_action": hvac_action,
             "preset_mode": preset_mode,
+            "fan_mode": fan_mode,
+            "fan_modes": fan_modes,
             "is_override_active": is_override,
             "offset_info": offset_info,
             "schedule_avg_temp": schedule_avg_temp,
@@ -1711,6 +1808,8 @@ async def get_override_status(
             "hvac_mode": None,
             "hvac_action": None,
             "preset_mode": None,
+            "fan_mode": None,
+            "fan_modes": None,
             "is_override_active": False,
             "offset_info": {},
             "schedule_avg_temp": None,

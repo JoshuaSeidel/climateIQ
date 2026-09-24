@@ -529,6 +529,22 @@ class HAClient:
             target={"entity_id": entity_id},
         )
 
+    async def set_fan_mode(self, entity_id: str, fan_mode: str) -> Any:
+        """Set the fan mode on a climate entity.
+
+        Args:
+            entity_id: Climate entity id.
+            fan_mode: One of the entity's supported ``fan_modes``
+                      (Ecobee: ``auto`` or ``on``).
+        """
+        logger.info("Setting fan mode on %s to %s", entity_id, fan_mode)
+        return await self.call_service(
+            "climate",
+            "set_fan_mode",
+            data={"fan_mode": fan_mode},
+            target={"entity_id": entity_id},
+        )
+
     # -- cover helpers --------------------------------------------------------
 
     async def set_cover_position(self, entity_id: str, position: int) -> Any:

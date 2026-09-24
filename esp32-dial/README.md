@@ -14,6 +14,7 @@ temperature with a `Set` readout.
 |---|---|
 | Rotate | Adjust target temperature (auto-sends 2 s after you stop turning) |
 | Short press | Send the pending target immediately (or force a refresh) |
+| Double press | Toggle thermostat fan: auto ↔ on |
 | Long press (1 s) | Cancel hold — resume the ClimateIQ schedule |
 
 Arc/status colors: orange = heating, blue = cooling, amber = while dialing, gray = idle,
@@ -30,6 +31,7 @@ In **HA add-on mode** the backend listens on port **8099** on the host (uvicorn 
   HVAC mode/action, and hold state. Temperatures arrive already in your display unit.
 - `POST /api/v1/system/override` `{"temperature": X}` — set a manual hold.
 - `POST /api/v1/system/quick-action` `{"action": "resume"}` — return to schedule.
+- `POST /api/v1/system/fan` `{"mode": "auto"|"on"}` — set the thermostat fan mode.
 
 If the backend runs standalone with `CLIMATEIQ_API_KEY` set, put that key in the
 `climateiq_api_key` substitution (sent as `Authorization: Bearer`). In HA add-on mode

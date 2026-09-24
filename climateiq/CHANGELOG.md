@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.71] - 2026-09-24
+
+### Added
+- **Fan API.** New `POST /api/v1/system/fan` `{"mode": "auto"|"on"}` sets the thermostat fan via HA `climate.set_fan_mode` (validated against the entity's supported `fan_modes`, audit-trailed as `set_fan_speed`). `GET /api/v1/system/override` now also returns `fan_mode` and `fan_modes`. New `HAClient.set_fan_mode()`.
+- **esp32-dial fan control.** The dial shows a FAN chip in the gauge's bottom gap (blue `FAN ON` / gray `FAN AUTO`) and a double-press of the knob toggles the fan between auto and on. Short-press timing tightened (release gap 350 ms) to disambiguate from double-press.
+
 ## [1.0.70] - 2026-09-24
 
 ### Changed
