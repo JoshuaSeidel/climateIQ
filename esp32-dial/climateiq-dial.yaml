@@ -1,7 +1,8 @@
 # ClimateIQ Rotary Dial — ESPHome firmware
 #
-# Hardware: GrowCube / VIEWE 1.28" ESP32-C3 round knob display
-#           (VIEWE UEDX24240013-MD50E: GC9A01 240x240 IPS, rotary encoder + push button)
+# Hardware: GrowCube 1.28" ESP32-S3 round knob display
+#           (Elecrow CrowPanel 1.28" HMI rebrand: GC9A01 240x240 IPS, CST816 touch,
+#            rotary encoder + push button, 16MB flash, octal PSRAM)
 #
 # Talks directly to the climateIQ backend REST API (port 8420):
 #   GET  /api/v1/system/override      -> live state (temps arrive in your display unit)
@@ -34,13 +35,16 @@ esphome:
   friendly_name: ${friendly_name}
 
 esp32:
-  board: esp32-c3-devkitm-1
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
   framework:
-    type: arduino
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
 
 logger:
-  # UART logging conflicts with SPI pin 1 on some batches; USB logging only
-  baud_rate: 0
 
 api:
 
@@ -90,26 +94,36 @@ globals:
 
 spi:
   id: spi_bus
-  clk_pin: 1
-  mosi_pin: 0
+  clk_pin: GPIO10
+  mosi_pin: GPIO11
+
+i2c:
+  id: i2c_touch
+  sda: GPIO6
+  scl: GPIO7
 
 display:
-  - platform: ili9xxx
+  - platform: mipi_spi
     model: GC9A01A
     id: round_display
     spi_id: spi_bus
-    cs_pin: 10
-    dc_pin: 4
-    reset_pin: 2
-    invert_colors: true
+    cs_pin: GPIO9
+    dc_pin: GPIO3
+    reset_pin: GPIO14
     auto_clear_enabled: false
     update_interval: never
+
+touchscreen:
+  - platform: cst816
+    id: round_touch
+    i2c_id: i2c_touch
+    interrupt_pin: GPIO5
+    reset_pin: GPIO13
 
 output:
   - platform: ledc
     id: backlight_output
-    inverted: true
-    pin: 8
+    pin: GPIO46
     frequency: 5000Hz
 
 light:
@@ -122,8 +136,8 @@ light:
 sensor:
   - platform: rotary_encoder
     id: dial_encoder
-    pin_a: 6
-    pin_b: 7
+    pin_a: GPIO45
+    pin_b: GPIO42
     resolution: 2
     internal: true
     on_clockwise:
@@ -140,8 +154,9 @@ binary_sensor:
     id: dial_button
     internal: true
     pin:
-      number: 9
+      number: GPIO41
       inverted: true
+      mode: INPUT_PULLUP
     filters:
       - delayed_on: 30ms
       - delayed_off: 30ms
@@ -327,6 +342,7 @@ script:
 lvgl:
   id: lvgl_main
   displays: [round_display]
+  touchscreens: [round_touch]
   buffer_size: 25%
   color_depth: 16
   bg_color: 0x101418

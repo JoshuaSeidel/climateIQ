@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.67] - 2026-09-24
+
+### Fixed
+- **esp32-dial: correct board target.** The GrowCube 1.28" knob is an ESP32-S3 (Elecrow CrowPanel 1.28" HMI rebrand), not the ESP32-C3 VIEWE variant — flashing failed with a board mismatch. Firmware now targets `esp32-s3-devkitc-1` (16MB flash, octal PSRAM, ESP-IDF) with the CrowPanel pinout (SPI 10/11, CS 9, DC 3, RST 14, backlight 46, encoder 45/42, button 41) and adds the CST816 touchscreen to LVGL.
+
 ## [1.0.66] - 2026-09-24
 
 ### Added

@@ -1,8 +1,9 @@
 # ClimateIQ Rotary Dial
 
-Physical desk/wall dial for ClimateIQ, built on the **GrowCube / VIEWE 1.28" ESP32-C3
-round knob display** (VIEWE UEDX24240013-MD50E — GC9A01 240×240 IPS, aluminum rotary
-encoder ring with push button). Firmware is ESPHome + LVGL, with a face modeled on
+Physical desk/wall dial for ClimateIQ, built on the **GrowCube 1.28" ESP32-S3 round
+knob display** (an Elecrow CrowPanel 1.28" HMI rebrand — GC9A01 240×240 IPS, CST816
+capacitive touch, aluminum rotary encoder ring with push button, 16MB flash + octal
+PSRAM). Firmware is ESPHome + LVGL, with a face modeled on
 [climate-cluster-card](https://github.com/rickyfont94/climate-cluster-card): dark
 instrument-cluster look, outer scale ring, mode-colored target arc, big center current
 temperature with a `Set` readout.
@@ -45,7 +46,8 @@ direct LAN access needs no auth.
 The device also joins Home Assistant via the native ESPHome API (backlight control
 entity), and falls back to a `ClimateIQ-Dial` setup AP if Wi-Fi is unconfigured.
 
-## Pinout (VIEWE MD50E / GrowCube 1.28")
+## Pinout (GrowCube / CrowPanel 1.28" ESP32-S3)
 
-GC9A01 SPI: CLK 1, MOSI 0, CS 10, DC 4, RST 2 · backlight PWM 8 (inverted) ·
-encoder A/B 6/7 · button 9 (active low).
+GC9A01 SPI: CLK 10, MOSI 11, CS 9, DC 3, RST 14 · backlight PWM 46 ·
+encoder A/B 45/42 · button 41 (active low) · CST816 touch: I2C SDA 6 / SCL 7,
+INT 5, RST 13.
