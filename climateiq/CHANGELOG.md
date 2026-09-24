@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.74] - 2026-09-24
+
+### Added
+- **esp32-dial: control lock.** The dial boots locked ("LOCKED" shown under the rim). Turning a locked knob does nothing except flash "PRESS TO UNLOCK"; any button gesture on a locked dial only unlocks it — it never performs an action. Once unlocked, every turn or press restarts a 10-second timer; 10 s of inactivity re-locks automatically. Prevents casual/accidental setpoint changes.
+
 ## [1.0.73] - 2026-09-24
 
 ### Changed

@@ -99,6 +99,9 @@ globals:
   - id: g_fan_mode
     type: std::string
     initial_value: '""'
+  - id: g_locked            # child/guest lock: press-in to unlock, auto-relocks
+    type: bool
+    initial_value: "true"
   - id: g_hvac_mode
     type: std::string
     initial_value: '""'
@@ -150,13 +153,27 @@ sensor:
     resolution: 2
     internal: true
     on_clockwise:
-      - script.execute:
-          id: adjust_temp
-          delta: ${temp_step}
+      - if:
+          condition:
+            lambda: return id(g_locked);
+          then:
+            - script.execute: lock_hint
+          else:
+            - script.execute: relock_timer
+            - script.execute:
+                id: adjust_temp
+                delta: ${temp_step}
     on_anticlockwise:
-      - script.execute:
-          id: adjust_temp
-          delta: -${temp_step}
+      - if:
+          condition:
+            lambda: return id(g_locked);
+          then:
+            - script.execute: lock_hint
+          else:
+            - script.execute: relock_timer
+            - script.execute:
+                id: adjust_temp
+                delta: -${temp_step}
 
 binary_sensor:
   - platform: gpio
@@ -170,6 +187,7 @@ binary_sensor:
       - delayed_on: 30ms
       - delayed_off: 30ms
     on_multi_click:
+      # While locked, every gesture only unlocks — it never performs an action.
       # Double press: toggle fan auto <-> on
       - timing:
           - ON for at most 400ms
@@ -177,25 +195,46 @@ binary_sensor:
           - ON for at most 400ms
           - OFF for at least 100ms
         then:
-          - script.execute: toggle_fan
-      # Short press: send pending target now (or force a refresh if not editing)
+          - if:
+              condition:
+                lambda: return id(g_locked);
+              then:
+                - script.execute: unlock
+              else:
+                - script.execute: relock_timer
+                - script.execute: toggle_fan
+      # Short press: unlock, or send pending target now (or force a refresh)
       - timing:
           - ON for at most 800ms
           - OFF for at least 350ms
         then:
           - if:
               condition:
-                lambda: return id(g_editing);
+                lambda: return id(g_locked);
               then:
-                - script.stop: send_override_debounced
-                - script.execute: send_override
+                - script.execute: unlock
               else:
-                - script.execute: poll_status
+                - script.execute: relock_timer
+                - if:
+                    condition:
+                      lambda: return id(g_editing);
+                    then:
+                      - script.stop: send_override_debounced
+                      - script.execute: send_override
+                    else:
+                      - script.execute: poll_status
       # Long press: cancel hold, resume schedule
       - timing:
           - ON for at least 1s
         then:
-          - script.execute: resume_schedule
+          - if:
+              condition:
+                lambda: return id(g_locked);
+              then:
+                - script.execute: unlock
+              else:
+                - script.execute: relock_timer
+                - script.execute: resume_schedule
 
 interval:
   # 25 fps animation tick: eases the arcs toward their new values and drives
@@ -288,6 +327,30 @@ script:
                   id(g_online) = false;
       - script.execute: refresh_ui
       - script.execute: poll_status
+
+  # ---- control lock ----------------------------------------------------------
+  - id: unlock
+    then:
+      - lambda: id(g_locked) = false;
+      - script.execute: relock_timer
+      - script.execute: refresh_ui
+
+  - id: relock_timer
+    mode: restart
+    then:
+      - delay: 10s
+      - lambda: id(g_locked) = true;
+      - script.execute: refresh_ui
+
+  # flashes "PRESS TO UNLOCK" when someone turns a locked dial
+  - id: lock_hint
+    mode: restart
+    then:
+      - lambda: |-
+          lv_label_set_text(id(lock_label), "PRESS TO UNLOCK");
+          lv_obj_set_style_text_color(id(lock_label), lv_color_hex(0xFFD54F), 0);
+      - delay: 1500ms
+      - script.execute: refresh_ui
 
   - id: toggle_fan
     then:
@@ -383,6 +446,13 @@ script:
           else if (mode == "off")       { mode_color = lv_color_hex(0x6A7480); mode_word = "OFF"; }
           else                          { mode_color = lv_color_hex(0x8B95A2); mode_word = ""; }
           lv_color_t accent = id(g_editing) ? lv_color_hex(0xFFD54F) : mode_color;
+
+          if (id(g_locked)) {
+            lv_label_set_text(id(lock_label), "LOCKED");
+            lv_obj_set_style_text_color(id(lock_label), lv_color_hex(0x6A7480), 0);
+          } else {
+            lv_label_set_text(id(lock_label), "");
+          }
 
           float shown_target = id(g_editing) ? id(g_edit_temp)
                              : (id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp));
@@ -610,6 +680,13 @@ lvgl:
             align: CENTER
             width: 240
             height: 240
+        - label:
+            id: lock_label
+            align: CENTER
+            y: -68
+            text: "LOCKED"
+            text_font: montserrat_12
+            text_color: 0x6A7480
         - label:
             id: mode_word_label
             align: CENTER
