@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.76] - 2026-09-24
+
+### Fixed
+- **esp32-dial: garbage glyphs and wrong (bright blue) background on the canvas gauge.** Two LVGL 9 canvas bugs: (1) rim scale numbers were drawn from a stack buffer, but LVGL defers label draws until the layer finishes — the dangling pointers rendered as random garbage text across the face; now `text_local = 1` so LVGL copies the string. (2) `lv_canvas_fill_bg` writes raw pixels with the wrong byte order on this panel (navy became bright blue); the background is now painted as a full-screen rect through the same layer draw pipeline as the arcs, which renders correctly.
+
 ## [1.0.75] - 2026-09-24
 
 ### Changed

@@ -525,9 +525,18 @@ script:
           float tgt  = id(g_disp_target);
           float room = id(g_disp_room);
 
-          lv_canvas_fill_bg(id(gauge_canvas), BG, LV_OPA_COVER);
           lv_layer_t layer;
           lv_canvas_init_layer(id(gauge_canvas), &layer);
+
+          // background painted through the layer pipeline (lv_canvas_fill_bg
+          // writes raw pixels with the wrong byte order on this panel)
+          lv_draw_rect_dsc_t bgd;
+          lv_draw_rect_dsc_init(&bgd);
+          bgd.bg_color = BG; bgd.bg_opa = LV_OPA_COVER;
+          bgd.border_opa = LV_OPA_TRANSP; bgd.outline_opa = LV_OPA_TRANSP;
+          bgd.shadow_opa = LV_OPA_TRANSP;
+          lv_area_t full = {0, 0, 239, 239};
+          lv_draw_rect(&layer, &bgd, &full);
 
           lv_draw_arc_dsc_t d;
           lv_draw_arc_dsc_init(&d);
@@ -557,6 +566,7 @@ script:
             lb.font = &lv_font_montserrat_12;
             lb.color = lv_color_hex(0x6A7480);
             lb.text = buf;
+            lb.text_local = 1;  // draw is deferred; LVGL must copy the stack buffer
             lb.align = LV_TEXT_ALIGN_CENTER;
             int lx = 120 + (int)(86.0f * cosf(a));
             int ly = 120 + (int)(86.0f * sinf(a));
