@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.78] - 2026-10-02
+
+### Fixed
+- **A total LLM outage was reported as a model parsing failure.** When every provider in the chain is unreachable, `ClimateIQLLMProvider.chat()` returns `_rule_based_fallback()` — a chat-shaped response containing ClimateIQ's *own* prose ("I cannot reach any configured LLM provider right now…"). `ClimateAdvisor` could not tell that apart from a real reply, tried to parse it as a decision, and logged `LLM call failed (No JSON found in LLM response: 'I cannot reach any configured LLM provider…')`, blaming the model for what was actually a connectivity failure. The fallback now carries a `climateiq_provider_unavailable` marker and the advisor checks it, logging `no LLM provider reachable — using formula`. The chat UI still gets the same readable prose; only the misdiagnosis is gone.
+- **The advisor was told the thermostat's setpoint was whatever ClimateIQ last wrote**, via the in-memory `_last_offset_temp` dict, rather than the live value. The prompt derives its `HVAC currently: firing / idle` line by comparing the thermostat's own reading against that setpoint, so a stale number asserts the AC is running when it is idle (or vice versa) — a false premise feeding the decision. `_last_offset_temp` is empty after a restart and goes stale whenever the thermostat is changed by its own schedule or by hand. The advisor now receives a live `get_current_setpoint_c()` read, falling back to the cached value and then the schedule target.
+- **House-knowledge retrieval searched on the wrong target temperature.** `ClimateAdvisor.advise()` built its directive-retrieval context with `Target: {current_avg_c}` instead of `desired_temp_c`, so "Target" and "Current avg" were always the same number and directives were matched against a target the schedule never asked for.
+
+### Notes
+- Investigated the contradictory advisor reasoning seen in the logs. The configured model is `qwen2.5vl:3b` — a 3.8B **vision-language** model being used for numeric reasoning and JSON. Across a 3-scenario × 2-run directional eval against the real prompt it never actually chose a wrong-direction setpoint, so this is an observability problem rather than a control one, and `SafetyProtocol`'s directional rule guards the dangerous case regardless. Measured warm latency on the local Ollama host for comparison: `qwen2.5vl:3b` 3.5 s avg, `qwen2.5:7b` 6.5 s, `llama3.1:8b` 8.1 s — all far inside the 30 s `timeout_s`. `gemma2:latest` took 40 s (would time out) and `qwen3.5:4b` returned no parsable JSON.
+
 ## [1.0.77] - 2026-10-02
 
 ### Fixed

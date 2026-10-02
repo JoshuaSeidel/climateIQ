@@ -884,7 +884,7 @@ class ClimateAdvisor:
             context_text = (
                 f"Zone: {zone_names or 'unknown'}. "
                 f"HVAC mode: {hvac_mode}. "
-                f"Target: {round(current_avg_c * 9 / 5 + 32):.0f}°F. "
+                f"Target: {round(desired_temp_c * 9 / 5 + 32):.0f}°F. "
                 f"Current avg: {round(current_avg_c * 9 / 5 + 32, 1):.1f}°F."
             )
             memories = await _get_relevant_directives(db, context_text)
@@ -934,6 +934,14 @@ class ClimateAdvisor:
                 max_tokens=_LLM_MAX_TOKENS,
                 temperature=_LLM_TEMPERATURE,
             )
+            if response.get("climateiq_provider_unavailable"):
+                # Every provider in the chain was unreachable, so `response`
+                # carries ClimateIQ's own placeholder prose rather than a model
+                # decision.  Say so plainly instead of blaming JSON parsing.
+                logger.warning(
+                    "ClimateAdvisor: no LLM provider reachable — using formula"
+                )
+                return formula_decision
             content = response["choices"][0]["message"]["content"].strip()
             decision = self._parse_response(content, formula_adjusted_c)
         except Exception as exc:

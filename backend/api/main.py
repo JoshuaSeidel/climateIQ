@@ -1841,6 +1841,23 @@ async def maintain_climate_offset() -> None:
                 # Current thermostat reading (cheap — HA WS state is cached)
                 thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity, db=db)
 
+                # Live setpoint, not the one we last wrote.  The prompt derives
+                # "HVAC currently: firing/idle" by comparing the thermostat's own
+                # reading against this value, so a stale number tells the model
+                # the AC is running when it is idle (or vice versa).  The
+                # in-memory _last_offset_temp is only a fallback: it is empty
+                # after a restart and goes stale whenever the thermostat is
+                # changed by its own schedule or by hand.
+                from backend.core.temp_compensation import get_current_setpoint_c
+
+                live_setpoint_c = await get_current_setpoint_c(
+                    ha_client, climate_entity, intent_mode=hvac_mode or sched_hvac_mode
+                )
+                if live_setpoint_c is None:
+                    live_setpoint_c = _last_offset_temp.get(sched_key)
+                if live_setpoint_c is None:
+                    live_setpoint_c = desired_temp_c
+
                 decision = await ClimateAdvisor().advise(
                     db=db,
                     settings=settings_instance,
@@ -1852,7 +1869,7 @@ async def maintain_climate_offset() -> None:
                     formula_adjusted_c=adjusted_temp_c,
                     hvac_mode=hvac_mode,
                     thermostat_c=thermostat_c,
-                    current_setpoint_c=_last_offset_temp.get(sched_key) or desired_temp_c,
+                    current_setpoint_c=live_setpoint_c,
                     zone_names=priority_zone_name,
                     thermal_profile=thermal_profile,
                 )

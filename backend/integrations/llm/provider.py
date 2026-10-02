@@ -550,6 +550,10 @@ class ClimateIQLLMProvider:
             "object": "chat.completion",
             "created": int(time.time()),
             "model": "rule-based",
+            # Machine-readable marker: this is ClimateIQ's own text, NOT a model
+            # reply.  Non-conversational callers (e.g. ClimateAdvisor) must check
+            # this instead of trying to parse the prose as a decision.
+            "climateiq_provider_unavailable": True,
             "choices": [
                 {
                     "index": 0,
