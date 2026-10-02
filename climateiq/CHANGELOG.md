@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.77] - 2026-10-02
+
+### Fixed
+- **Climate maintenance crashed on every tick while the house was at target** — `ERROR - Error in climate offset maintenance: cannot access local variable 'thermostat_c' where it is not associated with a value`. Regression from 1.0.64: the setpoint clamp added at the end of `maintain_climate_offset()` passes `thermostat_c=thermostat_c`, but that variable is only assigned inside the LLM-advisor branch. When the dead-band branch is taken (`abs(offset_c) < 0.01`, i.e. zones within ~1°F of target) the name was never bound, so the read raised `UnboundLocalError` and the whole maintenance tick aborted before writing anything. `thermostat_c` is now bound to `None` up front; the clamp already fetches the reading itself when passed `None`, and only does so on the rare path where a direction is actually blocked, so there is no extra HA call in the common case.
+
+### Changed
+- **mypy now runs with `possibly-undefined` enabled**, which catches reading a local that only some branches assign — exactly the bug above, and the second regression of this shape in this area. The backend is clean under it. `data_result` / `agg_result` in `analytics.py:262` are now bound up front with a comment: they were already safe (guarded by `use_raw_fallback`) but mypy cannot correlate the flag with the assignment.
+
 ## [1.0.76] - 2026-09-24
 
 ### Fixed

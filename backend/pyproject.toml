@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "climateiq-backend"
-version = "1.0.76"
+version = "1.0.77"
 description = "ClimateIQ backend service"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -65,6 +65,9 @@ disallow_untyped_defs = true
 disallow_any_generics = true
 strict_optional = true
 no_implicit_optional = true
+# Catches reading a local that only some branches assign — the class of bug
+# behind the "cannot access local variable 'thermostat_c'" crash fixed in v1.0.77.
+enable_error_code = ["possibly-undefined"]
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]

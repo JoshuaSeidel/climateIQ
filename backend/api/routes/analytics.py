@@ -260,6 +260,10 @@ async def get_overview(
 
     view = _pick_overview_view(hours)
     use_raw_fallback = False
+    # Bound up front: only read under `if not use_raw_fallback`, but mypy's
+    # possibly-undefined check can't correlate the flag with the assignment.
+    data_result: Any = None
+    agg_result: Any = None
 
     # Single query across all zones.
     # The continuous aggregate views group by (sensor_id, zone_id, bucket),

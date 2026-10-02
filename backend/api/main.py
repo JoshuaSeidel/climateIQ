@@ -1802,6 +1802,11 @@ async def maintain_climate_offset() -> None:
 
             sched_key = str(active_schedule.id)
 
+            # Only the advisor branch below reads the thermostat.  The setpoint
+            # clamp further down needs this either way, so bind it up front —
+            # None simply means "clamp fetches it itself, if it needs it".
+            thermostat_c: float | None = None
+
             # Dead-band / no offset → skip advisor, use formula result as-is
             if abs(offset_c) < 0.01 and abs(adjusted_temp_c - desired_temp_c) < 0.01:
                 final_adjusted_c = desired_temp_c
