@@ -54,7 +54,7 @@ const MODE_DESCRIPTIONS: Record<SystemMode, string> = {
   learn: 'System observes occupancy patterns and temperature preferences without making changes.',
   scheduled: 'System follows configured schedules to control HVAC devices.',
   follow_me: 'System tracks occupancy and adjusts climate in occupied zones automatically.',
-  active: 'Full AI-driven control. The LLM makes decisions based on all available data.',
+  active: 'Full AI-driven control. The LLM makes decisions based on all available data, and always honors your schedules (including preconditioning before they start).',
 }
 
 export const Settings = () => {

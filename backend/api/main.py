@@ -2317,6 +2317,11 @@ async def execute_active_mode() -> None:
     * The currently-active schedule (if any) defines the *focus zones*.
       Everything else is a *constraint zone* — the LLM must keep those in
       their comfort band but is not trying to hit their target.
+    * Schedules are binding.  The LLM's setpoint is clamped so it is never
+      less aggressive toward the schedule target than Schedule mode itself
+      would be (``backend/core/schedule_guard.py``), regardless of occupancy,
+      comfort bands, or constraint zones.  If ``execute_schedules`` has begun
+      preconditioning for an upcoming schedule, that schedule governs early.
     * If focus zones are already within ±0.5 °C of the schedule target and
       no constraint zone is out of band → skip the LLM entirely.
     * A change-gate hash is stored per climate entity.  If the input state
@@ -2745,14 +2750,66 @@ async def execute_active_mode() -> None:
                 ):
                     active_schedule = sched
 
+            # ── Upcoming schedule (next start today, within 3 h) ────────
+            # Shown to the LLM so it can plan ahead.  If execute_schedules
+            # has already started preconditioning for it, that schedule
+            # governs now — otherwise the next AI tick would undo the
+            # warm-up/cool-down the user relies on (e.g. nursery at bedtime).
+            upcoming_schedule: Schedule | None = None
+            upcoming_start: datetime | None = None
+            for sched in all_schedules:
+                if current_dow not in (sched.days_of_week or []):
+                    continue
+                try:
+                    s_h, s_m = map(int, sched.start_time.split(":"))
+                except (ValueError, AttributeError):
+                    continue
+                start_dt = now_local.replace(hour=s_h, minute=s_m, second=0, microsecond=0)
+                lead_s = (start_dt - now_local).total_seconds()
+                if not 0 < lead_s <= 3 * 3600:
+                    continue
+                if (
+                    upcoming_start is None
+                    or start_dt < upcoming_start
+                    or (
+                        start_dt == upcoming_start
+                        and upcoming_schedule is not None
+                        and sched.priority > upcoming_schedule.priority
+                    )
+                ):
+                    upcoming_schedule = sched
+                    upcoming_start = start_dt
+
+            preconditioning = False
+            if upcoming_schedule is not None:
+                precond_key = (
+                    f"precondition:{upcoming_schedule.id}:{now_local.strftime('%Y-%m-%d')}"
+                )
+                if precond_key in _last_executed_schedules:
+                    preconditioning = True
+                    logger.debug(
+                        "Active-mode: preconditioning for '%s' in progress — it governs",
+                        upcoming_schedule.name,
+                    )
+
+            governing_schedule: Schedule | None = (
+                upcoming_schedule if preconditioning else active_schedule
+            )
+
             # ── Focus vs constraint zones ───────────────────────────────
+            # The governing schedule's zones are the focus.  A schedule with
+            # no zone list applies to every zone (same as Schedule mode).
             focus_zone_ids: set[str] = set()
             schedule_target_c: float | None = None
-            if active_schedule is not None:
-                schedule_target_c = active_schedule.target_temp_c
-                for zid in active_schedule.zone_ids or []:
-                    if str(zid) in zone_data:
-                        focus_zone_ids.add(str(zid))
+            if governing_schedule is not None:
+                schedule_target_c = governing_schedule.target_temp_c
+                sched_zone_ids = governing_schedule.zone_ids or []
+                if sched_zone_ids:
+                    for zid in sched_zone_ids:
+                        if str(zid) in zone_data:
+                            focus_zone_ids.add(str(zid))
+                else:
+                    focus_zone_ids = set(zone_data)
 
             focus_zones = [(zid, zone_data[zid]) for zid in focus_zone_ids]
             constraint_zones = [
@@ -2802,7 +2859,8 @@ async def execute_active_mode() -> None:
 
             hash_material = _json.dumps(
                 {
-                    "sid": str(active_schedule.id) if active_schedule else None,
+                    "sid": str(governing_schedule.id) if governing_schedule else None,
+                    "next": str(upcoming_schedule.id) if upcoming_schedule else None,
                     "hvac": hvac_mode,
                     "tgt": _round_half(current_target_c),
                     "out": _band(outdoor_c),
@@ -2974,11 +3032,25 @@ async def execute_active_mode() -> None:
                 else "none"
             )
             sched_tgt_disp = _c_to_disp(schedule_target_c, temp_unit)
-            schedule_line = (
-                f"target {sched_tgt_disp:.1f}{unit_sym} for '{active_schedule.name}'"
-                if active_schedule and sched_tgt_disp is not None
-                else "no active schedule (freeform)"
-            )
+            if governing_schedule is not None and sched_tgt_disp is not None:
+                schedule_line = (
+                    f"target {sched_tgt_disp:.1f}{unit_sym} for '{governing_schedule.name}'"
+                )
+                if preconditioning and upcoming_start is not None:
+                    schedule_line += (
+                        f" (PRECONDITIONING — starts {upcoming_start.strftime('%H:%M')})"
+                    )
+            else:
+                schedule_line = "no active schedule (freeform)"
+            next_schedule_line = ""
+            if upcoming_schedule is not None and upcoming_start is not None and not preconditioning:
+                next_tgt_disp = _c_to_disp(upcoming_schedule.target_temp_c, temp_unit)
+                mins = int((upcoming_start - now_local).total_seconds() // 60)
+                if next_tgt_disp is not None:
+                    next_schedule_line = (
+                        f"'{upcoming_schedule.name}' at {upcoming_start.strftime('%H:%M')} "
+                        f"→ {next_tgt_disp:.1f}{unit_sym} (in {mins} min)"
+                    )
             therm_at_disp = _c_to_disp(thermostat_current_c, temp_unit)
             therm_set_disp = _c_to_disp(current_target_c, temp_unit)
             thermostat_line = (
@@ -3011,7 +3083,13 @@ async def execute_active_mode() -> None:
                 f"setpoint in {unit_sym} that hits the schedule's focus target "
                 "while keeping every constraint zone inside its comfort band, "
                 "avoids rapid on/off cycles, and respects energy signals.  "
-                "Rules: (1) if focus zones are all in band and no constraint "
+                "Rules: (0) the schedule target is a firm household "
+                "requirement (e.g. a child's bedtime) — drive the focus zones "
+                "to it whether or not they are occupied; a comfort band is "
+                "NOT a substitute, and never trade the target away for "
+                "constraint zones or energy savings.  The system will clamp "
+                "any setpoint that works against the schedule; (1) if focus "
+                "zones are at the schedule target and no constraint "
                 "OUT_OF_BAND, prefer to hold the current setpoint; (2) treat "
                 "'arriving_soon' focus zones as if occupied — precondition; "
                 "(3) fan_on zones tolerate ~1.5°F above/below band; (4) if "
@@ -3022,7 +3100,9 @@ async def execute_active_mode() -> None:
                 "for zones tagged fan_ctrl_ok you MAY drive the fan 0-100 "
                 "as extra comfort help — pick 100 when the zone is more than "
                 "1.5°F out of band, ~75 when 0.5-1.5°F off, and 0 to release. "
-                "System will never lower a fan below its baseline speed.\n"
+                "System will never lower a fan below its baseline speed; (8) "
+                "if a Next schedule is listed, do not move away from its "
+                "target — the room should be ready when it starts.\n"
                 "Respond with these lines only:\n"
                 f"RECOMMENDED_TEMP: <number in {unit_sym}>\n"
                 "FAN_ACTIONS: <zone_name>=<0-100>|<zone_name>=<0-100>  "
@@ -3032,6 +3112,7 @@ async def execute_active_mode() -> None:
             user_prompt_parts = [
                 f"Now: {now_local.strftime('%H:%M %Z')}",
                 f"Schedule: {schedule_line}",
+                f"Next schedule: {next_schedule_line}" if next_schedule_line else "",
                 f"Thermostat: {thermostat_line}",
                 f"Weather now: {weather_line}",
                 f"Forecast: {forecast_line}",
@@ -3131,31 +3212,28 @@ async def execute_active_mode() -> None:
                 logger.warning("Active-mode: LLM did not return a valid temperature")
                 return
 
-            # ── Offset-comp override (borrow schedule-mode formula) ─────
-            # The LLM often picks a timid setpoint (e.g. "nudge to 68°F" when
-            # a focus zone is 9°F above its 70°F target).  Schedule mode
-            # faces the same delta and drives the thermostat up to 8°F past
-            # desired via apply_offset_compensation.  Reuse that formula
-            # here — if the schedule-style adjusted setpoint is more
-            # aggressive than the LLM's pick in the current HVAC direction,
-            # use it.  This closes the gap between Active mode and Schedule
-            # mode without changing the LLM prompt contract.
-            offset_desired_c: float | None = schedule_target_c
-            offset_zone_ids: list[str] | None = (
-                list(focus_zone_ids) if focus_zone_ids else None
+            # ── Offset-comp reference (borrow schedule-mode formula) ────
+            # The setpoint Schedule mode would send: the desired zone temp
+            # run through offset compensation (up to 8°F past desired).
+            # With a schedule active this is the yardstick the AI is held
+            # to; without one, the LLM's own pick is treated as desired.
+            offset_desired_c: float = (
+                schedule_target_c if schedule_target_c is not None else recommended_temp_c
             )
-            # No active schedule → treat the LLM's own recommendation as the
-            # desired zone temperature and let offset comp drive past it.
-            if offset_desired_c is None:
-                offset_desired_c = recommended_temp_c
-                offset_zone_ids = None
+            offset_zone_ids: list[str] | None = (
+                list(focus_zone_ids)
+                if schedule_target_c is not None and focus_zone_ids
+                else None
+            )
+            adj_c: float | None = None
+            adj_avg_c: float | None = None
             try:
                 from backend.core.temp_compensation import apply_offset_compensation
 
                 (
                     adj_c,
                     _adj_offset_c,
-                    adj_zone_names,
+                    _adj_zone_names,
                     adj_avg_c,
                     _adj_mode,
                 ) = await apply_offset_compensation(
@@ -3166,7 +3244,13 @@ async def execute_active_mode() -> None:
                     zone_ids=offset_zone_ids,
                     hvac_mode=hvac_mode,
                 )
-                # Pick whichever pushes harder in the active HVAC direction.
+            except Exception as ofs_err:
+                logger.debug("Active-mode: offset comp reference skipped: %s", ofs_err)
+
+            # Freeform (no schedule): if the schedule-style setpoint pushes
+            # harder than the LLM's timid pick in the active HVAC direction,
+            # use it.
+            if schedule_target_c is None and adj_c is not None:
                 override_c: float | None = None
                 if "cool" in hvac_mode and adj_c < recommended_temp_c - 0.1:
                     override_c = adj_c
@@ -3175,26 +3259,20 @@ async def execute_active_mode() -> None:
                 if override_c is not None:
                     logger.info(
                         "Active-mode: offset comp overriding LLM %.1f°C → %.1f°C "
-                        "(desired=%.1f°C, zones=%s, avg=%s, mode=%s)",
+                        "(desired=%.1f°C, avg=%s, mode=%s)",
                         recommended_temp_c,
                         override_c,
                         offset_desired_c,
-                        adj_zone_names or "n/a",
                         f"{adj_avg_c:.1f}°C" if adj_avg_c is not None else "n/a",
                         hvac_mode,
                     )
                     recommended_temp_c = override_c
-            except Exception as ofs_err:
-                logger.debug("Active-mode: offset comp override skipped: %s", ofs_err)
-
-            # ── Safety + constraint-guard clamps ────────────────────────
-            recommended_temp_c = max(safety_min, min(safety_max, recommended_temp_c))
 
             # Constraint guard: if the LLM's target would push a
             # constraint zone further out of its comfort band than it
             # already is (in the direction of the constraint), clamp
-            # back.  This is a soft box — focus can still dominate but
-            # we won't cook the basement (or freeze it).
+            # back.  This is a soft box — the schedule enforcement below
+            # still wins over it.
             constraint_mins = [
                 float(zd["temp_min"]) for _, zd in constraint_zones if zd.get("temp_min") is not None
             ]
@@ -3221,6 +3299,48 @@ async def execute_active_mode() -> None:
                         ceil_c,
                     )
                     recommended_temp_c = ceil_c
+
+            # ── Schedule enforcement ────────────────────────────────────
+            # The AI may be more aggressive toward the schedule target than
+            # Schedule mode, never less.  See backend/core/schedule_guard.py.
+            from backend.core.schedule_guard import (
+                enforce_schedule_setpoint,
+                moves_toward_target,
+            )
+
+            focus_avg_c: float | None = adj_avg_c
+            if focus_avg_c is None and focus_zones:
+                _focus_temps = [
+                    float(zd["temp_c"]) for _, zd in focus_zones if zd.get("temp_c") is not None
+                ]
+                if _focus_temps:
+                    focus_avg_c = sum(_focus_temps) / len(_focus_temps)
+
+            if schedule_target_c is not None and governing_schedule is not None:
+                sched_setpoint_c = adj_c if adj_c is not None else schedule_target_c
+                before_c = recommended_temp_c
+                recommended_temp_c, sched_note = enforce_schedule_setpoint(
+                    recommended_temp_c,
+                    sched_setpoint_c,
+                    focus_avg_c,
+                    schedule_target_c,
+                )
+                if sched_note:
+                    logger.info(
+                        "Active-mode: schedule '%s' overrides AI %.1f°C → %.1f°C (%s)",
+                        governing_schedule.name,
+                        before_c,
+                        recommended_temp_c,
+                        sched_note,
+                    )
+                    reason = (
+                        f"{reason} [held to schedule '{governing_schedule.name}']"
+                        if reason
+                        else f"Held to schedule '{governing_schedule.name}'"
+                    )
+
+            # ── Safety clamp (always last) ──────────────────────────────
+            recommended_temp_c = max(safety_min, min(safety_max, recommended_temp_c))
 
             # ── Dead-band on setpoint change ────────────────────────────
             if current_target_c is not None and abs(current_target_c - recommended_temp_c) <= 0.5:
@@ -3254,8 +3374,23 @@ async def execute_active_mode() -> None:
                     if "heat" in hvac_mode and _delta_f < -2.0:
                         severely_off = True
                         break
+            # Also bypass for schedule-driven corrections: a schedule
+            # transition (e.g. bedtime starting or preconditioning kicking
+            # in), or any change that moves off-target focus zones toward
+            # the schedule target.  The schedule must never be locked out.
+            governing_sid = str(governing_schedule.id) if governing_schedule else None
             hist = _active_mode_setpoint_history.get(climate_entity)
-            if hist is not None and current_target_c is not None and not severely_off:
+            schedule_driven = False
+            if hist is not None and current_target_c is not None and schedule_target_c is not None:
+                schedule_driven = hist.get("schedule_id") != governing_sid or moves_toward_target(
+                    current_target_c, recommended_temp_c, focus_avg_c, schedule_target_c
+                )
+            if (
+                hist is not None
+                and current_target_c is not None
+                and not severely_off
+                and not schedule_driven
+            ):
                 last_dir = hist.get("direction")
                 last_at = hist.get("at")
                 new_dir = (
@@ -3279,6 +3414,11 @@ async def execute_active_mode() -> None:
             if severely_off and hist is not None:
                 logger.info(
                     "Active-mode: focus zone severely out of band — bypassing "
+                    "anti-oscillation lockout"
+                )
+            elif schedule_driven:
+                logger.debug(
+                    "Active-mode: schedule-driven correction — bypassing "
                     "anti-oscillation lockout"
                 )
 
@@ -3310,6 +3450,7 @@ async def execute_active_mode() -> None:
                     ),
                     "at": datetime.now(UTC),
                     "setpoint_c": recommended_temp_c,
+                    "schedule_id": governing_sid,
                 }
 
             temp_display = f"{target_for_ha:.1f}°{'F' if temp_unit == 'F' else 'C'}"
@@ -3350,9 +3491,8 @@ async def execute_active_mode() -> None:
                             "unit": temp_unit,
                             "recommended_temp_c": recommended_temp_c,
                             "focus_zones": [zd["name"] for _, zd in focus_zones],
-                            "schedule_id": (
-                                str(active_schedule.id) if active_schedule else None
-                            ),
+                            "schedule_id": governing_sid,
+                            "preconditioning": preconditioning,
                         },
                         reasoning=f"AI Mode: {reason or 'LLM recommendation'}",
                         mode=SystemMode.active,

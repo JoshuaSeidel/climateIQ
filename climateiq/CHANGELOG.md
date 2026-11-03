@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.79] - 2026-11-03
+
+### Fixed
+- **AI (Active) mode did not respect schedules.** The schedule target was only passed to the LLM as prompt context; nothing enforced it. A bedtime setback (e.g. nursery cooled to 68°F at 7pm) could be ignored when the HVAC was heating, because the offset-comp override only pushed harder in the current HVAC direction. A vacant focus zone was allowed to drift, comfort bands were treated as "good enough", and the constraint-zone guard could pull the setpoint away from the schedule. AI-mode setpoints are now clamped by `backend/core/schedule_guard.py` against the setpoint Schedule mode would send. If the focus zones are too warm, the AI may not be warmer; if they are too cold, it may not be cooler; if they are on target, it stays within 0.5°C. The AI can be more aggressive toward the schedule target than Schedule mode, never less. The safety min/max and time-of-day direction windows still apply on top.
+- **AI mode undid schedule preconditioning.** When `execute_schedules` starts preconditioning for an upcoming schedule, that schedule now governs AI mode immediately instead of being reverted on the next 5-minute tick.
+- **Setpoint anti-oscillation could block a schedule transition** for up to 15 minutes. The lockout is now bypassed when the governing schedule changes or when the change moves off-target focus zones toward the schedule target.
+- **Schedules with no zone list ("all zones") had no focus zones in AI mode**, so none of the schedule logic applied. They now cover every non-excluded zone, the same as in Schedule mode.
+
+### Changed
+- The AI-mode prompt states that the schedule target is a firm household requirement and includes the next schedule starting within 3 hours. When the schedule overrides the AI's pick, the log line and the "AI Mode" notification say so.
+- The AI mode description in Settings now says it honors schedules.
+
 ## [1.0.78] - 2026-10-02
 
 ### Fixed
