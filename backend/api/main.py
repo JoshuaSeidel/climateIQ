@@ -197,11 +197,15 @@ async def _apply_fan_target(
     entity_id: str,
     target_pct: int,
     zone_allowed: bool,
+    max_pct: int | None = None,
 ) -> tuple[bool, str]:
     """Move a fan toward ``target_pct`` while never dropping below baseline.
 
-    ``target_pct`` is clamped to [0,100].  Returns ``(changed, note)`` where
-    ``note`` is a short human-readable log fragment.
+    ``target_pct`` is clamped to [0,100], and to ``max_pct`` when given (the
+    quiet-hours cap from ``backend.core.fan_limits``).  The cap never pushes
+    a fan below the user's own baseline — it only limits how far we raise.
+    Returns ``(changed, note)`` where ``note`` is a short human-readable log
+    fragment.
 
     Baseline rules:
     * Take-over: if there is no active override, read the fan's current
@@ -215,6 +219,8 @@ async def _apply_fan_target(
         return False, "zone_not_allowed"
 
     target_pct = max(0, min(100, int(target_pct)))
+    if max_pct is not None:
+        target_pct = min(target_pct, max(0, int(max_pct)))
     now = datetime.now(UTC)
     hist = _fan_baseline.get(entity_id)
 
@@ -284,6 +290,7 @@ async def _apply_fan_target(
         hist["override_active"] = False
         hist["last_change_at"] = now
         hist["released_at"] = now
+        hist["last_set_pct"] = baseline
         return True, f"release_to_baseline({baseline})"
 
     # Ramp path: raise (or hold) toward effective_target.
@@ -303,9 +310,65 @@ async def _apply_fan_target(
         return False, f"set_failed:{exc}"
     hist["override_active"] = effective_target > baseline
     hist["last_change_at"] = now
+    hist["last_set_pct"] = effective_target
     if not hist["override_active"]:
         hist["released_at"] = now
     return True, f"ramp_to({effective_target}, baseline={baseline})"
+
+
+async def _enforce_fan_night_cap(ha_client_ref: Any, max_pct: int) -> None:
+    """Pull fans we raised back under the quiet-hours cap.
+
+    ``_apply_fan_target`` only runs when the Active-mode LLM emits
+    FAN_ACTIONS, and the steady-state gate often skips the LLM entirely —
+    so a fan we ramped to 100% at 6:55pm would otherwise stay there all
+    night.  Runs every Active-mode tick (in any system mode) and ignores the
+    per-fan cooldown.
+
+    Only fans we are actively overriding are touched, and only while they
+    still sit at the speed we last wrote — if the user changed the fan by
+    hand, it's theirs and we leave it alone.  Never goes below baseline.
+    """
+    now = datetime.now(UTC)
+    for entity_id, hist in list(_fan_baseline.items()):
+        if not hist.get("override_active"):
+            continue
+        baseline = int(hist.get("baseline_pct", 0))
+        ceiling = max(baseline, max(0, int(max_pct)))
+        current = await _read_fan_percent(ha_client_ref, entity_id)
+        if current is None or current <= ceiling:
+            continue
+        last_set = hist.get("last_set_pct")
+        if last_set is not None and current != int(last_set):
+            logger.debug(
+                "Fan night cap: %s at %d%% was changed by hand (we set %s%%) — leaving it",
+                entity_id, current, last_set,
+            )
+            continue
+        try:
+            if ceiling == 0:
+                await ha_client_ref.call_service(
+                    "fan", "turn_off",
+                    target={"entity_id": entity_id},
+                )
+            else:
+                await ha_client_ref.call_service(
+                    "fan", "set_percentage",
+                    target={"entity_id": entity_id},
+                    data={"percentage": ceiling},
+                )
+        except Exception as exc:
+            logger.warning("Fan night cap: could not lower %s: %s", entity_id, exc)
+            continue
+        hist["override_active"] = ceiling > baseline
+        hist["last_change_at"] = now
+        hist["last_set_pct"] = ceiling
+        if not hist["override_active"]:
+            hist["released_at"] = now
+        logger.info(
+            "Fan night cap: lowered %s %d%% → %d%% (cap %d%%, baseline %d%%)",
+            entity_id, current, ceiling, max_pct, baseline,
+        )
 
 
 # ============================================================================
@@ -2365,6 +2428,24 @@ async def execute_active_mode() -> None:
 
         session_maker = get_session_maker()
         async with session_maker() as db:
+            # ── Quiet-hours fan cap (runs in every mode) ────────────────
+            # Fans we raised must come back under the cap even if the user
+            # has since left Active mode.
+            from backend.core.fan_limits import cap_for_time, load_fan_night_cap
+            from backend.core.mode_windows import get_local_now
+
+            fan_cap_cfg = await load_fan_night_cap(db)
+            fan_cap_pct: int | None = None
+            if fan_cap_cfg.enabled:
+                try:
+                    fan_cap_pct = cap_for_time(
+                        fan_cap_cfg, (await get_local_now(db, ha_client)).time()
+                    )
+                except Exception as cap_err:
+                    logger.debug("Fan night cap: could not resolve local time: %s", cap_err)
+            if fan_cap_pct is not None and _fan_baseline:
+                await _enforce_fan_night_cap(ha_client, fan_cap_pct)
+
             # ── Mode check ──────────────────────────────────────────────
             cfg_result = await db.execute(sa_select(SystemConfig).limit(1))
             config = cfg_result.scalar_one_or_none()
@@ -3100,7 +3181,14 @@ async def execute_active_mode() -> None:
                 "for zones tagged fan_ctrl_ok you MAY drive the fan 0-100 "
                 "as extra comfort help — pick 100 when the zone is more than "
                 "1.5°F out of band, ~75 when 0.5-1.5°F off, and 0 to release. "
-                "System will never lower a fan below its baseline speed; (8) "
+                "System will never lower a fan below its baseline speed"
+                + (
+                    f" and will never drive a fan above {fan_cap_pct}% right "
+                    f"now (quiet hours {fan_cap_cfg.start}-{fan_cap_cfg.end})"
+                    if fan_cap_pct is not None
+                    else ""
+                )
+                + "; (8) "
                 "if a Next schedule is listed, do not move away from its "
                 "target — the room should be ready when it starts.\n"
                 "Respond with these lines only:\n"
@@ -3190,6 +3278,7 @@ async def execute_active_mode() -> None:
                             for fan_eid in matched_zd.get("fan_entities") or []:
                                 changed, note = await _apply_fan_target(
                                     ha_client, fan_eid, pct_target, True,
+                                    max_pct=fan_cap_pct,
                                 )
                                 logger.info(
                                     "Active-mode fan %s → %d%% [%s] (%s)",

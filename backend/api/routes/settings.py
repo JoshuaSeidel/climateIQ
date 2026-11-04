@@ -70,6 +70,12 @@ _KV_DEFAULTS: dict[str, Any] = {
     # Minutes between heat↔cool reversals.  Wrong-direction override still
     # bypasses this when the thermostat is actively working against target.
     "mode_switch_cooldown_minutes": 30,
+    # Quiet-hours ceiling on automated fan speed (Active mode fan control).
+    # See backend.core.fan_limits.  Window may wrap past midnight.
+    "fan_night_cap_enabled": True,
+    "fan_night_cap_start": "19:00",
+    "fan_night_cap_end": "07:00",
+    "fan_night_cap_max_pct": 50,
     # Seasonal HVAC mode lock — stored as a structured JSON object.  See
     # backend.core.seasonal_lock for the schema.  Use the dedicated
     # /settings/seasonal-lock endpoints to read/update.
@@ -141,6 +147,10 @@ class SystemSettingsResponse(BaseModel):
     thermostat_temp_sensor: str = ""
     hvac_control_mode: str = "auto"
     mode_switch_cooldown_minutes: int = 30
+    fan_night_cap_enabled: bool = True
+    fan_night_cap_start: str = "19:00"
+    fan_night_cap_end: str = "07:00"
+    fan_night_cap_max_pct: int = 50
     home_assistant_url: str = ""
     home_assistant_token: str = ""
     llm_settings: dict[str, Any] = {}
@@ -170,6 +180,31 @@ class SystemSettingsUpdate(BaseModel):
     thermostat_temp_sensor: str | None = None
     hvac_control_mode: str | None = None
     mode_switch_cooldown_minutes: int | None = None
+    fan_night_cap_enabled: bool | None = None
+    fan_night_cap_start: str | None = None
+    fan_night_cap_end: str | None = None
+    fan_night_cap_max_pct: int | None = None
+
+    @field_validator("fan_night_cap_start", "fan_night_cap_end")
+    @classmethod
+    def _validate_fan_cap_time(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        from backend.core.fan_limits import parse_hhmm
+
+        parsed = parse_hhmm(v)
+        if parsed is None:
+            raise ValueError("fan night cap times must be 'HH:MM'")
+        return f"{parsed.hour:02d}:{parsed.minute:02d}"
+
+    @field_validator("fan_night_cap_max_pct")
+    @classmethod
+    def _validate_fan_cap_pct(cls, v: int | None) -> int | None:
+        if v is None:
+            return v
+        if v < 0 or v > 100:
+            raise ValueError("fan_night_cap_max_pct must be between 0 and 100")
+        return v
 
     @field_validator("hvac_control_mode")
     @classmethod
@@ -306,6 +341,10 @@ async def _build_response(session: AsyncSession) -> SystemSettingsResponse:
         thermostat_temp_sensor=str(kv["thermostat_temp_sensor"] or ""),
         hvac_control_mode=str(kv["hvac_control_mode"] or "auto"),
         mode_switch_cooldown_minutes=int(kv["mode_switch_cooldown_minutes"]),
+        fan_night_cap_enabled=bool(kv["fan_night_cap_enabled"]),
+        fan_night_cap_start=str(kv["fan_night_cap_start"] or "19:00"),
+        fan_night_cap_end=str(kv["fan_night_cap_end"] or "07:00"),
+        fan_night_cap_max_pct=int(kv["fan_night_cap_max_pct"]),
         home_assistant_url=ha_url,
         home_assistant_token=masked_token,
         llm_settings=dict(config.llm_settings or {}),

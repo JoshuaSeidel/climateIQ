@@ -362,6 +362,10 @@ export type SystemSettings = {
   thermostat_temp_sensor: string
   hvac_control_mode: 'auto' | 'heat' | 'cool'
   mode_switch_cooldown_minutes: number
+  fan_night_cap_enabled: boolean
+  fan_night_cap_start: string
+  fan_night_cap_end: string
+  fan_night_cap_max_pct: number
 
   home_assistant_url: string
   home_assistant_token: string

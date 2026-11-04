@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.80] - 2026-11-03
+
+### Added
+- **Fan quiet hours.** AI-mode fan control never drives a fan above a configurable cap during quiet hours (default: on, max 50% from 19:00 to 07:00; the window may wrap past midnight). Requested `FAN_ACTIONS` are clamped in `_apply_fan_target`. A new `_enforce_fan_night_cap` sweep runs every Active-mode tick, in any system mode and ignoring the per-fan cooldown, so a fan ClimateIQ raised before quiet hours is brought back under the cap even when the steady-state gate skips the LLM. The cap never drops a fan below the user's own baseline, and a fan the user changed by hand is left alone. The LLM prompt states the current cap.
+- New settings `fan_night_cap_enabled`, `fan_night_cap_start`, `fan_night_cap_end`, `fan_night_cap_max_pct` (logic in `backend/core/fan_limits.py`), editable from a new **Fan Quiet Hours** card in Settings → Logic.
+
 ## [1.0.79] - 2026-11-03
 
 ### Fixed

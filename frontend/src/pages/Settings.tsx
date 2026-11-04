@@ -35,6 +35,7 @@ import {
   Clock,
   Plus,
   Trash2,
+  Moon,
 } from 'lucide-react'
 
 type SettingsTab = 'general' | 'homeassistant' | 'llm' | 'modes' | 'logic' | 'backup' | 'about'
@@ -1975,6 +1976,138 @@ function BackupTab() {
 }
 
 // ============================================================================
+// Fan Quiet Hours (Logic tab)
+// ============================================================================
+function FanNightCapCard({ settings }: { settings?: SystemSettings }) {
+  const queryClient = useQueryClient()
+  const enabled = settings?.fan_night_cap_enabled ?? true
+  const start = settings?.fan_night_cap_start ?? '19:00'
+  const end = settings?.fan_night_cap_end ?? '07:00'
+  const maxPct = settings?.fan_night_cap_max_pct ?? 50
+
+  const [startDraft, setStartDraft] = useState(start)
+  const [endDraft, setEndDraft] = useState(end)
+  const [pctDraft, setPctDraft] = useState(String(maxPct))
+
+  const update = useMutation({
+    mutationFn: (patch: Partial<SystemSettings>) => api.put<SystemSettings>('/settings', patch),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+
+  const commitTime = (key: 'fan_night_cap_start' | 'fan_night_cap_end', value: string, current: string) => {
+    if (!/^\d{2}:\d{2}$/.test(value)) {
+      if (key === 'fan_night_cap_start') setStartDraft(current)
+      else setEndDraft(current)
+      return
+    }
+    if (value !== current) update.mutate({ [key]: value })
+  }
+
+  const commitPct = () => {
+    const parsed = Number(pctDraft)
+    if (!Number.isFinite(parsed)) {
+      setPctDraft(String(maxPct))
+      return
+    }
+    const clamped = Math.min(100, Math.max(0, Math.round(parsed)))
+    setPctDraft(String(clamped))
+    if (clamped !== maxPct) update.mutate({ fan_night_cap_max_pct: clamped })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Moon className="h-5 w-5" />
+          Fan Quiet Hours
+        </CardTitle>
+        <CardDescription>
+          Caps how fast AI mode may drive ceiling fans during the evening and overnight. Fans already
+          running faster are brought down to the cap when quiet hours begin. Fans you set by hand are
+          never changed.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium">Limit fan speed at night</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {enabled
+                ? `Max ${maxPct}% from ${start} to ${end}.`
+                : 'Off — AI mode may run fans up to 100% at any hour.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={enabled}
+            disabled={update.isPending}
+            onClick={() => update.mutate({ fan_night_cap_enabled: !enabled })}
+            className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 ${
+              enabled ? 'bg-primary' : 'bg-input'
+            }`}
+          >
+            <span
+              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                enabled ? 'translate-x-5' : 'translate-x-0'
+              }`}
+            />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <label className="text-sm font-medium">Starts</label>
+            <Input
+              type="time"
+              value={startDraft}
+              onChange={(e) => setStartDraft(e.target.value)}
+              onBlur={() => commitTime('fan_night_cap_start', startDraft, start)}
+              disabled={!enabled || update.isPending}
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-medium">Ends</label>
+            <Input
+              type="time"
+              value={endDraft}
+              onChange={(e) => setEndDraft(e.target.value)}
+              onBlur={() => commitTime('fan_night_cap_end', endDraft, end)}
+              disabled={!enabled || update.isPending}
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-medium">Max speed (%)</label>
+            <Input
+              type="number"
+              min={0}
+              max={100}
+              value={pctDraft}
+              onChange={(e) => setPctDraft(e.target.value)}
+              onBlur={commitPct}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  (e.target as HTMLInputElement).blur()
+                }
+              }}
+              disabled={!enabled || update.isPending}
+              className="mt-1"
+            />
+          </div>
+        </div>
+        {update.isError && (
+          <p className="text-xs text-red-500">Failed to update: {update.error?.message}</p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ============================================================================
 // Logic Tab
 // ============================================================================
 function LogicTab({
@@ -2161,6 +2294,12 @@ function LogicTab({
           </div>
         </CardContent>
       </Card>
+
+      {/* Keyed on the saved values so the draft inputs reset when they change */}
+      <FanNightCapCard
+        key={`${settings?.fan_night_cap_start}|${settings?.fan_night_cap_end}|${settings?.fan_night_cap_max_pct}`}
+        settings={settings}
+      />
 
       {/* Logic Reference header */}
       <Card>
