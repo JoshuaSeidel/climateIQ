@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.83] - 2026-11-06
+
+### Fixed
+- **Chat memories (saved preferences) were hard to find and impossible to delete on touch screens.** The Memories list sits at the bottom of the chat sidebar, below every past conversation, and the sidebar is closed by default on narrow screens. Its delete buttons were invisible until hovered. The chat header now has a **Memories** button, with a count, that opens the sidebar and scrolls to the list, and the delete buttons are always visible.
+
 ## [1.0.82] - 2026-11-06
 
 ### Fixed

@@ -46,6 +46,16 @@ export const Chat = () => {
   )
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const memoriesRef = useRef<HTMLDivElement>(null)
+
+  // Open the sidebar and jump to the Memories list, which otherwise sits
+  // below every past conversation.
+  const showMemories = useCallback(() => {
+    setSidebarOpen(true)
+    requestAnimationFrame(() => {
+      memoriesRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }, [])
 
   // Fetch conversation history
   const { data: conversations, refetch: refetchConversations } = useQuery<ConversationHistoryItem[]>({
@@ -333,7 +343,10 @@ export const Chat = () => {
           )}
 
           {/* Memories Section */}
-          <div className="border-t border-border/40 dark:border-[rgba(148,163,184,0.12)]">
+          <div
+            ref={memoriesRef}
+            className="border-t border-border/40 dark:border-[rgba(148,163,184,0.12)]"
+          >
             <div className="flex items-center gap-2 p-3">
               <Brain className="h-4 w-4 text-primary" />
               <div className="min-w-0 flex-1">
@@ -374,7 +387,8 @@ export const Chat = () => {
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100"
+                        className="h-5 w-5 shrink-0 opacity-50 group-hover:opacity-100"
+                        aria-label="Delete memory"
                         onClick={() => deleteDirective.mutate(d.id)}
                       >
                         <X className="h-3 w-3" />
@@ -436,6 +450,13 @@ export const Chat = () => {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+            <Button variant="outline" size="sm" onClick={showMemories}>
+              <Brain className="h-4 w-4 sm:mr-2" />
+              <span className="hidden sm:inline">Memories</span>
+              {directives && directives.length > 0 && (
+                <span className="ml-1 text-xs text-muted-foreground">{directives.length}</span>
+              )}
+            </Button>
             <Button variant="outline" size="sm" onClick={handleNewConversation}>
               <MessageSquarePlus className="h-4 w-4 sm:mr-2" />
               <span className="hidden sm:inline">New Chat</span>
