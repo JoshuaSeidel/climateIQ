@@ -2661,24 +2661,29 @@ async def execute_active_mode() -> None:
                 }
 
             # ── Thermostat state ────────────────────────────────────────
-            hvac_mode: str = "unknown"
-            current_target_c: float | None = None
-            thermostat_current_c: float | None = None
-            try:
-                state = await ha_client.get_state(climate_entity)
-                hvac_mode = state.state or "unknown"
-                ct = state.attributes.get("current_temperature")
-                if ct is not None:
-                    thermostat_current_c = float(ct)
-                    if temp_unit == "F":
-                        thermostat_current_c = round((thermostat_current_c - 32) * 5 / 9, 2)
-                tgt = state.attributes.get("temperature")
-                if tgt is not None:
-                    current_target_c = float(tgt)
-                    if temp_unit == "F":
-                        current_target_c = round((current_target_c - 32) * 5 / 9, 2)
-            except Exception as state_err:
-                logger.debug("Could not read thermostat state for AI mode: %s", state_err)
+            async def _read_thermostat() -> tuple[str, float | None, float | None]:
+                """Return (hvac_mode, current_target_c, thermostat_current_c)."""
+                mode = "unknown"
+                tgt_c: float | None = None
+                cur_c: float | None = None
+                try:
+                    st = await ha_client.get_state(climate_entity)
+                    mode = st.state or "unknown"
+                    ct = st.attributes.get("current_temperature")
+                    if ct is not None:
+                        cur_c = float(ct)
+                        if temp_unit == "F":
+                            cur_c = round((cur_c - 32) * 5 / 9, 2)
+                    tgt = st.attributes.get("temperature")
+                    if tgt is not None:
+                        tgt_c = float(tgt)
+                        if temp_unit == "F":
+                            tgt_c = round((tgt_c - 32) * 5 / 9, 2)
+                except Exception as state_err:
+                    logger.debug("Could not read thermostat state for AI mode: %s", state_err)
+                return mode, tgt_c, cur_c
+
+            hvac_mode, current_target_c, thermostat_current_c = await _read_thermostat()
 
             # ── Weather (Redis cache) ───────────────────────────────────
             outdoor_c: float | None = None
@@ -2907,6 +2912,53 @@ async def execute_active_mode() -> None:
                 if hi is not None and t > float(hi) + 0.5:
                     return False
                 return True
+
+            # ── HVAC direction (heat ↔ cool) ────────────────────────────
+            # Active mode owns the thermostat, so it must also pick the
+            # direction — maintain_climate_offset skips Active mode and
+            # execute_schedules only switches at a schedule's start time.
+            # Without this the thermostat stays in whatever mode it was left
+            # in (e.g. heat from a cold morning) and the LLM can only lower
+            # a heat setpoint while the house bakes.  Same selector Schedule
+            # mode uses: honors hvac_control_mode, the seasonal lock, time
+            # windows and the reversal cooldown, and bypasses the cooldown
+            # when the thermostat is working against the target.
+            direction_target_c: float | None = schedule_target_c
+            direction_zone_ids: list[str] = list(focus_zone_ids)
+            if direction_target_c is None:
+                # Freeform: aim for the middle of the zones' comfort bands.
+                mids = [
+                    (float(zd["temp_min"]) + float(zd["temp_max"])) / 2
+                    for zd in zone_data.values()
+                    if zd.get("temp_min") is not None and zd.get("temp_max") is not None
+                ]
+                if mids:
+                    direction_target_c = sum(mids) / len(mids)
+                    direction_zone_ids = list(zone_data)
+            sched_dir_mode = (
+                _resolve_schedule_hvac_mode(governing_schedule.hvac_mode)
+                if governing_schedule is not None
+                else None
+            )
+            dir_mode: str | None = sched_dir_mode
+            dir_urgent = False
+            if dir_mode is None and direction_target_c is not None and direction_zone_ids:
+                dir_mode, dir_urgent = await _auto_select_hvac_mode(
+                    ha_client, climate_entity, direction_target_c,
+                    db=db, zone_ids=direction_zone_ids,
+                )
+            if dir_mode and dir_mode != hvac_mode.lower():
+                _, _dir_cooldown_s = await _get_hvac_control_settings(db)
+                await _switch_hvac_mode_if_needed(
+                    ha_client, climate_entity, dir_mode,
+                    "Active-mode",
+                    override_cooldown=dir_urgent,
+                    cooldown_s=_dir_cooldown_s,
+                    db=db,
+                    zone_ids=direction_zone_ids,
+                )
+                # Re-read so the setpoint logic below works in the new mode.
+                hvac_mode, current_target_c, thermostat_current_c = await _read_thermostat()
 
             # ── Gate 1: steady-state skip ───────────────────────────────
             focus_on_target = True

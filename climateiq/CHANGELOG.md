@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.81] - 2026-11-06
+
+### Fixed
+- **AI (Active) mode never switched the thermostat between heat and cool.** Observed: the house averaged 77°F against a 72°F schedule target while the thermostat sat in `heat` at 67°F, idle, so nothing cooled. `maintain_climate_offset()` skips Active mode, and `execute_schedules` only switches mode at a schedule's start time, so in Active mode the thermostat stayed in whatever direction it was last left in (e.g. heat from a cold morning). The LLM could only lower a heat setpoint, and the schedule guard capped it there. Active mode now selects the direction every tick, before the steady-state gate, with the same `_auto_select_hvac_mode` / `_switch_hvac_mode_if_needed` path Schedule mode uses. That path honors `hvac_control_mode`, the seasonal lock, time windows and the reversal cooldown (bypassed when the thermostat is working against the target). The target is the governing schedule's target over its focus zones; with no schedule, it is the midpoint of the zones' comfort bands. Thermostat state is re-read after a switch so the setpoint logic works in the new mode.
+
 ## [1.0.80] - 2026-11-03
 
 ### Added
