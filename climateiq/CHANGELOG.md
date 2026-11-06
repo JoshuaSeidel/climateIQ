@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.82] - 2026-11-06
+
+### Fixed
+- **Chat replies were held up by a second LLM call.** After answering, `POST /chat` awaited `_extract_directives()` (despite the "fire-and-forget" comment), which is a second round-trip to the local Ollama model before the reply could be returned. One reply in the add-on log took 96 s. Extraction now runs as a background task on its own DB session, so the reply returns after a single model call.
+- **Chat saved junk "standing preferences" from plain questions.** The extractor turned the assistant's own answers into directives (e.g. "The temperature in the kitchen is 80.2°F.", "Open windows or use a fan in the kitchen"), and Active mode then injects every active directive into its prompt as rules to always respect. Messages ending in "?" no longer trigger extraction, and the prompt now forbids extracting anything from the assistant's response.
+
 ## [1.0.81] - 2026-11-06
 
 ### Fixed

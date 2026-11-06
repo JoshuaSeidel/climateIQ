@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -127,6 +128,8 @@ For each item found, output a JSON array of objects with:
 - "category": one of "preference", "constraint", "schedule_hint", "comfort", "energy", "house_info", "routine", "occupancy"
 - "zone_name": the zone name if zone-specific, or null
 
+Only extract what the USER stated about their household.  Never extract facts, readings, or advice from the assistant's response (e.g. "The kitchen is 80°F" or "Open a window" are NOT house knowledge).
+
 If no extractable house knowledge is found, return an empty array: []
 
 IMPORTANT: Return ONLY the JSON array, no other text.
@@ -135,17 +138,57 @@ User message: {user_message}
 Assistant response: {assistant_response}"""
 
 
+# Strong references to in-flight background extraction tasks so they
+# aren't garbage-collected mid-run.
+_extraction_tasks: set[asyncio.Task[None]] = set()
+
+
+def _should_extract_directives(user_message: str) -> bool:
+    """Questions don't state house knowledge — skip the extra LLM call.
+
+    Every extraction is a second model round-trip on the local Ollama host,
+    and on plain questions it mostly invents "directives" from the
+    assistant's own answer (e.g. a current temperature reading), which
+    Active mode then treats as standing rules.
+    """
+    text = user_message.strip()
+    return bool(text) and not text.endswith("?")
+
+
+async def _extract_directives_background(
+    user_message: str,
+    assistant_response: str,
+    conversation_id: uuid.UUID,
+    zone_map: dict[str, uuid.UUID],
+) -> None:
+    """Run directive extraction on its own DB session after the reply is sent."""
+    from backend.models.database import get_session_maker
+
+    try:
+        async with get_session_maker()() as db:
+            await _extract_directives(
+                user_message=user_message,
+                assistant_response=assistant_response,
+                conversation_id=conversation_id,
+                db=db,
+                zone_map=zone_map,
+            )
+    except Exception as e:
+        logger.debug("Directive extraction background task failed: %s", e)
+
+
 async def _extract_directives(
     user_message: str,
     assistant_response: str,
     conversation_id: uuid.UUID,
     db: AsyncSession,
-    zones: list[Zone],
+    zone_map: dict[str, uuid.UUID],
 ) -> None:
     """Extract user directives from a conversation and persist them.
 
-    Runs as a fire-and-forget background task after each chat message.
-    Uses a lightweight LLM call to identify actionable preferences.
+    Runs as a background task after each chat message (see
+    ``_extract_directives_background``) so the reply isn't held up by a
+    second LLM call.  ``zone_map`` maps lowercase zone name → zone id.
     """
     import json as _json
 
@@ -199,9 +242,6 @@ async def _extract_directives(
         directives = _json.loads(content)
         if not isinstance(directives, list):
             return
-
-        # Build zone name -> id map for matching
-        zone_map = {z.name.lower(): z.id for z in zones}
 
         for d in directives:
             if not isinstance(d, dict) or not d.get("directive"):
@@ -2579,19 +2619,20 @@ async def send_chat_message(
         (await db.execute(select(Zone).where(Zone.is_active.is_(True)))).scalars().all()
     )
 
-    # Extract directives from the conversation (fire-and-forget) —
-    # only for persisted (non-dashboard) conversations.
-    if conversation is not None:
-        try:
-            await _extract_directives(
+    # Extract directives in the background — only for persisted
+    # (non-dashboard) conversations whose user message could state house
+    # knowledge.  The reply returns after a single LLM call.
+    if conversation is not None and _should_extract_directives(payload.message):
+        task = asyncio.create_task(
+            _extract_directives_background(
                 user_message=payload.message,
                 assistant_response=assistant_message,
                 conversation_id=conversation.id,
-                db=db,
-                zones=zones_for_extraction,
+                zone_map={z.name.lower(): z.id for z in zones_for_extraction},
             )
-        except Exception as extract_err:
-            logger.debug("Directive extraction error (non-critical): %s", extract_err)
+        )
+        _extraction_tasks.add(task)
+        task.add_done_callback(_extraction_tasks.discard)
 
     suggestions = _generate_suggestions(zones_list=zones_for_extraction)
 
