@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.84] - 2026-11-07
+
+### Fixed
+- **AI mode followed the next schedule hours early, abandoning the active one.** At 03:30 the log showed `Preconditioning: starting HVAC 180 min early for schedule 'Daytime'` (72°F, 06:30), and from then on Active mode held Daytime's 72°F over Daytime's zones, including the Office, instead of Sleeping's 69°F. Three causes:
+  - A near-zero learned heating/cooling rate turned a 0.5°C gap into the maximum 3-hour lead. `get_preconditioning_time()` now floors the rate at 1°C/hour.
+  - "Preconditioning" ran against the HVAC's direction: it raised the setpoint while the thermostat was cooling, which only switches the AC off early. The new `schedule_guard.precondition_allowed()` permits preconditioning only when the thermostat's current mode moves the room toward the next target (warm-up in heat mode, cool-down in cool mode) and the gap is beyond the 0.5°C dead-band.
+  - Since 1.0.79, Active mode lets a preconditioning schedule govern. With the two fixes above, that only happens for genuine warm-ups and cool-downs.
+- **AI-mode notification spam.** Active mode sent an "AI Mode: Setting to …" notification on every setpoint write, up to every 5 minutes. It now notifies when the HVAC mode changes, or when the setpoint has moved at least 1°C (~2°F) since the last notification and at least an hour has passed.
+
 ## [1.0.83] - 2026-11-06
 
 ### Fixed

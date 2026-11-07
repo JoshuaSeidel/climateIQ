@@ -109,3 +109,34 @@ def moves_toward_target(
     if error_c < -deadband_c:
         return new_setpoint_c > current_setpoint_c
     return False
+
+
+def precondition_allowed(
+    zone_temp_c: float | None,
+    upcoming_target_c: float,
+    thermostat_mode: str,
+    *,
+    deadband_c: float = SCHEDULE_DEADBAND_C,
+) -> bool:
+    """Whether starting an upcoming schedule early is real preconditioning.
+
+    Preconditioning means running the HVAC *in its current direction* so a
+    room reaches the next schedule's target by its start time — warming up
+    before the morning schedule in heat mode, cooling down before bedtime in
+    cool mode.  It is NOT preconditioning to raise the setpoint while
+    cooling (or lower it while heating): that just switches the HVAC off
+    early and abandons the schedule that is active right now.  Example:
+    Sleeping 69°F in cool mode, Daytime 72°F at 6:30 — the house should hold
+    69°F until 6:30, not drift to 72°F from 3:30.
+
+    Gaps inside the dead-band don't need a head start either.
+    """
+    if zone_temp_c is None:
+        return False
+    mode = (thermostat_mode or "").lower()
+    gap_c = upcoming_target_c - zone_temp_c
+    if gap_c > deadband_c:
+        return "heat" in mode
+    if gap_c < -deadband_c:
+        return "cool" in mode
+    return False

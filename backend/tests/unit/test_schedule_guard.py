@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from backend.core.schedule_guard import enforce_schedule_setpoint, moves_toward_target
+from backend.core.schedule_guard import (
+    enforce_schedule_setpoint,
+    moves_toward_target,
+    precondition_allowed,
+)
 
 # Bedtime: nursery target 20°C (68°F).
 
@@ -65,3 +69,23 @@ class TestMovesTowardTarget:
 
     def test_no_reading_never_bypasses(self) -> None:
         assert not moves_toward_target(20.0, 18.0, None, 20.0)
+
+
+class TestPreconditionAllowed:
+    def test_night_cool_to_warmer_daytime_is_not_preconditioning(self) -> None:
+        # Sleeping 69°F (20.6°C) in cool mode, Daytime 72°F (22.2°C) next:
+        # raising the setpoint early just stops the AC — not allowed.
+        assert not precondition_allowed(21.9, 22.2, "cool")
+        assert not precondition_allowed(20.6, 22.2, "cool")
+
+    def test_heat_warm_up_before_morning(self) -> None:
+        assert precondition_allowed(19.0, 21.0, "heat")
+
+    def test_cool_down_before_bedtime(self) -> None:
+        assert precondition_allowed(23.5, 21.0, "cool")
+
+    def test_small_gap_skips(self) -> None:
+        assert not precondition_allowed(21.8, 22.2, "heat")
+
+    def test_no_reading_skips(self) -> None:
+        assert not precondition_allowed(None, 22.2, "heat")

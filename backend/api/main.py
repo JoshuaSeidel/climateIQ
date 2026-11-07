@@ -115,6 +115,15 @@ _OCCUPANCY_DWELL_VAC_S: int = 10 * 60
 _active_mode_setpoint_history: dict[str, dict[str, Any]] = {}
 _SETPOINT_ANTI_OSCILLATION_S: int = 15 * 60
 
+# Active-mode notification throttle.  The AI may nudge the setpoint every
+# 5-minute tick; a phone notification for each nudge is noise.  Notify only
+# when the HVAC mode changes or the setpoint has moved at least
+# _AI_NOTIFY_MIN_DELTA_C since the last notification, and never more than
+# once per _AI_NOTIFY_MIN_INTERVAL_S unless the mode changed.
+_active_mode_last_notify: dict[str, dict[str, Any]] = {}
+_AI_NOTIFY_MIN_DELTA_C: float = 1.0  # ~2°F
+_AI_NOTIFY_MIN_INTERVAL_S: int = 60 * 60
+
 # Fan control baseline tracking.  When Active mode drives a fan above the
 # user's baseline speed, we capture the baseline the FIRST time we take
 # over, and we NEVER drive the fan below that baseline again.  On release
@@ -1208,6 +1217,22 @@ async def execute_schedules() -> None:
                                 )
                             except Exception:  # noqa: S110
                                 pass
+                        # Only precondition when the HVAC's current direction
+                        # actually moves the room toward the next target —
+                        # otherwise "preconditioning" just abandons the schedule
+                        # that is active right now (see schedule_guard).
+                        from backend.core.schedule_guard import precondition_allowed
+
+                        thermostat_mode_pre = ""
+                        try:
+                            _tstate = await ha_client.get_state(climate_entity)
+                            thermostat_mode_pre = (_tstate.state or "") if _tstate else ""
+                        except Exception:  # noqa: S110
+                            pass
+                        if not precondition_allowed(
+                            current_zone_temp_c, schedule.target_temp_c, thermostat_mode_pre
+                        ):
+                            continue
                         if 0 < seconds_until_start <= precond_minutes * 60:
                             # Start preconditioning (with offset compensation)
                             from backend.core.temp_compensation import apply_offset_compensation
@@ -3604,13 +3629,24 @@ async def execute_active_mode() -> None:
                 len(constraint_zones),
             )
 
-            if _notification_service:
+            last_notif = _active_mode_last_notify.get(climate_entity)
+            notify = last_notif is None or last_notif.get("mode") != hvac_mode
+            if not notify and last_notif is not None:
+                since_s = (datetime.now(UTC) - last_notif["at"]).total_seconds()
+                moved_c = abs(recommended_temp_c - float(last_notif["setpoint_c"]))
+                notify = moved_c >= _AI_NOTIFY_MIN_DELTA_C and since_s >= _AI_NOTIFY_MIN_INTERVAL_S
+            if _notification_service and notify:
                 try:
                     await _notification_service.send_ha_notification(
                         title="AI Mode",
                         message=f"Setting to {temp_display} — {reason or 'AI recommendation'}",
                         target=notif_target,
                     )
+                    _active_mode_last_notify[climate_entity] = {
+                        "at": datetime.now(UTC),
+                        "setpoint_c": recommended_temp_c,
+                        "mode": hvac_mode,
+                    }
                 except Exception as notif_err:
                     logger.warning("Active-mode notification failed: %s", notif_err)
 
