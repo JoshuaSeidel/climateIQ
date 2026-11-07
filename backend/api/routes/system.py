@@ -242,8 +242,36 @@ async def emergency_shutoff(
             ) as ha:
                 device_result = await db.execute(select(Device))
                 devices = device_result.scalars().all()
+
+                # The thermostat is configured via climate_entities and often
+                # has no Device row — shut it off explicitly first.
+                from backend.models.database import SystemSetting as _ESetting
+
+                climate_targets: list[str] = []
+                _ce = (
+                    await db.execute(select(_ESetting).where(_ESetting.key == "climate_entities"))
+                ).scalar_one_or_none()
+                if _ce and _ce.value:
+                    climate_targets += [
+                        e.strip() for e in str(_ce.value.get("value", "")).split(",") if e.strip()
+                    ]
+                climate_targets += [
+                    e.strip() for e in settings.climate_entities.split(",") if e.strip()
+                ]
+                handled: set[str] = set()
+                for entity in climate_targets:
+                    if entity in handled:
+                        continue
+                    handled.add(entity)
+                    try:
+                        await ha.set_hvac_mode(entity, "off")
+                        devices_off += 1
+                    except Exception as e:
+                        errors.append(f"{entity}: {e}")
+                        logger.error("Failed to shut off %s: %s", entity, e)
+
                 for device in devices:
-                    if device.ha_entity_id:
+                    if device.ha_entity_id and device.ha_entity_id not in handled:
                         try:
                             domain = device.ha_entity_id.split(".", 1)[0]
                             if domain == "climate":
@@ -395,8 +423,11 @@ async def execute_quick_action(
             # Fallback: just lower target by 3°F (≈1.7°C)
             current_target = attrs.get("temperature") or attrs.get("target_temp_low")
             if current_target is not None:
-                new_target = float(current_target) - 3
-                await _ha_client.set_temperature(climate_entity, new_target)
+                _eco_cfg = await _ha_client.get_config()
+                _eco_f = _eco_cfg.get("unit_system", {}).get("temperature", "\u00b0C") == "\u00b0F"
+                # 3°F step, expressed in HA's own unit.
+                new_target = round(float(current_target) - (3 if _eco_f else 3 * 5 / 9), 1)
+                await _ha_client.set_temperature(climate_entity, new_target, intent_mode="heat")
                 return QuickActionResponse(
                     success=True, message=f"Lowered target to {new_target:.0f}°",
                     action=action, detail={"new_target": new_target},
@@ -429,7 +460,7 @@ async def execute_quick_action(
             current_target = attrs.get("temperature") or attrs.get("target_temp_low")
             if current_target is not None:
                 new_target = float(current_target) + 2
-                await _ha_client.set_temperature(climate_entity, new_target)
+                await _ha_client.set_temperature(climate_entity, new_target, intent_mode="heat")
                 return QuickActionResponse(
                     success=True, message=f"Boosted heat to {new_target:.0f}°",
                     action=action, detail={"new_target": new_target},
@@ -443,7 +474,7 @@ async def execute_quick_action(
             current_target = attrs.get("temperature") or attrs.get("target_temp_high")
             if current_target is not None:
                 new_target = float(current_target) - 2
-                await _ha_client.set_temperature(climate_entity, new_target)
+                await _ha_client.set_temperature(climate_entity, new_target, intent_mode="cool")
                 return QuickActionResponse(
                     success=True, message=f"Boosted cooling to {new_target:.0f}°",
                     action=action, detail={"new_target": new_target},
@@ -509,14 +540,30 @@ async def execute_quick_action(
             adjusted_temp_c = active_schedule.target_temp_c
             offset_c = 0.0
             priority_zone_name = None
+            resume_avg_c: float | None = None
+            resume_mode = str(state.state or "").lower()
             try:
-                adjusted_temp_c, offset_c, priority_zone_name, *_ = await apply_offset_compensation(
+                (
+                    adjusted_temp_c, offset_c, priority_zone_name, resume_avg_c, _
+                ) = await apply_offset_compensation(
                     db, _ha_client, climate_entity,
                     active_schedule.target_temp_c,
                     zone_ids=active_schedule.zone_ids or None,
+                    hvac_mode=resume_mode or None,
                 )
             except Exception as comp_err:
                 _logger.debug("Resume offset compensation (non-critical): %s", comp_err)
+            # Which side of a dual setpoint to move in heat_cool/auto.
+            if "heat" in resume_mode and "cool" not in resume_mode:
+                resume_intent = "heat"
+            elif "cool" in resume_mode and "heat" not in resume_mode:
+                resume_intent = "cool"
+            else:
+                resume_intent = (
+                    "cool"
+                    if resume_avg_c is not None and resume_avg_c > active_schedule.target_temp_c
+                    else "heat"
+                )
 
             # Convert adjusted temp to HA unit
             ha_config = await _ha_client.get_config()
@@ -527,7 +574,9 @@ async def execute_quick_action(
             if ha_temp_unit == "\u00b0F":
                 target_temp = round(adjusted_temp_c * 9 / 5 + 32, 1)
 
-            await _ha_client.set_temperature(climate_entity, target_temp)
+            await _ha_client.set_temperature(
+                climate_entity, target_temp, intent_mode=resume_intent
+            )
 
             # Display uses the original desired temp, not the adjusted one
             display_temp_val = active_schedule.target_temp_c
@@ -1169,7 +1218,13 @@ async def set_manual_override(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="temperature is required",
         )
-    display_temp = float(temperature)
+    try:
+        display_temp = float(temperature)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="temperature must be a number",
+        ) from exc
 
     # Accept optional fields (not used yet, but accepted for future use)
     _duration_hours = payload.get("duration_hours")
@@ -1186,11 +1241,27 @@ async def set_manual_override(
         select(SystemSetting).where(SystemSetting.key == "temperature_unit")
     )
     row = result.scalar_one_or_none()
-    user_unit: str = "C"
+    # Default to the add-on's configured unit, not a hard-coded "C" — on a
+    # fresh °F install a dial sending 72 was read as 72°C.
+    user_unit: str = str(SETTINGS.temperature_unit or "C").upper()
     if row and row.value:
-        raw_unit = row.value.get("value", "C")
+        raw_unit = row.value.get("value")
         if raw_unit:
             user_unit = str(raw_unit).upper()
+
+    # Reject setpoints outside the configured safety range.
+    requested_c = (display_temp - 32) * 5 / 9 if user_unit == "F" else display_temp
+    if not (SETTINGS.safety_min_temp_c <= requested_c <= SETTINGS.safety_max_temp_c):
+        lo, hi = SETTINGS.safety_min_temp_c, SETTINGS.safety_max_temp_c
+        if user_unit == "F":
+            lo, hi = lo * 9 / 5 + 32, hi * 9 / 5 + 32
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"temperature {display_temp:g}°{user_unit} is outside the safety range "
+                f"{lo:.0f}-{hi:.0f}°{user_unit}"
+            ),
+        )
 
     # 3. Get the HA temperature unit from HA config
     ha_config = await _ha_client.get_config()
@@ -1225,15 +1296,34 @@ async def set_manual_override(
             detail="No climate entity configured. Set climate_entities in add-on settings.",
         )
 
-    # 6. Send the temperature command to HA
+    # 6. Send the temperature command to HA.  In heat_cool/auto, move the
+    # side of the dual setpoint that matches the request: below the current
+    # reading means "cool to this", otherwise "heat to this".
+    override_intent: str | None = None
+    try:
+        _ov_state = await _ha_client.get_state(climate_entity)
+        _ov_mode = str(_ov_state.state or "").lower() if _ov_state else ""
+        if ("heat" in _ov_mode and "cool" in _ov_mode) or _ov_mode == "auto":
+            _cur = _ov_state.attributes.get("current_temperature") if _ov_state else None
+            override_intent = (
+                "cool" if _cur is not None and temp_for_ha < float(_cur) else "heat"
+            )
+        elif _ov_mode in ("heat", "cool"):
+            override_intent = _ov_mode
+    except Exception:  # noqa: S110
+        pass
     try:
         try:
-            await _ha_client.set_temperature_with_hold(climate_entity, temp_for_ha)
+            await _ha_client.set_temperature_with_hold(
+                climate_entity, temp_for_ha, intent_mode=override_intent
+            )
         except Exception:
             _logger.debug(
                 "set_temperature_with_hold failed, falling back to set_temperature"
             )
-            await _ha_client.set_temperature(climate_entity, temp_for_ha)
+            await _ha_client.set_temperature(
+                climate_entity, temp_for_ha, intent_mode=override_intent
+            )
     except HAClientError as exc:
         _logger.error("Manual override failed: %s", exc)
         raise HTTPException(
@@ -1371,7 +1461,6 @@ async def debug_offset_calculation(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
     """Debug endpoint to show what ClimateIQ is calculating for offset compensation."""
-    from zoneinfo import ZoneInfo
 
     from backend.core.temp_compensation import (
         compute_adjusted_setpoint,
@@ -1413,16 +1502,10 @@ async def debug_offset_calculation(
         return {"error": "No climate entity configured"}
 
     # Get timezone
-    user_tz = ZoneInfo("UTC")
-    try:
-        tz_result = await db.execute(select(SystemSetting).where(SystemSetting.key == "timezone"))
-        tz_row = tz_result.scalar_one_or_none()
-        if tz_row and tz_row.value:
-            tz_val = tz_row.value.get("value", "")
-            if tz_val:
-                user_tz = ZoneInfo(tz_val)
-    except Exception:  # noqa: S110
-        pass
+    from backend.api.dependencies import _ha_client as _tz_ha_client
+    from backend.core.user_tz import resolve_user_tz
+
+    user_tz = await resolve_user_tz(db, _tz_ha_client)
 
     # Find active schedule
     now_local = datetime.now(user_tz)

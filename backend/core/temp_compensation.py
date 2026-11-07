@@ -708,13 +708,27 @@ async def apply_offset_compensation(
         or (hvac_mode_str == "cool" and 0.0 < zone_error_f < 1.0)
     )
     if in_dead_band:
+        # Zones are on the self-correcting side of target, so the HVAC must
+        # not run.  Returning ``desired`` alone isn't enough: in heat mode a
+        # hallway thermostat reading below desired would still fire the
+        # furnace into rooms that are already warm (and symmetrically for
+        # cool).  Park the setpoint at the thermostat's own reading, the
+        # same rule compute_adjusted_setpoint's fast path uses.
+        dead_band_c = desired_temp_c
+        thermostat_now_c = await get_thermostat_reading_c(ha_client, climate_entity, db=db)
+        if thermostat_now_c is not None:
+            if "heat" in hvac_mode_str:
+                dead_band_c = min(desired_temp_c, thermostat_now_c)
+            else:
+                dead_band_c = max(desired_temp_c, thermostat_now_c)
         logger.debug(
-            "Dead-band: zone %.1f°F within 1°F of target %.1f°F (%s mode) — no offset",
+            "Dead-band: zone %.1f°F within 1°F of target %.1f°F (%s mode) — HVAC parked at %.1f°F",
             avg_temp_c * 9 / 5 + 32,
             desired_temp_c * 9 / 5 + 32,
             hvac_mode_str or "unknown",
+            dead_band_c * 9 / 5 + 32,
         )
-        return desired_temp_c, 0.0, zone_names, avg_temp_c, hvac_mode_str
+        return dead_band_c, dead_band_c - desired_temp_c, zone_names, avg_temp_c, hvac_mode_str
 
     # 3. Fetch thermostat reading and max-offset setting in parallel.
     thermostat_c, max_offset_f = await asyncio.gather(

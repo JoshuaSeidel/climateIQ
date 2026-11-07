@@ -401,9 +401,11 @@ async def _get_advisor_extra_context(
     try:
         from sqlalchemy import select as _sel
 
+        import backend.api.dependencies as _deps
+        from backend.core.user_tz import local_now
         from backend.models.database import Schedule
 
-        now_local = datetime.now()
+        now_local = await local_now(db, _deps._ha_client)
         current_dow = now_local.weekday()  # 0 = Mon
         now_mins = now_local.hour * 60 + now_local.minute
 
@@ -852,12 +854,18 @@ class ClimateAdvisor:
         outdoor_temp_c: float | None = None
         outdoor_condition = ""
         try:
+            import backend.api.dependencies as _deps
+            from backend.core.weather_units import to_celsius
+
             weather_entity = await self._get_weather_entity(db)
-            if weather_entity and hasattr(settings, "_ha_client"):
-                ha = settings._ha_client
+            ha = _deps._ha_client
+            if weather_entity and ha is not None:
                 state = await ha.get_state(weather_entity)
                 if state:
-                    outdoor_temp_c = state.attributes.get("temperature")
+                    outdoor_temp_c = to_celsius(
+                        state.attributes.get("temperature"),
+                        state.attributes.get("temperature_unit", "°C"),
+                    )
                     outdoor_condition = state.state or ""
         except Exception:  # noqa: S110
             pass

@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.0.85] - 2026-11-07
+
+Codebase audit, batch 1: control and safety fixes.
+
+### Fixed
+- **AI mode ran on UTC: the real cause of the Office being held at 72°F at 3am.** Active mode resolved the timezone without the Home Assistant fallback, and the stored value `America\New_York` (backslash) is not a valid zone name, so it silently used UTC. At 03:38 local it saw 08:38 and followed the Daytime schedule. The override-status endpoint had the same bug, so the dashboard "Set:" was off too. New `backend/core/user_tz.py` is the single resolver used everywhere (scheduler, maintenance, Active mode, override status, schedule routes, time windows, seasonal lock, advisor). It normalises backslashes, treats "UTC"/invalid as unset, and falls back to HA's timezone. Seasons and the advisor's upcoming-schedule list also used the container's UTC date/time and now use local time. Settings now validates timezone (and `temperature_unit`) on save.
+- **Outdoor temperature in °F was treated as °C.** HA weather entities report in their own unit. 49°F was read as 49°C, so AI mode was told it was ~120°F outside and flagged HEAVY_HOT_DAY ("precondition cool now") on any forecast high above 32°F. The seasonal-lock outdoor overrides were effectively always tripped (winter heat lock lifted) or never tripped (summer heat escape), and preconditioning lead times were wrong. New `backend/core/weather_units.py` converts using the entity's `temperature_unit` in Active mode, preconditioning, the seasonal lock and the advisor.
+- **The LLM advisor never received outdoor conditions.** It looked for `_ha_client` on the settings object, where it never exists.
+- **Learn mode still controlled the thermostat.** Switching to Learn hands control back to the Ecobee program, but climate maintenance and the schedule runner kept writing setpoints (creating holds) every minute. Both now stand down in Learn.
+- **Time-window blocks were bypassed** when the thermostat already sat at the computed setpoint. The "already at target, no write" check ran before the window clamp, so a blocked direction kept running. An advisor "wait" also returned before the clamp. The clamp now runs first, and "wait" holds the current setpoint through the clamp.
+- **The advisor's HVAC mode recommendation overrode schedules set to "off", the heat/cool direction lock, and the zone error sign.** These are now vetoed.
+- **Offset dead-band heated rooms already above target** (or cooled rooms below it) when the thermostat's own sensor read on the other side. The dead-band now parks the setpoint at the thermostat's reading, the same rule as the fast path.
+- **"All zones" schedules never auto-selected heat/cool.** An empty zone list returned "no data" instead of averaging every zone.
+- **The rule engine could write raw setpoints to the main thermostat every 2 minutes**, with no offset compensation and no schedule, fighting every mode loop. It also sent `set_temperature` to fans and blinds. It no longer touches the managed thermostat or non-climate entities.
+- **Editing a schedule pushed its target immediately regardless of mode or priority.** `apply_schedule_now` now only acts in Scheduled mode and runs the normal maintenance pass, which picks whichever schedule actually governs.
+- **Manual override had no safety limit and assumed °C on a default install.** A stale or wrong-unit value could send 72 as 72°C. Overrides outside the safety range are now rejected with 400, non-numeric values return 400 instead of 500, and the unit defaults to the add-on's configured unit.
+- **In heat_cool/auto, override, Boost Cool, Resume and AI-mode writes moved the heat setpoint.** These now pass the correct heat/cool intent. The eco fallback now steps 3°F in HA's own unit.
+- **Emergency shutoff didn't turn off the thermostat.** It only iterated Device rows, and the configured `climate_entities` thermostat usually has none. It is now switched off explicitly.
+- **AI mode accepted implausible LLM setpoints** (e.g. "22" meant as °C on a °F system → -5.6°C, then clamped into a real setpoint). Values outside the safety range ±5°C are now rejected, and `<think>` drafts are stripped before parsing.
+- **`PUT /settings` with a null value made every later `GET /settings` fail.** Nulls are now dropped on write and ignored on read.
+
 ## [1.0.84] - 2026-11-07
 
 ### Fixed

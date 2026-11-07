@@ -198,40 +198,10 @@ async def load_config(db: Any) -> ModeWindowConfig:
 
 
 async def get_local_now(db: Any, ha_client: Any) -> datetime:
-    """Resolve 'now' in the user's configured timezone.
+    """Resolve 'now' in the user's timezone — see ``backend.core.user_tz``."""
+    from backend.core.user_tz import local_now
 
-    Mirrors the resolution order used by the climate maintenance loop: the
-    ``timezone`` system setting first, then Home Assistant's own timezone,
-    then UTC.
-    """
-    from zoneinfo import ZoneInfo
-
-    tz = ZoneInfo("UTC")
-    if db is not None:
-        try:
-            from sqlalchemy import select as sa_select
-
-            from backend.models.database import SystemSetting
-
-            result = await db.execute(
-                sa_select(SystemSetting).where(SystemSetting.key == "timezone")
-            )
-            row = result.scalar_one_or_none()
-            if row and row.value:
-                val = row.value.get("value", "") if isinstance(row.value, dict) else str(row.value)
-                if val:
-                    tz = ZoneInfo(val)
-        except Exception:  # noqa: S110
-            pass
-    if str(tz) == "UTC" and ha_client is not None:
-        try:
-            ha_config = await ha_client.get_config()
-            ha_tz = ha_config.get("time_zone", "")
-            if ha_tz:
-                tz = ZoneInfo(ha_tz)
-        except Exception:  # noqa: S110
-            pass
-    return datetime.now(tz)
+    return await local_now(db, ha_client)
 
 
 # ---------------------------------------------------------------------------

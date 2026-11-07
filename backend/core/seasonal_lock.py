@@ -194,9 +194,12 @@ async def _read_outdoor_temp_c(db: Any, ha_client: Any) -> float | None:
         state = await ha_client.get_state(entity)
         if not state:
             return None
-        temp = state.attributes.get("temperature")
-        if isinstance(temp, (int, float)) and not isinstance(temp, bool):
-            return float(temp)
+        from backend.core.weather_units import to_celsius
+
+        return to_celsius(
+            state.attributes.get("temperature"),
+            state.attributes.get("temperature_unit", "°C"),
+        )
     except Exception as exc:
         logger.debug("seasonal_lock: outdoor read failed (%s)", exc)
     return None
@@ -241,7 +244,11 @@ async def compute_lock_state(
         state.reason = "seasonal lock disabled"
         return state
 
-    today = now or date.today()
+    if now is None:
+        from backend.core.user_tz import local_now
+
+        now = await local_now(db, ha_client)
+    today = now
     season = find_active_season(cfg.seasons, today)
     if season is None:
         state.reason = "no active season for today"

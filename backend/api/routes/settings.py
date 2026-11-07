@@ -185,6 +185,30 @@ class SystemSettingsUpdate(BaseModel):
     fan_night_cap_end: str | None = None
     fan_night_cap_max_pct: int | None = None
 
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        raw = v.strip().replace("\\", "/")
+        if raw.upper() == "UTC":
+            return "UTC"
+        from backend.core.user_tz import parse_tz
+
+        if parse_tz(raw) is None:
+            raise ValueError(f"unknown timezone {v!r} — use an IANA name like 'America/New_York'")
+        return raw
+
+    @field_validator("temperature_unit")
+    @classmethod
+    def _validate_temperature_unit(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        normalized = v.strip().upper()
+        if normalized not in {"C", "F"}:
+            raise ValueError("temperature_unit must be 'C' or 'F'")
+        return normalized
+
     @field_validator("fan_night_cap_start", "fan_night_cap_end")
     @classmethod
     def _validate_fan_cap_time(cls, v: str | None) -> str | None:
@@ -295,7 +319,9 @@ async def _read_all_kv(session: AsyncSession) -> dict[str, Any]:
     values: dict[str, Any] = dict(_KV_DEFAULTS)
     for row in rows:
         if row.key in _KV_DEFAULTS:
-            values[row.key] = row.value.get("value", _KV_DEFAULTS[row.key])
+            stored = (row.value or {}).get("value")
+            if stored is not None:
+                values[row.key] = stored
     return values
 
 
@@ -407,7 +433,9 @@ async def update_settings(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> SystemSettingsResponse:
     """Update system settings. Only supplied fields are persisted."""
-    changed = updates.model_dump(exclude_unset=True)
+    # Explicit nulls are dropped: persisting {"value": null} would make every
+    # later GET /settings fail validation.
+    changed = {k: v for k, v in updates.model_dump(exclude_unset=True).items() if v is not None}
     if not changed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
