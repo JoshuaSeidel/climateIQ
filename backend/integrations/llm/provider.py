@@ -56,6 +56,7 @@ class LLMProvider:
     # echo the tool schema back as plain text instead of emitting
     # tool_calls, which surfaces as garbage in the chat UI. For those
     # providers we drop `tools` and let the model answer as plain text.
+    DEFAULT_TIMEOUT_S: float = 120.0
     TOOL_CAPABLE_PROVIDERS: ClassVar[frozenset[str]] = frozenset(
         {"anthropic", "openai", "gemini", "deepseek", "grok"}
     )
@@ -162,6 +163,9 @@ class LLMProvider:
         if self.base_url:
             call_kwargs["api_base"] = self.base_url
         call_kwargs.update(kwargs)
+        # litellm's default request timeout is 6000 s.  A hung Ollama would
+        # otherwise pin a chat request (and its DB session) for 100 minutes.
+        call_kwargs.setdefault("timeout", self.DEFAULT_TIMEOUT_S)
 
         response = await litellm.acompletion(**call_kwargs)
 

@@ -20,6 +20,8 @@ from backend.integrations.ha_client import HAClient, HAClientError
 logger = logging.getLogger(__name__)
 
 _WEBHOOK_TIMEOUT = 10.0  # seconds
+# Identical notifications within this window are treated as duplicates.
+_DUPLICATE_WINDOW_S: float = 6 * 3600
 _DEFAULT_THROTTLE_MIN_INTERVAL_S = 30 * 60  # 30 minutes
 
 
@@ -119,7 +121,12 @@ class NotificationService:
             last = self._last_sent.get(key)
             if last is not None:
                 last_at, last_msg = last
-                if message == last_msg:
+                # Identical text is only a duplicate for a while — forever
+                # meant a sensor's *second* offline episode never alerted.
+                if (
+                    message == last_msg
+                    and time.monotonic() - last_at < _DUPLICATE_WINDOW_S
+                ):
                     logger.debug(
                         "HA notification suppressed (unchanged): [%s] %s",
                         title, message[:80],

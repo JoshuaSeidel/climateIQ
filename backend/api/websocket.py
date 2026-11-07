@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -38,6 +39,9 @@ class ConnectionManager:
 
         self._connections: dict[str, set[WebSocket]] = {}
         self._lock = asyncio.Lock()
+        # Tags messages this process publishes so its own Redis listener
+        # doesn't deliver them to local clients a second time.
+        self._instance_id = uuid.uuid4().hex
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -112,42 +116,48 @@ class ConnectionManager:
     async def subscribe_redis(self) -> None:
         if self._listener_task and not self._listener_task.done():
             return
-
-        redis_conn = await self._ensure_redis()
-        if not redis_conn:
+        if not await self._ensure_redis():
             return
 
-        pubsub = redis_conn.pubsub()
-        await pubsub.subscribe(self._channel, self._SENSOR_CHANNEL, self._DEVICE_CHANNEL)
-        self._pubsub = pubsub
-
         async def _listen() -> None:
-            if self._pubsub is None:
-                return
-            try:
-                async for message in self._pubsub.listen():
-                    if message.get("type") != "message":
-                        continue
-                    raw = message.get("data")
-                    if not isinstance(raw, str):
-                        continue
-                    try:
-                        payload = json.loads(raw)
-                    except json.JSONDecodeError:
-                        logger.debug("Skipping malformed Redis payload: %s", raw)
-                        continue
-                    await self._send_local(payload)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("Redis listener crashed; retrying in 2s")
-                await asyncio.sleep(2)
-                await self.subscribe_redis()
-            finally:
-                if self._pubsub:
+            # Resubscribe in-task after a crash.  (Calling subscribe_redis()
+            # from here was a no-op — this task was still "running" — so
+            # fan-out died permanently after the first error.)
+            while True:
+                redis_conn = await self._ensure_redis()
+                if redis_conn is None:
+                    await asyncio.sleep(5)
+                    continue
+                pubsub = redis_conn.pubsub()
+                self._pubsub = pubsub
+                try:
+                    await pubsub.subscribe(
+                        self._channel, self._SENSOR_CHANNEL, self._DEVICE_CHANNEL
+                    )
+                    async for message in pubsub.listen():
+                        if message.get("type") != "message":
+                            continue
+                        raw = message.get("data")
+                        if not isinstance(raw, str):
+                            continue
+                        try:
+                            payload = json.loads(raw)
+                        except json.JSONDecodeError:
+                            logger.debug("Skipping malformed Redis payload: %s", raw)
+                            continue
+                        if isinstance(payload, dict):
+                            if payload.pop("_origin", None) == self._instance_id:
+                                continue  # already delivered locally
+                        await self._send_local(payload)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Redis listener crashed; retrying in 2s")
+                    await asyncio.sleep(2)
+                finally:
                     with suppress(Exception):
-                        await self._pubsub.close()
-                self._pubsub = None
+                        await pubsub.close()
+                    self._pubsub = None
 
         self._listener_task = asyncio.create_task(_listen(), name="climateiq-ws-redis")
 
@@ -224,7 +234,7 @@ class ConnectionManager:
         if not redis_conn:
             return
         target = channel or self._channel
-        payload = json.dumps(message, default=str)
+        payload = json.dumps({**message, "_origin": self._instance_id}, default=str)
         try:
             await redis_conn.publish(target, payload)
         except Exception:

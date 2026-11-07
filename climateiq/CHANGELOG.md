@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.86] - 2026-11-07
+
+Codebase audit, batch 2: integrations and data safety.
+
+### Fixed
+- **Backup restore could wipe tables and still report success.** Rows were re-inserted with raw `text()` using plain dicts/lists, which psycopg3 cannot adapt, and each row's error was swallowed after the tables had already been cleared. Restore now inserts through the ORM table definitions (typed JSONB/UUID/timestamp/vector binding, unknown columns dropped) inside a single transaction, so any failure rolls back and leaves the database untouched. Memories (`user_directives`) are now included in backups.
+- **If HA was down when the add-on started, the HA WebSocket never connected**, so sensor ingestion and drift detection stayed dead until a restart. A failed first attempt now cleans up and leaves the reconnect loop running. A half-open socket is closed, and an auth rejection during an HA restart backs off instead of giving up for good.
+- **One failed HA unit lookup made the zones API report °F as °C until restart.** The failure was cached. It is no longer cached, and the fallback is the add-on's configured unit (also used by offset compensation).
+- **The weather poll leaked an HA client every 15 minutes.** It now reuses the shared client.
+- **LLM calls had no timeout** (litellm's default is 6000 s), so a hung Ollama pinned chat requests and DB connections. The default is now 120 s.
+- **A sensor's second offline episode never alerted.** Identical notifications were suppressed forever. They are now only duplicates within 6 hours, and offline alerts bypass the throttle (one per episode is enforced upstream).
+- **WebSocket messages reached each browser twice** (local send plus the process's own Redis echo), and the Redis listener died permanently after its first error. Published messages are now tagged with an instance id and skipped on echo, and the listener resubscribes in-task.
+- **Dashboard override target never refreshed after it first loaded.** After a unit change it could send a °F number as °C. After a schedule change it showed the old target. It now follows the live schedule target until you edit it, ignores an edit made in another unit, resets after a successful override, and shows the server's error (e.g. outside the safety range).
+
 ## [1.0.85] - 2026-11-07
 
 Codebase audit, batch 1: control and safety fixes.

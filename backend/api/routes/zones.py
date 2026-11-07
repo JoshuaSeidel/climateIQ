@@ -45,8 +45,14 @@ async def _get_ha_temp_unit(ha_client: HAClient) -> str:
         _ha_temp_unit = unit_system.get("temperature", "°C")
         logger.info("Detected HA temperature unit: %s", _ha_temp_unit)
     except Exception as exc:
-        logger.warning("Could not detect HA temp unit, assuming °C: %s", exc)
-        _ha_temp_unit = "°C"
+        # Don't cache the guess — a single failure while HA restarts would
+        # otherwise report °F values as °C until the add-on restarts.  Fall
+        # back to the add-on's configured unit for this call only.
+        from backend.config import SETTINGS
+
+        guess = "°F" if str(SETTINGS.temperature_unit).upper() == "F" else "°C"
+        logger.warning("Could not detect HA temp unit, assuming %s for now: %s", guess, exc)
+        return guess
     return _ha_temp_unit
 
 

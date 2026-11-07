@@ -30,6 +30,7 @@ _BACKUP_TABLES = [
     "device_actions",
     "occupancy_patterns",
     "conversations",
+    "user_directives",
     "user_feedback",
     "system_config",
     "schedules",
@@ -182,31 +183,33 @@ class BackupService:
 
         logger.info("Restoring backup %s — clearing existing data", backup_id)
 
-        # Phase 1: delete existing rows (children → parents)
-        for table_name in delete_order:
-            if table_name in tables:
-                try:
+        # The whole restore is one transaction: any failure rolls back to
+        # the data as it was.  (Previously per-row errors were swallowed
+        # after the DELETEs, so a restore could commit emptied tables and
+        # still report success.)
+        total_restored = 0
+        try:
+            # Phase 1: delete existing rows (children → parents)
+            for table_name in delete_order:
+                if table_name in tables:
                     safe_name = _validate_table_name(table_name)
                     await db_session.execute(text(f'DELETE FROM "{safe_name}"'))  # noqa: S608
                     logger.debug("Cleared table %s", table_name)
-                except Exception:
-                    logger.warning("Could not clear table %s (may not exist)", table_name)
 
-        # Phase 2: insert backup rows (parents → children)
-        total_restored = 0
-        for table_name in _BACKUP_TABLES:
-            rows = tables.get(table_name, [])
-            if not rows:
-                continue
-            try:
+            # Phase 2: insert backup rows (parents → children)
+            for table_name in _BACKUP_TABLES:
+                rows = tables.get(table_name, [])
+                if not rows:
+                    continue
                 count = await self._restore_table(db_session, table_name, rows)
                 total_restored += count
                 logger.debug("Restored %d rows into %s", count, table_name)
-            except Exception:
-                logger.exception("Failed to restore table %s", table_name)
-                raise
 
-        await db_session.commit()
+            await db_session.commit()
+        except Exception as exc:
+            await db_session.rollback()
+            logger.exception("Backup restore failed — database left unchanged")
+            raise ValueError(f"Restore failed, database left unchanged: {exc}") from exc
         logger.info(
             "Backup %s restored successfully (%d total rows across %d tables)",
             backup_id,
@@ -312,37 +315,61 @@ class BackupService:
         table_name: str,
         rows: list[dict[str, Any]],
     ) -> int:
-        """Insert *rows* into *table_name* using raw SQL.
+        """Insert *rows* into *table_name* through the ORM table definition.
 
-        Returns the number of rows inserted.
+        Going through the typed ``Table`` lets SQLAlchemy bind JSONB dicts,
+        arrays, UUIDs and timestamps correctly — raw ``text()`` inserts with
+        plain dicts/lists cannot be adapted by psycopg3.  Values that were
+        stringified on export (UUIDs, timestamps, vectors) are parsed back,
+        and columns that no longer exist in the schema are dropped.  Errors
+        propagate so the caller can roll back the whole restore.
         """
         if not rows:
             return 0
 
-        # Use the columns from the first row as the schema
-        columns = list(rows[0].keys())
-        col_list = ", ".join(f'"{c}"' for c in columns)
-        param_list = ", ".join(f":{c}" for c in columns)
+        from sqlalchemy import insert as sa_insert
+
+        from backend.models.database import Base
+
         safe_name = _validate_table_name(table_name)
-        insert_sql = text(
-            f'INSERT INTO "{safe_name}" ({col_list}) VALUES ({param_list})'  # noqa: S608
-        )
+        table = Base.metadata.tables.get(safe_name)
+        if table is None:
+            logger.warning("Skipping restore of %s — not in the current schema", safe_name)
+            return 0
 
-        count = 0
-        for row in rows:
-            try:
-                await db_session.execute(insert_sql, row)
-                count += 1
-            except Exception:
-                logger.warning(
-                    "Failed to insert row into %s: %s",
-                    table_name,
-                    {k: str(v)[:50] for k, v in row.items()},
-                )
-                # Continue with remaining rows
-                continue
+        coercers = {c.name: _coercer_for(c.type) for c in table.columns}
+        prepared = [
+            {k: coercers[k](v) for k, v in row.items() if k in coercers}
+            for row in rows
+        ]
+        chunk = 1000
+        for i in range(0, len(prepared), chunk):
+            await db_session.execute(sa_insert(table), prepared[i : i + chunk])
+        return len(prepared)
 
-        return count
+
+def _coercer_for(col_type: Any) -> Any:
+    """Return a function that turns an exported JSON value back into a bind value."""
+    type_name = type(col_type).__name__.upper()
+
+    def _uuid(v: Any) -> Any:
+        return uuid.UUID(v) if isinstance(v, str) else v
+
+    def _dt(v: Any) -> Any:
+        return datetime.fromisoformat(v) if isinstance(v, str) else v
+
+    def _vector(v: Any) -> Any:
+        if isinstance(v, str) and v.startswith("["):
+            return [float(x) for x in json.loads(v)]
+        return v
+
+    if type_name in ("UUID", "UUIDTYPE"):
+        return _uuid
+    if type_name in ("DATETIME", "TIMESTAMP"):
+        return _dt
+    if type_name == "VECTOR":
+        return _vector
+    return lambda v: v
 
 
 # ---------------------------------------------------------------------------

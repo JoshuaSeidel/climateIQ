@@ -119,18 +119,46 @@ class HAWebSocketClient:
     # ------------------------------------------------------------------
 
     async def connect(self) -> None:
-        """Connect, authenticate, and subscribe to state_changed events."""
+        """Connect, authenticate, and subscribe to state_changed events.
+
+        If HA isn't reachable yet (the add-on often starts before HA after a
+        host reboot), the reconnect loop is still started so the connection
+        comes up on its own once HA is ready — previously a failed first
+        attempt left sensor ingestion dead until the add-on was restarted.
+        Only an invalid token raises.
+        """
         async with self._lock:
-            if self._ws is not None:
+            if self._reconnect_task is not None and not self._reconnect_task.done():
                 return
 
-            await self._open_and_auth()
             self._stop = False
-            self._listen_task = asyncio.create_task(self._listen_loop(), name="ha-ws-listen")
+            try:
+                await self._open_and_auth()
+            except HAWebSocketAuthError:
+                await self._close_ws()
+                raise
+            except Exception as exc:
+                await self._close_ws()
+                logger.warning(
+                    "HA WebSocket not available yet (%s) — will keep retrying in the background",
+                    exc,
+                )
+            else:
+                self._listen_task = asyncio.create_task(
+                    self._listen_loop(), name="ha-ws-listen"
+                )
+                logger.info("HA WebSocket connected to %s", self._ws_url)
             self._reconnect_task = asyncio.create_task(
                 self._reconnect_loop(), name="ha-ws-reconnect"
             )
-            logger.info("HA WebSocket connected to %s", self._ws_url)
+
+    async def _close_ws(self) -> None:
+        """Close and forget a (possibly half-open) socket."""
+        self._connected.clear()
+        if self._ws is not None:
+            with suppress(Exception):
+                await self._ws.close()
+            self._ws = None
 
     async def disconnect(self) -> None:
         """Cleanly shut down the WebSocket connection and background tasks."""
@@ -506,10 +534,7 @@ class HAWebSocketClient:
                         return
                     try:
                         # Close old connection
-                        if self._ws is not None:
-                            with suppress(Exception):
-                                await self._ws.close()
-                            self._ws = None
+                        await self._close_ws()
 
                         await self._open_and_auth()
 
@@ -525,8 +550,14 @@ class HAWebSocketClient:
                         logger.info("HA WebSocket reconnected")
                         break
                     except HAWebSocketAuthError:
-                        logger.error("HA WebSocket auth failed — not retrying")
-                        return
+                        # HA can reject tokens briefly while it restarts;
+                        # back off hard but never give up for good.
+                        await self._close_ws()
+                        logger.error(
+                            "HA WebSocket auth failed — retrying in %ss",
+                            self._RECONNECT_DELAYS[-1],
+                        )
+                        await asyncio.sleep(self._RECONNECT_DELAYS[-1])
                     except Exception as exc:
                         logger.warning(
                             "HA WebSocket reconnect failed (%s), retrying in %ss",

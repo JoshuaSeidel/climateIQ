@@ -90,7 +90,10 @@ export const Dashboard = () => {
   const [tempOverride, setTempOverride] = useState<{ zoneId: string; temp: string } | null>(null)
   const [overrideSubmitting, setOverrideSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [manualTemp, setManualTemp] = useState<number | null>(null)
+  // The user's edit, tagged with the unit it was entered in.  Until they
+  // edit, the control follows the live schedule target; an edit made in
+  // another unit is ignored (it would otherwise send 72 as 72°C).
+  const [manualEdit, setManualEdit] = useState<{ value: number; unit: string } | null>(null)
 
   // Fetch zones
   const {
@@ -240,12 +243,6 @@ export const Dashboard = () => {
     refetchInterval: 60_000,
   })
 
-  // Initialize manualTemp from schedule target temp when it loads
-  useEffect(() => {
-    if (overrideStatus?.schedule_target_temp != null && manualTemp === null) {
-      setManualTemp(Math.round(overrideStatus.schedule_target_temp))
-    }
-  }, [overrideStatus, manualTemp])
 
   // Mutation for setting manual override
   const overrideMutation = useMutation({
@@ -254,14 +251,15 @@ export const Dashboard = () => {
     onSuccess: (result) => {
       if (result.success) {
         setError(null)
+        setManualEdit(null)
         refetchOverride()
         refetchZones()
       } else {
         setError(result.message || 'Override failed.')
       }
     },
-    onError: () => {
-      setError('Failed to set temperature override. Please try again.')
+    onError: (err: Error) => {
+      setError(err.message || 'Failed to set temperature override. Please try again.')
     },
   })
 
@@ -312,6 +310,13 @@ export const Dashboard = () => {
 
   const { temperatureUnit } = useSettingsStore()
   const unitKey: 'c' | 'f' = temperatureUnit === 'celsius' ? 'c' : 'f'
+
+  const scheduleTargetRounded =
+    overrideStatus?.schedule_target_temp != null ? Math.round(overrideStatus.schedule_target_temp) : null
+  const manualTemp = manualEdit && manualEdit.unit === unitKey ? manualEdit.value : null
+  const overrideTarget = manualTemp ?? scheduleTargetRounded
+  const setManualTemp = (update: (prev: number | null) => number) =>
+    setManualEdit({ value: update(overrideTarget), unit: unitKey })
 
   // Temperature override handler — uses the command endpoint for safety clamping
   const handleTempOverride = useCallback(
@@ -512,7 +517,7 @@ export const Dashboard = () => {
               <div className="flex flex-col items-center">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Target Temperature</p>
                 <p className="text-5xl font-black tabular-nums text-foreground dark:drop-shadow-[0_0_20px_rgba(249,115,22,0.2)]">
-                  {manualTemp ?? (overrideStatus?.schedule_target_temp != null ? Math.round(overrideStatus.schedule_target_temp) : '--')}
+                  {overrideTarget ?? '--'}
                   <span className="text-2xl font-bold text-muted-foreground">{tempUnitLabel(unitKey)}</span>
                 </p>
               </div>
@@ -535,8 +540,11 @@ export const Dashboard = () => {
                 type="range"
                 min={unitKey === 'f' ? 50 : 10}
                 max={unitKey === 'f' ? 95 : 35}
-                value={manualTemp ?? (overrideStatus?.schedule_target_temp != null ? Math.round(overrideStatus.schedule_target_temp) : (unitKey === 'f' ? 72 : 22))}
-                onChange={(e) => setManualTemp(Number(e.target.value))}
+                value={overrideTarget ?? (unitKey === 'f' ? 72 : 22)}
+                onChange={(e) => {
+                  const v = Number(e.target.value)
+                  setManualTemp(() => v)
+                }}
                 className="w-full accent-orange-500"
               />
               <div className="mt-1 flex justify-between text-[10px] font-bold uppercase tracking-[0.15em] text-muted-foreground">
@@ -550,10 +558,10 @@ export const Dashboard = () => {
               <Button
                 size="sm"
                 className="flex-1 bg-orange-500 text-white hover:bg-orange-600 dark:shadow-[0_0_12px_rgba(249,115,22,0.25)]"
-                disabled={overrideMutation.isPending || manualTemp === null}
+                disabled={overrideMutation.isPending || overrideTarget === null}
                 onClick={() => {
-                  if (manualTemp !== null) {
-                    overrideMutation.mutate(manualTemp)
+                  if (overrideTarget !== null) {
+                    overrideMutation.mutate(overrideTarget)
                   }
                 }}
               >

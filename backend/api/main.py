@@ -491,12 +491,25 @@ async def poll_weather_data() -> None:
             logger.debug("No weather entity configured, skipping poll")
             return
 
-        ha_client = HAClient(
-            url=str(settings.home_assistant_url), token=settings.home_assistant_token
-        )
-        await ha_client.connect()
-        weather_service = WeatherService(ha_client, weather_entity=weather_entity)
-        weather_data = await weather_service.get_current()
+        # Reuse the shared client — creating one per poll leaked an httpx
+        # client every 15 minutes.  Fall back to a short-lived one (closed
+        # below) only if the shared client isn't up yet.
+        import backend.api.dependencies as _deps
+
+        ha_client = _deps._ha_client
+        temp_client: HAClient | None = None
+        if ha_client is None:
+            temp_client = HAClient(
+                url=str(settings.home_assistant_url), token=settings.home_assistant_token
+            )
+            await temp_client.connect()
+            ha_client = temp_client
+        try:
+            weather_service = WeatherService(ha_client, weather_entity=weather_entity)
+            weather_data = await weather_service.get_current()
+        finally:
+            if temp_client is not None:
+                await temp_client.disconnect()
 
         if weather_data:
             data_dict = asdict(weather_data)
@@ -689,6 +702,9 @@ async def check_sensor_health() -> None:
                             title=f"Sensor Offline: {sensor.name}",
                             message=f"{sensor.name} in {zone_name} hasn't reported in 30+ minutes",
                             target=notif_target,
+                            # One alert per offline episode is already
+                            # enforced upstream (_offline_notified).
+                            bypass_throttle=True,
                         )
                     except Exception as notif_err:
                         logger.warning("Sensor offline notification failed: %s", notif_err)

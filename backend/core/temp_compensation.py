@@ -26,7 +26,11 @@ async def _get_ha_temp_unit(ha_client: Any) -> str:
         config = await ha_client.get_config()
         return str(config.get("unit_system", {}).get("temperature", "°C"))
     except Exception:
-        return "°C"
+        # Fall back to the add-on's configured unit rather than assuming °C,
+        # which would read °F sensor values as Celsius during an HA blip.
+        from backend.config import SETTINGS
+
+        return "°F" if str(SETTINGS.temperature_unit).upper() == "F" else "°C"
 
 
 def _parse_temp_from_state(state: Any, ha_temp_unit: str) -> float | None:
