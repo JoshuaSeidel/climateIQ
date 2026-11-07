@@ -314,3 +314,25 @@ class TestScheduleCreateValidation:
     def test_extra_fields_forbidden(self) -> None:
         with pytest.raises(ValidationError):
             ScheduleCreate(**self._make_payload(unknown_field="bad"))
+
+
+class TestAuditValidation:
+    def test_invalid_hours_rejected(self) -> None:
+        for bad in ("24:00", "99:99", "7:00"):
+            with pytest.raises(ValidationError):
+                ScheduleCreate(name="x", start_time=bad, end_time=None, target_temp_c=21.0)
+
+    def test_valid_edges_accepted(self) -> None:
+        ScheduleCreate(name="x", start_time="00:00", end_time="23:59", target_temp_c=21.0)
+
+    def test_parse_time_accepts_seconds(self) -> None:
+        assert parse_time("07:00:00") == time(7, 0)
+
+    def test_overnight_overlap_detected(self) -> None:
+        night = {"days_of_week": [0], "zone_ids": [], "start_time": "22:00", "end_time": "06:00"}
+        late = {"days_of_week": [0], "zone_ids": [], "start_time": "23:00", "end_time": "23:30"}
+        early = {"days_of_week": [0], "zone_ids": [], "start_time": "05:00", "end_time": "05:30"}
+        day = {"days_of_week": [0], "zone_ids": [], "start_time": "09:00", "end_time": "17:00"}
+        assert check_schedule_overlap(night, late)
+        assert check_schedule_overlap(night, early)
+        assert not check_schedule_overlap(night, day)

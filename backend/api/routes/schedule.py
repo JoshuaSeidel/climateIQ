@@ -53,6 +53,20 @@ async def _apply_schedule_now_bg(schedule: Schedule) -> None:
 # ============================================================================
 
 
+# Real 24-hour HH:MM — the old ``^\d{2}:\d{2}$`` accepted "24:00" and
+# "99:99", which committed and then made every schedule listing 500.
+_HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+
+def _validate_days_list(v: list[int]) -> list[int]:
+    if not v:
+        raise ValueError("At least one day must be selected")
+    for day in v:
+        if day < 0 or day > 6:
+            raise ValueError("Days must be between 0 (Monday) and 6 (Sunday)")
+    return sorted(set(v))
+
+
 class ScheduleCreate(BaseModel):
     """Schedule creation request."""
 
@@ -61,8 +75,8 @@ class ScheduleCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     zone_ids: list[uuid.UUID] = Field(default_factory=list)  # empty = all zones
     days_of_week: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5, 6])  # 0=Mon, 6=Sun
-    start_time: str = Field(..., pattern=r"^\d{2}:\d{2}$")  # HH:MM format
-    end_time: str | None = Field(None, pattern=r"^\d{2}:\d{2}$")
+    start_time: str = Field(..., pattern=_HHMM)  # HH:MM format
+    end_time: str | None = Field(None, pattern=_HHMM)
     target_temp_c: float = Field(..., ge=4.4, le=37.8)
     hvac_mode: str = Field(default="auto")  # auto, heating, cooling, off
     is_enabled: bool = True
@@ -71,12 +85,7 @@ class ScheduleCreate(BaseModel):
     @field_validator("days_of_week")
     @classmethod
     def validate_days(cls, v: list[int]) -> list[int]:
-        if not v:
-            raise ValueError("At least one day must be selected")
-        for day in v:
-            if day < 0 or day > 6:
-                raise ValueError("Days must be between 0 (Monday) and 6 (Sunday)")
-        return sorted(set(v))
+        return _validate_days_list(v)
 
     @field_validator("target_temp_c")
     @classmethod
@@ -94,15 +103,20 @@ class ScheduleUpdate(BaseModel):
 
     model_config = {"extra": "ignore"}
 
-    name: str | None = None
+    name: str | None = Field(None, min_length=1, max_length=100)
     zone_ids: list[uuid.UUID] | None = None
     days_of_week: list[int] | None = None
-    start_time: str | None = Field(None, pattern=r"^\d{2}:\d{2}$")
-    end_time: str | None = Field(None, pattern=r"^\d{2}:\d{2}$")
+    start_time: str | None = Field(None, pattern=_HHMM)
+    end_time: str | None = Field(None, pattern=_HHMM)
     target_temp_c: float | None = Field(None, ge=4.4, le=37.8)
     hvac_mode: str | None = None
     is_enabled: bool | None = None
     priority: int | None = Field(None, ge=1, le=10)
+
+    @field_validator("days_of_week")
+    @classmethod
+    def validate_days(cls, v: list[int] | None) -> list[int] | None:
+        return None if v is None else _validate_days_list(v)
 
 
 class ScheduleResponse(BaseModel):
@@ -229,9 +243,11 @@ async def _get_user_tz(db: AsyncSession) -> ZoneInfo:
 
 
 def parse_time(time_str: str) -> time:
-    """Parse HH:MM string to time object."""
-    hours, minutes = map(int, time_str.split(":"))
-    return time(hours, minutes)
+    """Parse "HH:MM" (or "HH:MM:SS") to a time object; ValueError if invalid."""
+    parts = str(time_str).strip().split(":")
+    if len(parts) not in (2, 3):
+        raise ValueError(f"invalid time {time_str!r}")
+    return time(int(parts[0]), int(parts[1]))
 
 
 def get_next_occurrence(
@@ -326,8 +342,20 @@ def check_schedule_overlap(
         else time(23, 59)
     )
 
-    # Check for overlap
-    return start1 < end2 and start2 < end1
+    # Check for overlap.  A schedule whose end is before its start wraps
+    # past midnight, so split it into [start, 24:00) and [00:00, end).
+    def _segments(start: time, end: time) -> list[tuple[int, int]]:
+        s_min = start.hour * 60 + start.minute
+        e_min = end.hour * 60 + end.minute
+        if e_min < s_min:
+            return [(s_min, 24 * 60), (0, e_min)]
+        return [(s_min, e_min)]
+
+    return any(
+        a0 < b1 and b0 < a1
+        for a0, a1 in _segments(start1, end1)
+        for b0, b1 in _segments(start2, end2)
+    )
 
 
 # ============================================================================
@@ -689,7 +717,13 @@ async def update_schedule(
             )
 
     # Update fields
-    update_data = payload.model_dump(exclude_unset=True)
+    # Explicit nulls are only meaningful for end_time ("no end") — on the
+    # NOT NULL columns they raised an IntegrityError 500.
+    update_data = {
+        k: v
+        for k, v in payload.model_dump(exclude_unset=True).items()
+        if v is not None or k in ("end_time", "zone_ids")
+    }
 
     # Handle zone_ids specially — convert UUIDs to strings for JSONB storage
     if "zone_ids" in update_data:

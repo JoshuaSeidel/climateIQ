@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ThemeToggle } from '@/components/common/ThemeToggle'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -25,6 +25,16 @@ export const Header = () => {
     queryKey: ['settings'],
     queryFn: () => api.get<SystemSettings>('/settings'),
   })
+
+  // The header renders on every page, so hydrate the unit/settings store
+  // here — otherwise a page opened directly showed °C until the user
+  // visited the Dashboard or Settings.
+  const hydrateStore = useSettingsStore((s) => s.hydrate)
+  useEffect(() => {
+    if (settings) {
+      hydrateStore(settings)
+    }
+  }, [settings, hydrateStore])
 
   const currentMode = settings?.current_mode ?? 'learn'
 

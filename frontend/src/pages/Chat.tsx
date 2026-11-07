@@ -46,6 +46,10 @@ export const Chat = () => {
   )
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  // Bumped whenever the visible conversation changes.  A reply that arrives
+  // after the user switched threads (local LLMs can take ~30 s) must not be
+  // appended to — or re-point sessionId at — the new thread.
+  const conversationGen = useRef(0)
   const memoriesRef = useRef<HTMLDivElement>(null)
 
   // Open the sidebar and jump to the Memories list, which otherwise sits
@@ -100,7 +104,7 @@ export const Chat = () => {
 
   // Send message mutation
   const sendMessage = useMutation({
-    mutationFn: async (message: string) => {
+    mutationFn: async ({ message }: { message: string; gen: number }) => {
       const response = await fetch(`${BASE_PATH}/api/v1/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -114,7 +118,11 @@ export const Chat = () => {
       }
       return response.json() as Promise<ChatResponse>
     },
-    onSuccess: (data) => {
+    onSuccess: (data, vars) => {
+      refetchConversations()
+      // Refetch directives since new ones may have been extracted
+      refetchDirectives()
+      if (vars.gen !== conversationGen.current) return // user switched threads
       setSessionId(data.session_id)
       setMessages((prev) => [
         ...prev,
@@ -126,11 +134,9 @@ export const Chat = () => {
           actions: data.actions_taken,
         },
       ])
-      refetchConversations()
-      // Refetch directives since new ones may have been extracted
-      refetchDirectives()
     },
-    onError: (error) => {
+    onError: (error, vars) => {
+      if (vars.gen !== conversationGen.current) return
       setMessages((prev) => [
         ...prev,
         {
@@ -202,6 +208,7 @@ export const Chat = () => {
               timestamp: new Date(conv.created_at),
             })
           }
+          conversationGen.current += 1
           setMessages(loadedMessages)
           setSessionId(sid)
         }
@@ -223,11 +230,12 @@ export const Chat = () => {
     }
 
     setMessages((prev) => [...prev, userMessage])
-    sendMessage.mutate(input)
+    sendMessage.mutate({ message: input, gen: conversationGen.current })
     setInput('')
   }, [input, sendMessage])
 
   const handleNewConversation = useCallback(() => {
+    conversationGen.current += 1
     setSessionId(null)
     setMessages([
       {

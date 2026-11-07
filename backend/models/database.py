@@ -157,7 +157,10 @@ class Sensor(Base):
 
     zone: Mapped[Zone] = relationship(back_populates="sensors")
     readings: Mapped[list[SensorReading]] = relationship(
-        back_populates="sensor", cascade="all, delete-orphan"
+        back_populates="sensor", cascade="all, delete-orphan",
+        # The FK is ON DELETE CASCADE — let the database delete history
+        # instead of loading every row into memory first.
+        passive_deletes=True,
     )
 
 
@@ -185,7 +188,10 @@ class Device(Base):
 
     zone: Mapped[Zone] = relationship(back_populates="devices")
     actions: Mapped[list[DeviceAction]] = relationship(
-        back_populates="device", cascade="all, delete-orphan"
+        back_populates="device", cascade="all, delete-orphan",
+        # The FK is ON DELETE CASCADE — let the database delete history
+        # instead of loading every row into memory first.
+        passive_deletes=True,
     )
 
 

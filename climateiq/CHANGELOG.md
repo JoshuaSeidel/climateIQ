@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.0.88] - 2026-11-07
+
+Codebase audit, batch 4: validation, chat, web app, dial.
+
+### Fixed
+- **One bad schedule time broke every schedule listing.** "24:00" and "99:99" passed validation, committed, and then made the Schedules page and the dashboard's active/upcoming panels return 500. Times are now validated as real 24-hour HH:MM. Updates also validate days. Explicit nulls on required fields are ignored instead of raising an IntegrityError, and `parse_time` accepts "HH:MM:SS".
+- **Conflict detection missed schedules that run past midnight** (e.g. 22:00-06:00 vs 23:00-23:30). Wrapped schedules are now split at midnight before comparing.
+- **Chat-created schedules applied to the whole house.** `create_schedule` set the legacy `zone_id` but left `zone_ids` empty ("all zones"). A time like "07:00:00" also overflowed the column and failed the whole chat request. It now sets `zone_ids`, normalises times, and "overwrite" replaces UI-created schedules for that zone too.
+- **Chat `set_override` sent Celsius to a °F thermostat** (it read a setting nothing writes) and always moved the heat setpoint. `set_zone_temperature` didn't convert at all. Both now ask HA for its unit, and override picks the heat/cool side.
+- **"Turn off <zone>" in chat could switch off the whole-house HVAC.** Zone toggles no longer touch the managed thermostat.
+- **With Ollama, chat claimed to have made changes it couldn't make.** Tools are stripped for non-tool-capable providers. The prompt now tells the model it cannot act and should point to the dashboard control.
+- **Chat lookups threw `MultipleResultsFound`** with two zones matching "bedroom" or duplicate memories, which dropped whole directive batches.
+- **The chat prompt never included weather.** It read the wrong keys from the cache.
+- **The Dashboard per-zone "Set" did nothing but reported success.** It went through a chat command that matched no zone. It now sets a manual hold through the override endpoint, shows errors, and pre-fills with the schedule target, not the thermostat setpoint.
+- **Zone cards showed the offset-compensated thermostat setpoint as "Target"** when no schedule covered the zone. They now show "--", per the display rules.
+- **Schedules page conflict warnings were blank.** The frontend type didn't match the API.
+- **Pages opened directly showed °C on a °F install** until the Dashboard or Settings was visited. The header (on every page) now loads the unit setting.
+- **Every sensor reading triggered a full `/zones` refetch** (several per second). This is now coalesced to at most one every 5 s.
+- **Editing a schedule didn't refresh the Dashboard's "Now Active" and "Set:"**.
+- **A slow chat reply could land in a different conversation** after switching threads, and re-point the session at the old one.
+- **Deleting a zone or sensor loaded all of its history into memory.** The ORM cascade now defers to the database's ON DELETE CASCADE.
+- **Dial: stale values after the backend reported null.** E.g. "SET 72" after the schedule ended, or the last room temperature when sensors went offline. Null now clears to "--".
+- **Dial: after setting a hold, SET jumped back to the schedule target** and the next turn started from it. The dial now shows its hold until you resume or a new schedule period begins. (Requires reflashing the dial.)
+
 ## [1.0.87] - 2026-11-07
 
 Codebase audit, batch 3: control-loop correctness.

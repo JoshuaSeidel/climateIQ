@@ -8,7 +8,7 @@ import { ZoneCard } from '@/components/zones/ZoneCard'
 import { api, BASE_PATH } from '@/lib/api'
 import { ReconnectingWebSocket } from '@/lib/websocket'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { formatTemperature, toDisplayTemp, toStorageCelsius, tempUnitLabel } from '@/lib/utils'
+import { formatTemperature, tempUnitLabel } from '@/lib/utils'
 import type { Zone, ZonesResponse, SystemSettings, UpcomingSchedule, ActiveScheduleResponse, OverrideStatus } from '@/types'
 import {
   Activity,
@@ -266,14 +266,24 @@ export const Dashboard = () => {
   // WebSocket for real-time updates (exponential backoff reconnect)
   useEffect(() => {
     const ws = new ReconnectingWebSocket<{ type: string }>('zones')
+    // Coalesce: every sensor reading used to trigger a full /zones refetch
+    // (several per second with ~10 multisensors).  Refetch at most once
+    // every 5 s, trailing the latest update.
+    let refetchTimer: ReturnType<typeof setTimeout> | null = null
     const unsubscribe = ws.subscribe((data) => {
       if (data.type === 'zone_update' || data.type === 'sensor_update') {
-        queryClient.invalidateQueries({ queryKey: ['zones'] })
+        if (refetchTimer === null) {
+          refetchTimer = setTimeout(() => {
+            refetchTimer = null
+            queryClient.invalidateQueries({ queryKey: ['zones'] })
+          }, 5000)
+        }
       }
     })
     ws.connect()
 
     return () => {
+      if (refetchTimer !== null) clearTimeout(refetchTimer)
       unsubscribe()
       ws.close()
     }
@@ -323,22 +333,28 @@ export const Dashboard = () => {
     async (zoneId: string, temp: number) => {
       setOverrideSubmitting(true)
       try {
-        // Convert from display unit back to Celsius for the backend
-        const tempC = Math.round(toStorageCelsius(temp, unitKey))
-        await api.post('/chat/command', {
-          command: `Set zone to ${tempC} degrees celsius`,
+        // There is one whole-house thermostat, so a zone's "Set" is a manual
+        // hold in the display unit (the old chat-command path matched no
+        // zone and reported success while doing nothing).
+        const result = await api.post<{ success: boolean; message?: string }>('/system/override', {
+          temperature: temp,
           zone_id: zoneId,
         })
+        if (result && result.success === false) {
+          setError(result.message || 'Failed to set temperature.')
+          return
+        }
         setError(null)
         refetchZones()
+        refetchOverride()
         setTempOverride(null)
-      } catch {
-        setError('Failed to set temperature. Please try again.')
+      } catch (err) {
+        setError(err instanceof Error && err.message ? err.message : 'Failed to set temperature. Please try again.')
       } finally {
         setOverrideSubmitting(false)
       }
     },
-    [refetchZones, unitKey],
+    [refetchZones, refetchOverride],
   )
 
   // Quick action handlers — call the dedicated quick-action endpoint
@@ -776,7 +792,13 @@ export const Dashboard = () => {
                         onClick={() =>
                           setTempOverride({
                             zoneId: zone.id,
-                            temp: String(Math.round(toDisplayTemp(zone.targetTemperature ?? 22, unitKey))),
+                            // Pre-fill with the schedule target (display unit), never the
+                            // offset-compensated thermostat setpoint.
+                            temp: String(
+                              overrideStatus?.schedule_target_temp != null
+                                ? Math.round(overrideStatus.schedule_target_temp)
+                                : unitKey === 'f' ? 72 : 22,
+                            ),
                           })
                         }
                         title="Override temperature"

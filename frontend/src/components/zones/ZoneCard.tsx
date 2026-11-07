@@ -59,11 +59,11 @@ export const ZoneCard = ({ zone, scheduleTargetTemp, onClick }: ZoneCardProps) =
             </span>
             <span className="text-sm text-muted-foreground">
               {/* scheduleTargetTemp is already in display unit — don't pass through formatTemperature */}
+              {/* No schedule covering this zone → no target.  zone.targetTemperature is the
+                  offset-compensated thermostat setpoint and must never be shown as a target. */}
               Target {scheduleTargetTemp != null
                 ? `${Math.round(scheduleTargetTemp)}${tempUnitLabel(unitKey)}`
-                : zone.targetTemperature != null
-                  ? formatTemperature(zone.targetTemperature, unitKey)
-                  : '--'}
+                : '--'}
             </span>
           </div>
 

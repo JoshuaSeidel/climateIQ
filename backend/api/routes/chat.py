@@ -275,7 +275,7 @@ async def _extract_directives(
                     UserDirective.is_active.is_(True),
                 )
             )
-            if existing.scalar_one_or_none():
+            if existing.scalars().first():
                 continue
 
             new_directive = UserDirective(
@@ -670,16 +670,24 @@ async def _get_live_system_context(db: AsyncSession, temperature_unit: str) -> s
             if weather_json:
                 import json
 
-                weather = json.loads(weather_json)
+                # The cache holds {"fetched_at", "data": WeatherData}; the
+                # condition lives in "state".  Reading top-level keys meant
+                # the weather section was never included.
+                weather = json.loads(weather_json).get("data") or {}
                 w_parts: list[str] = []
-                if weather.get("condition"):
-                    w_parts.append(f"Condition: {weather['condition']}")
+                condition = weather.get("state") or weather.get("condition")
+                if condition:
+                    w_parts.append(f"Condition: {condition}")
                 if weather.get("temperature") is not None:
-                    w_parts.append(f"Outdoor temp: {weather['temperature']}\u00b0")
+                    w_parts.append(
+                        f"Outdoor temp: {weather['temperature']}{weather.get('temperature_unit', '')}"
+                    )
                 if weather.get("humidity") is not None:
                     w_parts.append(f"Outdoor humidity: {weather['humidity']}%")
                 if weather.get("wind_speed") is not None:
-                    w_parts.append(f"Wind: {weather['wind_speed']}")
+                    w_parts.append(
+                        f"Wind: {weather['wind_speed']} {weather.get('wind_speed_unit', '')}".strip()
+                    )
                 if w_parts:
                     sections.append(
                         "Weather:\n" + "\n".join(f"  - {p}" for p in w_parts)
@@ -1317,7 +1325,10 @@ async def _execute_tool_call(
                 async with HAClient(
                     str(settings.home_assistant_url), settings.home_assistant_token
                 ) as ha:
-                    await ha.set_temperature(climate_device.ha_entity_id, target_c)
+                    zt_cfg = await ha.get_config()
+                    zt_is_f = zt_cfg.get("unit_system", {}).get("temperature") == "°F"
+                    zt_value = round(float(target_c) * 9 / 5 + 32, 1) if zt_is_f else float(target_c)
+                    await ha.set_temperature(climate_device.ha_entity_id, zt_value)
                 return {"success": True, "temperature_set": target_c}
         return {"success": False, "error": "No thermostat device found or HA not configured"}
 
@@ -1845,9 +1856,14 @@ async def _execute_tool_call(
             return {"success": False, "error": "Zone not found"}
 
         if overwrite:
-            from sqlalchemy import delete
-
-            await db.execute(delete(Schedule).where(Schedule.zone_id == zone_uuid))
+            # Replace this zone's single-zone schedules, whether created here
+            # (legacy zone_id) or in the UI (zone_ids == [zone]).
+            prior_schedules = (await db.execute(select(Schedule))).scalars().all()
+            for old_sched in prior_schedules:
+                if old_sched.zone_id == zone_uuid or list(old_sched.zone_ids or []) == [
+                    str(zone_uuid)
+                ]:
+                    await db.delete(old_sched)
 
         day_map = {
             "mon": 0,
@@ -1870,6 +1886,15 @@ async def _execute_tool_call(
             target_c = entry.get("target_c")
             if start_time is None or target_c is None:
                 continue
+            # Normalise to HH:MM — "07:00:00" overflowed the String(5)
+            # column, poisoning the session and failing the whole chat.
+            try:
+                from backend.api.routes.schedule import parse_time
+
+                _t = parse_time(str(start_time))
+            except (ValueError, TypeError):
+                continue
+            start_time = f"{_t.hour:02d}:{_t.minute:02d}"
 
             try:
                 target_c_value = float(target_c)
@@ -1885,6 +1910,9 @@ async def _execute_tool_call(
             schedule = Schedule(
                 name=f"AI schedule {zone.name} {day_key} {start_time}",
                 zone_id=zone_uuid,
+                # zone_ids is what the scheduler reads; empty means "all
+                # zones", so leaving it unset made this a whole-house schedule.
+                zone_ids=[str(zone_uuid)],
                 days_of_week=[day_map[day_key]],
                 start_time=str(start_time),
                 end_time=None,
@@ -1930,7 +1958,7 @@ async def _execute_tool_call(
             zone_result = await db.execute(
                 select(Zone).where(Zone.name.ilike(f"%{zone_name_arg}%"), Zone.is_active.is_(True))
             )
-            zone = zone_result.scalar_one_or_none()
+            zone = zone_result.scalars().first()
             if zone:
                 mem_zone_id = zone.id
 
@@ -1941,7 +1969,7 @@ async def _execute_tool_call(
                 UserDirective.is_active.is_(True),
             )
         )
-        if existing.scalar_one_or_none():
+        if existing.scalars().first():
             return {"success": True, "saved": False, "note": "Already saved — this memory already exists."}
 
         new_directive = UserDirective(
@@ -2314,19 +2342,25 @@ async def _execute_tool_call(
         if not climate_entity_ov:
             return {"success": False, "error": "No climate entity configured"}
 
-        # Determine HA unit from system settings
-        ha_unit_ov_result = await db.execute(
-            select(SystemSetting).where(SystemSetting.key == "ha_temperature_unit")
-        )
-        ha_unit_setting = ha_unit_ov_result.scalar_one_or_none()
-        ha_unit_ov = (
-            ha_unit_setting.value.get("value", "C") if ha_unit_setting and ha_unit_setting.value else "C"
-        )
-        temp_ha_ov = temp_c_ov * 9 / 5 + 32 if ha_unit_ov.upper() == "F" else temp_c_ov
-
         async with HAClient(str(settings.home_assistant_url), settings.home_assistant_token) as ha:
             try:
-                await ha.set_temperature_with_hold(climate_entity_ov, temp_ha_ov)
+                # Ask HA for its unit — the "ha_temperature_unit" setting this
+                # used to read is never written, so it always sent Celsius.
+                ha_cfg_ov = await ha.get_config()
+                ha_is_f = ha_cfg_ov.get("unit_system", {}).get("temperature") == "°F"
+                temp_ha_ov = round(temp_c_ov * 9 / 5 + 32, 1) if ha_is_f else temp_c_ov
+                ov_state = await ha.get_state(climate_entity_ov)
+                ov_mode = str(ov_state.state or "").lower() if ov_state else ""
+                ov_cur = ov_state.attributes.get("current_temperature") if ov_state else None
+                if ov_mode in ("heat", "cool"):
+                    ov_intent: str | None = ov_mode
+                elif ov_cur is not None:
+                    ov_intent = "cool" if temp_ha_ov < float(ov_cur) else "heat"
+                else:
+                    ov_intent = None
+                await ha.set_temperature_with_hold(
+                    climate_entity_ov, temp_ha_ov, intent_mode=ov_intent
+                )
             except Exception as ha_err:
                 return {"success": False, "error": f"HA call failed: {ha_err}"}
 
@@ -2413,7 +2447,7 @@ async def _execute_tool_call(
             dd_result = await db.execute(
                 select(UserDirective).where(UserDirective.directive == dir_text)
             )
-            dd_obj = dd_result.scalar_one_or_none()
+            dd_obj = dd_result.scalars().first()
 
         if not dd_obj:
             return {"success": False, "error": "Directive not found"}
@@ -2440,6 +2474,16 @@ async def _run_llm_with_tools(
 
     Returns (assistant_message, actions_taken).
     """
+    # Providers outside TOOL_CAPABLE_PROVIDERS (e.g. local Ollama) have their
+    # tools stripped, yet SYSTEM_PROMPT says to confirm actions taken — so
+    # the model would claim "Done, set to 70°F" while nothing happened.
+    if getattr(llm, "provider", None) not in LLMProvider.TOOL_CAPABLE_PROVIDERS:
+        system_prompt += (
+            "\n\nIMPORTANT: In this conversation you cannot change anything — "
+            "no tools are available.  Never say you changed a temperature, "
+            "schedule, setting, or memory.  Answer questions, and when the user "
+            "asks for a change, tell them which ClimateIQ dashboard control to use."
+        )
     response = await llm.chat(
         messages=messages,
         system=system_prompt,
@@ -2906,11 +2950,30 @@ async def execute_command(
             if settings.home_assistant_token and zone_id:
                 device_result = await db.execute(select(Device).where(Device.zone_id == zone_id))
                 devices = device_result.scalars().all()
+                # Never toggle the whole-house thermostat from a zone
+                # command ("turn off the bedroom fan" matched "Bedroom" and
+                # switched off the HVAC for the entire house).
+                from backend.models.database import SystemSetting as _TSetting
+
+                managed = {
+                    e.strip() for e in (settings.climate_entities or "").split(",") if e.strip()
+                }
+                _tce = (
+                    await db.execute(
+                        select(_TSetting).where(_TSetting.key == "climate_entities")
+                    )
+                ).scalar_one_or_none()
+                if _tce and _tce.value:
+                    managed |= {
+                        e.strip()
+                        for e in str(_tce.value.get("value", "")).split(",")
+                        if e.strip()
+                    }
                 async with HAClient(
                     str(settings.home_assistant_url), settings.home_assistant_token
                 ) as ha:
                     for dev in devices:
-                        if dev.ha_entity_id:
+                        if dev.ha_entity_id and dev.ha_entity_id not in managed:
                             if enabled:
                                 await ha.turn_on(dev.ha_entity_id)
                             else:

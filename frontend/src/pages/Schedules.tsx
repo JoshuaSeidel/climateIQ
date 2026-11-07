@@ -60,13 +60,13 @@ interface ScheduleFormData {
   priority: string
 }
 
+/** Mirrors backend ScheduleConflict (backend/api/routes/schedule.py). */
 type ConflictWarning = {
-  schedule_a_id: string
-  schedule_a_name: string
-  schedule_b_id: string
-  schedule_b_name: string
+  schedule_id: string
+  schedule_name: string
   conflict_type: string
-  description: string
+  conflicting_schedule_id: string
+  conflicting_schedule_name: string
 }
 
 /** Format "HH:MM" (24hr) to "h:MM AM/PM" (12hr) */
@@ -139,6 +139,8 @@ export const Schedules = () => {
       queryClient.invalidateQueries({ queryKey: ['schedules'] })
       queryClient.invalidateQueries({ queryKey: ['schedule-conflicts'] })
       queryClient.invalidateQueries({ queryKey: ['upcoming-schedules'] })
+      queryClient.invalidateQueries({ queryKey: ['active-schedule'] })
+      queryClient.invalidateQueries({ queryKey: ['override-status'] })
       setViewMode('list')
       setForm(defaultForm)
     },
@@ -162,6 +164,8 @@ export const Schedules = () => {
       queryClient.invalidateQueries({ queryKey: ['schedules'] })
       queryClient.invalidateQueries({ queryKey: ['schedule-conflicts'] })
       queryClient.invalidateQueries({ queryKey: ['upcoming-schedules'] })
+      queryClient.invalidateQueries({ queryKey: ['active-schedule'] })
+      queryClient.invalidateQueries({ queryKey: ['override-status'] })
       setViewMode('list')
       setEditingId(null)
       setForm(defaultForm)
@@ -174,6 +178,8 @@ export const Schedules = () => {
       queryClient.invalidateQueries({ queryKey: ['schedules'] })
       queryClient.invalidateQueries({ queryKey: ['schedule-conflicts'] })
       queryClient.invalidateQueries({ queryKey: ['upcoming-schedules'] })
+      queryClient.invalidateQueries({ queryKey: ['active-schedule'] })
+      queryClient.invalidateQueries({ queryKey: ['override-status'] })
       setDeleteConfirm(null)
     },
   })
@@ -183,6 +189,8 @@ export const Schedules = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['schedules'] })
       queryClient.invalidateQueries({ queryKey: ['upcoming-schedules'] })
+      queryClient.invalidateQueries({ queryKey: ['active-schedule'] })
+      queryClient.invalidateQueries({ queryKey: ['override-status'] })
     },
   })
 
@@ -191,6 +199,8 @@ export const Schedules = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['schedules'] })
       queryClient.invalidateQueries({ queryKey: ['upcoming-schedules'] })
+      queryClient.invalidateQueries({ queryKey: ['active-schedule'] })
+      queryClient.invalidateQueries({ queryKey: ['override-status'] })
     },
   })
 
@@ -525,11 +535,11 @@ export const Schedules = () => {
                   key={i}
                   className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-3 py-2 text-sm"
                 >
-                  <span className="font-medium">{c.schedule_a_name}</span>
+                  <span className="font-medium">{c.schedule_name}</span>
                   {' & '}
-                  <span className="font-medium">{c.schedule_b_name}</span>
-                  {c.description && (
-                    <span className="text-muted-foreground"> — {c.description}</span>
+                  <span className="font-medium">{c.conflicting_schedule_name}</span>
+                  {c.conflict_type && (
+                    <span className="text-muted-foreground"> — {c.conflict_type.replace(/_/g, ' ')}</span>
                   )}
                 </div>
               ))}

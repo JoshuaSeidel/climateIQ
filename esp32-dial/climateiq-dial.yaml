@@ -87,6 +87,12 @@ globals:
   - id: g_schedule_target
     type: float
     initial_value: "0"
+  - id: g_hold_target        # hold set from this dial (0 = none) — shown as SET until resumed
+    type: float
+    initial_value: "0"
+  - id: g_hold_sched         # schedule target when the hold was set; a change means a new period
+    type: float
+    initial_value: "0"
   - id: g_edit_temp          # value being dialed in
     type: float
     initial_value: "0"
@@ -243,6 +249,7 @@ interval:
     then:
       - lambda: |-
           float tgt = id(g_editing) ? id(g_edit_temp)
+                    : id(g_hold_target) > 0 ? id(g_hold_target)
                     : (id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp));
           float room = id(g_room_avg) > 0 ? id(g_room_avg) : id(g_all_zones_avg);
           bool active = id(g_editing) || id(g_hvac_action) == "heating" || id(g_hvac_action) == "cooling";
@@ -280,7 +287,8 @@ script:
       - lambda: |-
           if (!id(g_editing)) {
             // seed the edit value from what the schedule wants (fall back to setpoint)
-            float seed = id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp);
+            float seed = id(g_hold_target) > 0 ? id(g_hold_target)
+                       : id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp);
             if (seed <= 0) seed = (${temp_min} + ${temp_max}) / 2.0f;
             id(g_edit_temp) = seed;
             id(g_editing) = true;
@@ -314,6 +322,8 @@ script:
                   if (response->status_code == 200) {
                     ESP_LOGI("dial", "Override set to %.1f", id(g_edit_temp));
                     id(g_target_temp) = id(g_edit_temp);
+                    id(g_hold_target) = id(g_edit_temp);
+                    id(g_hold_sched) = id(g_schedule_target);
                     id(g_override_active) = true;
                   } else {
                     ESP_LOGW("dial", "Override failed: HTTP %d", response->status_code);
@@ -375,7 +385,9 @@ script:
 
   - id: resume_schedule
     then:
-      - lambda: id(g_editing) = false;
+      - lambda: |-
+          id(g_editing) = false;
+          id(g_hold_target) = 0;
       - script.stop: send_override_debounced
       - http_request.post:
           url: ${climateiq_base_url}/api/v1/system/quick-action
@@ -410,14 +422,20 @@ script:
                   }
                   id(g_online) = true;
                   json::parse_json(body, [](JsonObject root) -> bool {
-                    if (!root["schedule_avg_temp"].isNull())
-                      id(g_room_avg) = root["schedule_avg_temp"].as<float>();
-                    if (!root["all_zones_avg_temp"].isNull())
-                      id(g_all_zones_avg) = root["all_zones_avg_temp"].as<float>();
-                    if (!root["target_temp"].isNull())
-                      id(g_target_temp) = root["target_temp"].as<float>();
-                    if (!root["schedule_target_temp"].isNull())
-                      id(g_schedule_target) = root["schedule_target_temp"].as<float>();
+                    // null = unknown now (sensors offline / no active
+                    // schedule) — clear to 0 so the UI shows "--" instead of
+                    // a stale value, and the knob doesn't seed from it.
+                    id(g_room_avg) = root["schedule_avg_temp"].isNull()
+                        ? 0.0f : root["schedule_avg_temp"].as<float>();
+                    id(g_all_zones_avg) = root["all_zones_avg_temp"].isNull()
+                        ? 0.0f : root["all_zones_avg_temp"].as<float>();
+                    id(g_target_temp) = root["target_temp"].isNull()
+                        ? 0.0f : root["target_temp"].as<float>();
+                    id(g_schedule_target) = root["schedule_target_temp"].isNull()
+                        ? 0.0f : root["schedule_target_temp"].as<float>();
+                    // A new schedule period replaces the dial's hold.
+                    if (id(g_hold_target) > 0 && fabsf(id(g_schedule_target) - id(g_hold_sched)) > 0.05f)
+                      id(g_hold_target) = 0;
                     id(g_fan_mode)    = root["fan_mode"].isNull() ? "" : std::string(root["fan_mode"].as<const char*>());
                     id(g_hvac_mode)   = root["hvac_mode"].isNull()   ? "" : std::string(root["hvac_mode"].as<const char*>());
                     id(g_hvac_action) = root["hvac_action"].isNull() ? "" : std::string(root["hvac_action"].as<const char*>());
@@ -455,6 +473,7 @@ script:
           }
 
           float shown_target = id(g_editing) ? id(g_edit_temp)
+                             : id(g_hold_target) > 0 ? id(g_hold_target)
                              : (id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp));
           float room = id(g_room_avg) > 0 ? id(g_room_avg) : id(g_all_zones_avg);
 
