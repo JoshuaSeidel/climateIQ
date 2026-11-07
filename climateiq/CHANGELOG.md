@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.87] - 2026-11-07
+
+Codebase audit, batch 3: control-loop correctness.
+
+### Fixed
+- **Advisor "wait" bypassed SafetyProtocol**, so the house could drift for up to 30 minutes per wait while far from target. A wait while zones are more than ~1°F off target in the active direction is now converted to an adjust and vetted like any other setpoint.
+- **The advisor could heat rooms already above target** (or cool rooms already below it). A new rule caps the setpoint at the target in those cases.
+- **Follow-Me never chose heat or cool**, so a thermostat left in cool stayed in cool all winter. It also called offset compensation without the HVAC mode (skipping the anchor and no-heat/no-cool fast paths, the v1.0.63 bug class), read the wrong setpoint attribute in heat_cool (so it wrote and notified every 90 s), and always moved the heat setpoint. It now uses the shared direction selector, passes the mode, reads and writes the correct side, honours time windows, and throttles notifications like AI mode.
+- **AI mode in heat_cool lost its dead-band and anti-oscillation guards**, because it only read `temperature`. It now reads the active low/high setpoint.
+- **Scheduled mode undid preconditioning within a minute.** Maintenance kept enforcing the previous schedule. Once preconditioning has started for an upcoming schedule, maintenance now follows that schedule.
+- **Schedules fired up to 2 minutes before their start time** and were then reverted by maintenance, causing extra mode switches and writes. They now fire only in the 2 minutes after start.
+- **Fans raised by AI mode were rarely released** (only when the LLM asked for 0, which it doesn't do at steady state). They are now released when the focus zones reach target. A fan the user changed by hand is now left alone instead of being reset. Fans with only a few speed steps (75% reads back as 67%) are no longer mistaken for hand changes, which also lets the quiet-hours cap apply to them.
+- **Smart vents were inverted in cooling**: the PID closed the vents in the hottest rooms. The PID is now direction-aware (one controller per zone and direction), skips when the HVAC isn't heating or cooling, and only writes and logs when the position changes.
+- **Zone analytics crashed when sleep was detected on only one side of midnight**, and it bucketed hours in UTC, so no thermal/occupancy profile was learned for those zones. Hours are now local, and the empty-side case is handled.
+- **Occupancy hints were 4-5 hours off.** Learned patterns are stored by UTC timestamp but were looked up by local time, and the "lights on in the evening" heuristic used the UTC hour.
+- **The thermostat drift handler ignored the thermostat chosen in the UI**, reported false drift after a second schedule ran, and could cancel a correction mid-write. It now resolves the entity from settings, checks against all recent writes, and never cancels a running correction.
+
 ## [1.0.86] - 2026-11-07
 
 Codebase audit, batch 2: integrations and data safety.

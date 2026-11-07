@@ -102,3 +102,48 @@ def test_missing_readings_skip_the_direction_rule():
         zone_avg_c=None, thermostat_c=None,
     )
     assert round(_f(vetted.setpoint_c)) == 68
+
+
+def _wait(formula_f: float) -> AdvisorDecision:
+    from datetime import UTC, datetime, timedelta
+
+    return AdvisorDecision(
+        action="wait",
+        setpoint_c=_c(formula_f),
+        wait_until=datetime.now(UTC) + timedelta(minutes=30),
+        reasoning="test wait",
+        from_llm=True,
+    )
+
+
+def test_wait_while_zones_far_below_target_becomes_adjust():
+    vetted = SafetyProtocol.vet(
+        _wait(72), desired_temp_c=_c(70), max_offset_f=8.0, hvac_mode="heat",
+        zone_avg_c=_c(66), thermostat_c=_c(68),
+    )
+    assert vetted.action == "adjust"
+    assert _f(vetted.setpoint_c) > 68  # above the thermostat reading → HVAC runs
+
+
+def test_wait_near_target_is_respected():
+    vetted = SafetyProtocol.vet(
+        _wait(70), desired_temp_c=_c(70), max_offset_f=8.0, hvac_mode="heat",
+        zone_avg_c=_c(69.8), thermostat_c=_c(70),
+    )
+    assert vetted.action == "wait"
+
+
+def test_no_heat_into_rooms_already_warm():
+    vetted = SafetyProtocol.vet(
+        _adjust(76), desired_temp_c=_c(70), max_offset_f=8.0, hvac_mode="heat",
+        zone_avg_c=_c(72), thermostat_c=_c(69),
+    )
+    assert round(_f(vetted.setpoint_c)) <= 70
+
+
+def test_no_cool_into_rooms_already_cold():
+    vetted = SafetyProtocol.vet(
+        _adjust(66), desired_temp_c=_c(72), max_offset_f=8.0, hvac_mode="cool",
+        zone_avg_c=_c(70), thermostat_c=_c(73),
+    )
+    assert round(_f(vetted.setpoint_c)) >= 72

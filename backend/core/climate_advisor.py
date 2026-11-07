@@ -704,6 +704,28 @@ class SafetyProtocol:
         rule (Rule 3): a setpoint the thermostat has already satisfied cannot
         move the zones, no matter how reasonable the advisor's prose sounds.
         """
+        # A "wait" while the zones are meaningfully off target in the
+        # active direction would leave the house drifting for up to
+        # _MAX_WAIT_MINUTES with nothing written — run the formula setpoint
+        # (carried on the decision) through the rules below instead.
+        if decision.action == "wait" and zone_avg_c is not None:
+            _wait_err_c = desired_temp_c - zone_avg_c
+            if ("heat" in hvac_mode and _wait_err_c > _DIRECTION_DEADBAND_C) or (
+                "cool" in hvac_mode and _wait_err_c < -_DIRECTION_DEADBAND_C
+            ):
+                logger.warning(
+                    "SafetyProtocol: overriding 'wait' — zones %.1f°F off target in %s mode",
+                    abs(_wait_err_c) * 9 / 5, hvac_mode,
+                )
+                decision = AdvisorDecision(
+                    action="adjust",
+                    setpoint_c=decision.setpoint_c,
+                    wait_until=None,
+                    reasoning=f"{decision.reasoning} [wait overridden: zones off target]",
+                    from_llm=decision.from_llm,
+                    hvac_mode=decision.hvac_mode,
+                )
+
         if decision.action not in ("adjust",):
             # hold / wait: no setpoint change, nothing to vet
             return decision
@@ -759,6 +781,17 @@ class SafetyProtocol:
                 if sp > ceil_c:
                     sp = ceil_c
                     changed, violation = True, "directional-effectiveness rule (cool)"
+
+            # Rule 3b: never drive the HVAC into zones that are already on
+            # the far side of target (heat into warm rooms, cool into cold
+            # ones).  The fast path in the formula parks the setpoint here;
+            # the LLM must not undo that.
+            if "heat" in hvac_mode and zone_error_c <= 0 and sp > desired_temp_c:
+                sp = desired_temp_c
+                changed, violation = True, "no-heat-when-warm rule"
+            elif "cool" in hvac_mode and zone_error_c >= 0 and sp < desired_temp_c:
+                sp = desired_temp_c
+                changed, violation = True, "no-cool-when-cold rule"
 
         # Re-apply the hard caps -- Rule 3 may have pushed past them.
         sp = min(max(sp, low), high)

@@ -64,14 +64,19 @@ class ZoneAnalytics:
     def __init__(self, db: Any, ha_client: Any | None = None) -> None:
         self._db = db
         self._ha_client = ha_client
+        # Local timezone for hour-of-day bucketing (readings are stored in
+        # UTC; sleep/nap/occupancy hours must be local).  Resolved in run_all.
+        self._tz: Any = None
 
     async def run_all(self) -> None:
         """Analyze all active zones and persist updated profiles."""
         from sqlalchemy import select as sa_select
         from sqlalchemy.orm import selectinload
 
+        from backend.core.user_tz import resolve_user_tz
         from backend.models.database import Zone
 
+        self._tz = await resolve_user_tz(self._db, self._ha_client)
         result = await self._db.execute(
             sa_select(Zone)
             .options(selectinload(Zone.sensors))
@@ -322,7 +327,10 @@ class ZoneAnalytics:
         hour_dark_present: dict[int, list[bool]] = {h: [] for h in range(24)}
 
         for r in readings:
-            h = r["recorded_at"].hour
+            ts = r["recorded_at"]
+            if self._tz is not None and getattr(ts, "tzinfo", None) is not None:
+                ts = ts.astimezone(self._tz)
+            h = ts.hour
             presence = r.get("presence")
             lux = r.get("lux")
 
@@ -363,9 +371,14 @@ class ZoneAnalytics:
         ]
         # Sleep is a sustained overnight block (midnight-6am is most common)
         overnight = [h for h in sleep_hours if h <= 6 or h >= 21]
+        evening = [h for h in overnight if h >= 18]
+        morning = [h for h in overnight if h <= 9]
+        # Either side of midnight may be empty (e.g. sleep detected only
+        # 00:00-05:00) — min()/max() of an empty sequence used to raise and
+        # abort the whole profile for the zone.
         if overnight:
-            result["sleep_start"] = f"{min(h for h in overnight if h >= 18):02d}:00"
-            result["sleep_end"] = f"{max(h for h in overnight if h <= 9):02d}:00"
+            result["sleep_start"] = f"{(min(evening) if evening else min(morning)):02d}:00"
+            result["sleep_end"] = f"{(max(morning) if morning else max(evening)):02d}:00"
 
         # Nap detection: dark+present concentrated in midday window
         midday_dark_hours = [

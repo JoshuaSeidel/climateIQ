@@ -110,3 +110,23 @@ async def test_sweep_ignores_fans_we_never_touched() -> None:
     ha = FakeHA({"fan.nursery": 100})
     await main_mod._enforce_fan_night_cap(ha, 50)
     assert ha.calls == []
+
+
+async def test_apply_leaves_hand_changed_fan_alone() -> None:
+    ha = FakeHA({"fan.nursery": 30})
+    await main_mod._apply_fan_target(ha, "fan.nursery", 100, True)
+    assert ha.pct["fan.nursery"] == 100
+    main_mod._fan_baseline["fan.nursery"]["last_change_at"] = None  # skip cooldown
+    ha.pct["fan.nursery"] = 40  # user turned it down by hand
+    changed, note = await main_mod._apply_fan_target(ha, "fan.nursery", 100, True)
+    assert not changed and note.startswith("user_changed")
+    assert ha.pct["fan.nursery"] == 40
+    assert "fan.nursery" not in main_mod._fan_baseline
+
+
+async def test_stepped_fan_readback_is_not_a_hand_change() -> None:
+    ha = FakeHA({"fan.nursery": 0})
+    await main_mod._apply_fan_target(ha, "fan.nursery", 75, True)
+    ha.pct["fan.nursery"] = 67  # 3-speed fan rounds 75 → 67
+    await main_mod._enforce_fan_night_cap(ha, 50)
+    assert ha.pct["fan.nursery"] == 50

@@ -134,6 +134,13 @@ _AI_NOTIFY_MIN_INTERVAL_S: int = 60 * 60
 _fan_baseline: dict[str, dict[str, Any]] = {}
 _FAN_BASELINE_STALE_S: int = 30 * 60
 _FAN_CHANGE_MIN_INTERVAL_S: int = 5 * 60  # per-fan cooldown between our writes
+# Last vent position written per entity, so unchanged positions aren't
+# re-sent and logged as a DeviceAction every 3 minutes.
+_vent_last_position: dict[str, int] = {}
+# Stepped fans (3-4 speeds) read back a different percentage than written
+# (e.g. 75 → 67).  Differences within this tolerance are "what we set";
+# larger ones mean the user changed the fan by hand.
+_FAN_HAND_CHANGE_TOLERANCE_PCT: int = 15
 
 
 def _stable_occupancy(zone_id: str, raw: bool) -> bool:
@@ -280,6 +287,14 @@ async def _apply_fan_target(
     if current is None:
         return False, "read_failed"
 
+    # Hand-change detection: if the fan no longer sits near what we last
+    # wrote, the user took it over — it's theirs now.  Forget our record
+    # (the next takeover captures a fresh baseline) and don't touch it.
+    last_set = hist.get("last_set_pct")
+    if last_set is not None and abs(current - int(last_set)) > _FAN_HAND_CHANGE_TOLERANCE_PCT:
+        _fan_baseline.pop(entity_id, None)
+        return False, f"user_changed(current={current}, we_set={last_set})"
+
     # Release path: target at/below baseline while overriding → restore.
     if target_pct <= baseline and override_active:
         try:
@@ -303,7 +318,7 @@ async def _apply_fan_target(
         return True, f"release_to_baseline({baseline})"
 
     # Ramp path: raise (or hold) toward effective_target.
-    if effective_target == current:
+    if abs(effective_target - current) <= _FAN_HAND_CHANGE_TOLERANCE_PCT // 2:
         # No write needed but keep the override flag consistent.
         if effective_target > baseline:
             hist["override_active"] = True
@@ -348,7 +363,7 @@ async def _enforce_fan_night_cap(ha_client_ref: Any, max_pct: int) -> None:
         if current is None or current <= ceiling:
             continue
         last_set = hist.get("last_set_pct")
-        if last_set is not None and current != int(last_set):
+        if last_set is not None and abs(current - int(last_set)) > _FAN_HAND_CHANGE_TOLERANCE_PCT:
             logger.debug(
                 "Fan night cap: %s at %d%% was changed by hand (we set %s%%) — leaving it",
                 entity_id, current, last_set,
@@ -1279,9 +1294,12 @@ async def execute_schedules() -> None:
                                 logger.warning("Preconditioning failed for '%s': %s", schedule.name, pre_err)
                             break  # Only precondition once per schedule
 
-                # Check time window (within 2 minutes of start_time)
-                delta = abs((now_local - sched_dt).total_seconds())
-                if delta > 120:  # 2-minute window
+                # Fire in the 2 minutes *after* start_time.  A symmetric
+                # window fired up to ~2 min early, and maintenance (which
+                # still saw the previous schedule as active) reverted it,
+                # costing extra mode switches and writes.
+                delta = (now_local - sched_dt).total_seconds()
+                if not 0 <= delta <= 120:
                     continue
 
                 # Dedup: don't re-execute within the same occurrence window
@@ -1647,6 +1665,36 @@ async def maintain_climate_offset() -> None:
                 if is_in_window:
                     if active_schedule is None or schedule.priority > active_schedule.priority:
                         active_schedule = schedule
+
+            # ── Preconditioning hand-off ────────────────────────────────
+            # Once execute_schedules has started preconditioning for an
+            # upcoming schedule (it only does so when the HVAC's current
+            # direction moves the room toward that target), that schedule
+            # governs early — otherwise this loop reverts the warm-up /
+            # cool-down within a minute and it never takes effect.
+            today_str = now_local.strftime("%Y-%m-%d")
+            precond_sched: Schedule | None = None
+            precond_start: datetime | None = None
+            for schedule in schedules:
+                if current_dow not in (schedule.days_of_week or []):
+                    continue
+                if f"precondition:{schedule.id}:{today_str}" not in _last_executed_schedules:
+                    continue
+                try:
+                    p_h, p_m = map(int, schedule.start_time.split(":"))
+                except (ValueError, AttributeError):
+                    continue
+                p_start = now_local.replace(hour=p_h, minute=p_m, second=0, microsecond=0)
+                if p_start <= now_local:
+                    continue  # already started — normal selection applies
+                if precond_start is None or p_start < precond_start:
+                    precond_sched, precond_start = schedule, p_start
+            if precond_sched is not None:
+                logger.info(
+                    "Climate maintenance: preconditioning for '%s' (starts %s) governs",
+                    precond_sched.name, precond_sched.start_time,
+                )
+                active_schedule = precond_sched
 
             if active_schedule is None:
                 # No active schedule -- nothing to maintain
@@ -2141,6 +2189,28 @@ async def execute_follow_me_mode() -> None:
                 get_thermostat_reading_c,
             )
 
+            # ── HVAC direction (heat ↔ cool) ────────────────────────────
+            # maintain_climate_offset skips Follow-Me, so this loop must pick
+            # the direction itself — otherwise a thermostat left in cool
+            # stays in cool all winter.  Same selector as Schedule mode.
+            fm_zone_ids = [str(z.id) for z, _ in occupied_zones] or None
+            fm_mode, fm_urgent = await _auto_select_hvac_mode(
+                ha_client, climate_entity, target_temp_c, db=db, zone_ids=fm_zone_ids,
+            )
+            if fm_mode:
+                _, _fm_cooldown_s = await _get_hvac_control_settings(db)
+                await _switch_hvac_mode_if_needed(
+                    ha_client, climate_entity, fm_mode, "Follow-me",
+                    override_cooldown=fm_urgent, cooldown_s=_fm_cooldown_s,
+                    db=db, zone_ids=fm_zone_ids,
+                )
+            fm_hvac_mode = ""
+            try:
+                _fm_state = await ha_client.get_state(climate_entity)
+                fm_hvac_mode = str(_fm_state.state or "").lower() if _fm_state else ""
+            except Exception:  # noqa: S110
+                pass
+
             adjusted_temp_c = target_temp_c
             offset_c = 0.0
             try:
@@ -2159,23 +2229,32 @@ async def execute_follow_me_mode() -> None:
                         thermostat_c = await get_thermostat_reading_c(ha_client, climate_entity, db=db)
                         if thermostat_c is not None:
                             max_offset_f = await get_max_offset_setting(db)
+                            # hvac_mode is required: without it the anchor
+                            # and no-heat/no-cool fast paths are skipped
+                            # (the v1.0.63 bug class).
                             adjusted_temp_c, offset_c = await compute_adjusted_setpoint(
                                 target_temp_c, thermostat_c, zone_temp_c, max_offset_f,
+                                fm_hvac_mode,
                             )
             except Exception as comp_err:
                 logger.debug("Follow-me offset compensation (non-critical): %s", comp_err)
 
             # ── Check if change is needed (> 0.5°C diff) ───────────────
+            # Which side of a dual setpoint to read/write in heat_cool.
+            if "heat" in fm_hvac_mode and "cool" not in fm_hvac_mode:
+                fm_intent: str | None = "heat"
+            elif "cool" in fm_hvac_mode and "heat" not in fm_hvac_mode:
+                fm_intent = "cool"
+            else:
+                fm_intent = fm_mode
             try:
-                state = await ha_client.get_state(climate_entity)
-                current_target = state.attributes.get("temperature")
-                if current_target is not None:
-                    # If HA is in °F, convert current target to °C for comparison
-                    current_target_c = float(current_target)
-                    if temp_unit == "F":
-                        current_target_c = round((current_target_c - 32) * 5 / 9, 2)
-                    if abs(current_target_c - adjusted_temp_c) <= 0.5:
-                        return  # No meaningful change needed
+                from backend.core.temp_compensation import get_current_setpoint_c
+
+                current_target_c = await get_current_setpoint_c(
+                    ha_client, climate_entity, intent_mode=fm_intent
+                )
+                if current_target_c is not None and abs(current_target_c - adjusted_temp_c) <= 0.5:
+                    return  # No meaningful change needed
             except Exception as state_err:
                 logger.debug("Could not read current thermostat state: %s", state_err)
                 # Proceed anyway — we'll set the temperature
@@ -2186,6 +2265,8 @@ async def execute_follow_me_mode() -> None:
             adjusted_temp_c = await clamp_setpoint_for_blocked_direction(
                 db, ha_client, climate_entity,
                 adjusted_temp_c, target_temp_c,
+                hvac_mode=fm_hvac_mode or None,
+                zone_ids=fm_zone_ids,
                 context="Follow-me",
             )
             target_for_ha = adjusted_temp_c
@@ -2193,10 +2274,14 @@ async def execute_follow_me_mode() -> None:
                 target_for_ha = round(adjusted_temp_c * 9 / 5 + 32, 1)
 
             try:
-                await ha_client.set_temperature_with_hold(climate_entity, target_for_ha)
+                await ha_client.set_temperature_with_hold(
+                    climate_entity, target_for_ha, intent_mode=fm_intent
+                )
             except Exception as hold_err:
                 logger.debug("Ecobee hold update (non-critical): %s", hold_err)
-                await ha_client.set_temperature(climate_entity, target_for_ha)
+                await ha_client.set_temperature(
+                    climate_entity, target_for_ha, intent_mode=fm_intent
+                )
 
             temp_display = f"{target_for_ha:.1f}°{'F' if temp_unit == 'F' else 'C'}"
             logger.info(
@@ -2214,13 +2299,29 @@ async def execute_follow_me_mode() -> None:
                 )
 
             # ── Send notification ───────────────────────────────────────
-            if _notification_service:
+            # Only when the occupied zones change, or the setpoint moves
+            # ≥1°C and at least an hour has passed — same policy as AI mode.
+            fm_key = f"follow_me:{climate_entity}"
+            fm_last = _active_mode_last_notify.get(fm_key)
+            fm_notify = fm_last is None or fm_last.get("mode") != zone_names
+            if not fm_notify and fm_last is not None:
+                fm_notify = (
+                    abs(adjusted_temp_c - float(fm_last["setpoint_c"])) >= _AI_NOTIFY_MIN_DELTA_C
+                    and (datetime.now(UTC) - fm_last["at"]).total_seconds()
+                    >= _AI_NOTIFY_MIN_INTERVAL_S
+                )
+            if _notification_service and fm_notify:
                 try:
                     await _notification_service.send_ha_notification(
                         title="Follow-Me Mode",
                         message=f"Adjusting to {temp_display} for {zone_names}",
                         target=notif_target,
                     )
+                    _active_mode_last_notify[fm_key] = {
+                        "at": datetime.now(UTC),
+                        "setpoint_c": adjusted_temp_c,
+                        "mode": zone_names,
+                    }
                 except Exception as notif_err:
                     logger.warning("Follow-me notification failed: %s", notif_err)
 
@@ -2456,8 +2557,11 @@ async def execute_active_mode() -> None:
                     from backend.models.database import OccupancyPattern
                     from backend.models.enums import PatternType as _PT
 
-                    day_str = now_local.strftime("%a").lower()
-                    slot_now = now_local.hour * 12 + now_local.minute // 5
+                    # Patterns are bucketed by UTC timestamp in
+                    # pattern_engine.learn_occupancy_patterns, so look them
+                    # up by UTC too (local time was 4-5 h off in US-East).
+                    day_str = now_utc.strftime("%a").lower()
+                    slot_now = now_utc.hour * 12 + now_utc.minute // 5
                     slots_ahead = [slot_now + i for i in range(1, 7)]  # +5..+30 min
                     p_result = await db.execute(
                         sa_select(OccupancyPattern)
@@ -2555,6 +2659,13 @@ async def execute_active_mode() -> None:
                         if temp_unit == "F":
                             cur_c = round((cur_c - 32) * 5 / 9, 2)
                     tgt = st.attributes.get("temperature")
+                    if tgt is None:
+                        # heat_cool/auto: Ecobee omits `temperature` and
+                        # reports a low/high pair — read the active side.
+                        cooling = str(st.attributes.get("hvac_action") or "").lower() == "cooling"
+                        tgt = st.attributes.get(
+                            "target_temp_high" if cooling else "target_temp_low"
+                        )
                     if tgt is not None:
                         tgt_c = float(tgt)
                         if temp_unit == "F":
@@ -2859,6 +2970,20 @@ async def execute_active_mode() -> None:
                     "Active-mode: steady-state (focus zones on target, constraints in band), "
                     "skipping LLM call"
                 )
+                # Release any fans we raised: the zones are on target, and
+                # the LLM (the only other release path) isn't being called.
+                for zd in zone_data.values():
+                    if not zd.get("allow_fan_control"):
+                        continue
+                    for fan_eid in zd.get("fan_entities") or []:
+                        if _fan_baseline.get(fan_eid, {}).get("override_active"):
+                            changed, note = await _apply_fan_target(
+                                ha_client, fan_eid, 0, True, max_pct=fan_cap_pct,
+                            )
+                            logger.info(
+                                "Active-mode: steady-state fan release %s [%s] (%s)",
+                                fan_eid, "changed" if changed else "no-op", note,
+                            )
                 return
 
             # ── Gate 2: change-gate hash + min-interval floor ───────────
@@ -3910,6 +4035,32 @@ async def execute_vent_optimization() -> None:
             return
 
         async with session_maker() as db:
+            # Vents must open where the conditioned air is *needed*: heating
+            # → rooms below target, cooling → rooms above target.  Without
+            # the direction the PID closed the hottest rooms in summer.
+            from backend.models.database import SystemSetting as _VSetting
+
+            vent_climate = settings_instance.climate_entities.split(",")[0].strip()
+            _vce = (
+                await db.execute(sa_select(_VSetting).where(_VSetting.key == "climate_entities"))
+            ).scalar_one_or_none()
+            if _vce and _vce.value and str(_vce.value.get("value", "")).strip():
+                vent_climate = str(_vce.value.get("value")).split(",")[0].strip()
+            vent_direction: str | None = None
+            if vent_climate:
+                try:
+                    _vst = await ha_client.get_state(vent_climate)
+                    _vmode = str(_vst.state or "").lower() if _vst else ""
+                    _vaction = str(_vst.attributes.get("hvac_action") or "").lower() if _vst else ""
+                    if _vmode == "heat" or _vaction == "heating":
+                        vent_direction = "heat"
+                    elif _vmode == "cool" or _vaction == "cooling":
+                        vent_direction = "cool"
+                except Exception:  # noqa: S110
+                    pass
+            if vent_direction is None:
+                return  # HVAC off / idle in heat_cool — leave vents alone
+
             for state in zone_manager.iter_states():
                 # Skip zones excluded from metrics / AI control
                 if state.is_currently_excluded:
@@ -3939,8 +4090,9 @@ async def execute_vent_optimization() -> None:
                 if target_temp is None or state.temperature_c is None:
                     continue
 
-                # Get or create PID controller for this zone
-                zone_key = str(state.zone_id)
+                # One PID per zone *and* direction so the integral doesn't
+                # carry across a heat↔cool flip.
+                zone_key = f"{state.zone_id}:{vent_direction}"
                 pid = app_state.pid_controllers.setdefault(
                     zone_key,
                     PIDController(PIDConfig(
@@ -3949,14 +4101,21 @@ async def execute_vent_optimization() -> None:
                     )),
                 )
 
-                # Compute PID output
-                output = pid.compute(target_temp, state.temperature_c)
+                # Compute PID output.  In cooling the error is inverted:
+                # a room above target needs the vent open.
+                if vent_direction == "heat":
+                    output = pid.compute(target_temp, state.temperature_c)
+                else:
+                    output = pid.compute(state.temperature_c, target_temp)
                 # Map to position: 0.0-1.0 -> 0-100%, clamp minimum 10%
                 position = max(10, int(output * 100))
 
                 for dev_id, entity_id in vent_devices:
+                    if _vent_last_position.get(entity_id) == position:
+                        continue  # no change — don't write or log an action
                     try:
                         await ha_client.set_cover_position(entity_id, position)
+                        _vent_last_position[entity_id] = position
                         db.add(DeviceAction(
                             device_id=dev_id,
                             zone_id=state.zone_id,
@@ -4168,8 +4327,12 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
     # -- Signal 2: Lux-based inference (weight: 0.2) --
     lux_score: float | None = None
     if lux is not None:
-        now = datetime.now(UTC)
-        hour = now.hour
+        # Evening/night is a local wall-clock notion — the UTC hour put the
+        # "lights on = occupied" window at ~13:00-01:00 local in US-East.
+        import backend.api.dependencies as _occ_deps
+        from backend.core.user_tz import local_now as _occ_local_now
+
+        hour = (await _occ_local_now(db, _occ_deps._ha_client)).hour
         is_evening_night = hour >= 18 or hour < 6
         if is_evening_night:
             # In evening/night, high lux (lights on) suggests occupancy
@@ -4419,6 +4582,42 @@ async def _handle_ha_state_change(change: object) -> None:
 _climate_correction_task: asyncio.Task[None] | None = None
 
 
+_climate_correction_running: bool = False
+_primary_climate_cache: tuple[str, float] | None = None
+
+
+async def _primary_climate_entity() -> str:
+    """Configured thermostat entity (DB setting first, then add-on config).
+
+    Cached for 5 minutes — this runs on every climate state_changed event.
+    """
+    global _primary_climate_cache
+    import time as _t
+
+    if _primary_climate_cache and _t.monotonic() - _primary_climate_cache[1] < 300:
+        return _primary_climate_cache[0]
+    entity = ""
+    try:
+        from sqlalchemy import select as sa_select
+
+        from backend.models.database import SystemSetting
+
+        async with get_session_maker()() as db:
+            row = (
+                await db.execute(
+                    sa_select(SystemSetting).where(SystemSetting.key == "climate_entities")
+                )
+            ).scalar_one_or_none()
+            if row and row.value:
+                entity = str(row.value.get("value", "") or "").split(",")[0].strip()
+    except Exception as exc:
+        logger.debug("Could not read climate_entities setting: %s", exc)
+    if not entity:
+        entity = (settings_instance.climate_entities or "").split(",")[0].strip()
+    _primary_climate_cache = (entity, _t.monotonic())
+    return entity
+
+
 async def _handle_climate_state_change(change: object) -> None:
     """React immediately when the thermostat setpoint is changed externally.
 
@@ -4439,12 +4638,10 @@ async def _handle_climate_state_change(change: object) -> None:
     if not isinstance(change, HAStateChange) or change.domain != "climate":
         return
 
-    # Only watch the configured climate entity
-    try:
-        from backend.config import SETTINGS as _cfg
-        climate_entities_raw = _cfg.climate_entities or ""
-        primary_entity = climate_entities_raw.split(",")[0].strip()
-    except Exception:
+    # Only watch the configured climate entity — the DB setting (chosen in
+    # the UI) wins over the add-on config, same as every other loop.
+    primary_entity = await _primary_climate_entity()
+    if not primary_entity:
         return
 
     if change.entity_id != primary_entity:
@@ -4477,7 +4674,10 @@ async def _handle_climate_state_change(change: object) -> None:
     if not _last_offset_temp:
         return  # ClimateIQ hasn't set anything yet this session
 
-    last_c = next(iter(_last_offset_temp.values()))
+    # The dict holds one entry per schedule written this session; the
+    # thermostat only drifted if it matches none of them (comparing against
+    # the first-inserted entry reported false drift after a second schedule).
+    last_c = min(_last_offset_temp.values(), key=lambda v: abs(setpoint_c - v))
     drift_f = abs((setpoint_c - last_c) * 9 / 5)
 
     if drift_f <= 1.0:
@@ -4504,14 +4704,27 @@ async def _handle_climate_state_change(change: object) -> None:
     from backend.core.climate_advisor import clear_advisor_cache
     clear_advisor_cache()
 
-    # Debounce: cancel any pending correction before scheduling a new one
-    if _climate_correction_task and not _climate_correction_task.done():
+    # Debounce: cancel a pending correction that is still in its settle
+    # delay — but never one already running maintain_climate_offset, which
+    # would abort it mid-write.
+    if (
+        _climate_correction_task
+        and not _climate_correction_task.done()
+        and not _climate_correction_running
+    ):
         _climate_correction_task.cancel()
+    elif _climate_correction_running:
+        return  # a correction is already in flight
 
     async def _delayed_correction() -> None:
+        global _climate_correction_running
         # Small delay so rapid thermostat transitions settle before we correct
         await asyncio.sleep(3)
-        await maintain_climate_offset()
+        _climate_correction_running = True
+        try:
+            await maintain_climate_offset()
+        finally:
+            _climate_correction_running = False
 
     _climate_correction_task = asyncio.create_task(
         _delayed_correction(), name="climate-drift-correction"
