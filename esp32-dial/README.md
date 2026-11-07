@@ -38,15 +38,18 @@ In **HA add-on mode** the backend listens on port **8099** on the host (uvicorn 
 - `POST /api/v1/system/quick-action` `{"action": "resume"}` — return to schedule.
 - `POST /api/v1/system/fan` `{"mode": "auto"|"on"}` — set the thermostat fan mode.
 
-If the backend runs standalone with `CLIMATEIQ_API_KEY` set, put that key in the
-`climateiq_api_key` substitution (sent as `Authorization: Bearer`). In HA add-on mode
-direct LAN access needs no auth.
+Every request carries `Authorization: Bearer <climateiq_api_key>` from
+`secrets.yaml`. The backend rejects direct LAN requests without a valid key (401).
+Use the key from the add-on's **`api_key`** option, or, if that option is empty, the
+auto-generated key shown in ClimateIQ → Settings → Home Assistant → **API Access**.
+If you rotate the key there, update `secrets.yaml` and re-flash the dial.
 
 ## Flashing
 
 1. Install ESPHome (`brew install esphome` or `pip install esphome`).
 2. `cp secrets.example.yaml secrets.yaml` and fill in Wi-Fi credentials, an API
-   encryption key (`openssl rand -base64 32`), and an OTA password.
+   encryption key (`openssl rand -base64 32`), an OTA password, and
+   `climateiq_api_key` (see the API-key note above).
 3. Edit the `substitutions:` block in `climateiq-dial.yaml`:
    - `climateiq_base_url` — e.g. `http://homeassistant.local:8099` (add-on mode)
    - `temp_min` / `temp_max` / `temp_step` — dial range in **your display unit**

@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.0.89] - 2026-11-07
+
+### Security
+- **Direct LAN access now requires an API key.** With `host_network: true` the API on port 8099 was reachable from the whole LAN with no authentication, including backup restore and thermostat control. Worse, any client could bypass the ingress check by sending an `X-Ingress-Path` header. Now:
+  - Ingress requests are only trusted from the Supervisor's address (`172.30.32.2`, overridable via `CLIMATEIQ_INGRESS_TRUSTED_IPS`).
+  - Every other request needs `Authorization: Bearer <key>` (or `?api_key=` for WebSocket clients); otherwise it gets 401. Health checks stay public.
+  - The key comes from the new add-on option **`api_key`**. If that is blank, ClimateIQ generates one, persists it in `/data/climateiq/api_key`, and shows it under **Settings → Home Assistant → API Access**, which can also rotate it.
+- **The ESP32 dial** now reads `climateiq_api_key` from `secrets.yaml`. Set it to the same key and re-flash.
+
+### Fixed
+- **Weather forecast was never populated**, so AI mode's heavy hot/cold-day preconditioning never fired. HA 2024.3 removed the `forecast` attribute. Forecasts now come from the `weather.get_forecasts` service (hourly, falling back to daily), and the 15-minute weather poll refreshes the `weather:forecast` cache.
+- **Fan override state was lost on restart**: a fan left at 100% was never capped or released, and its speed became the "baseline". Override records are now persisted in Redis and restored on the first AI-mode tick.
+- **The advisor was always told the setpoint "changed 0 min ago"**, which biased it toward waiting. Its action history only matched zone-tagged actions, but thermostat writes are recorded without a zone, and climate maintenance recorded nothing. It now includes thermostat-wide actions, maintenance records its writes, and "no change in 4 h" is reported as such. Zone analytics' response-lag learning had the same filter.
+- **HA WebSocket parsing**:
+  - °F sensors without a unit attribute weren't converted, because the fallback unit "F" didn't match "°F".
+  - Climate entities reported their setpoint as the room temperature.
+  - The fallback unit came from the display setting instead of HA's unit system.
+- **`POST /devices/{id}/action`**:
+  - It targeted a guessed `climate.<name>` instead of the device's entity.
+  - It sent °C to °F thermostats, and defaulted to 22 when no temperature was given.
+  - It used `switch.*` for every non-thermostat device.
+
+  It now uses the device's entity, converts and safety-clamps °C, requires explicit values, and takes the service domain from the entity.
+- **The comfort score ignored the comfort and humidity ranges in Settings** and used a hard-coded 20-24 °C. Settings are now the default.
+
 ## [1.0.88] - 2026-11-07
 
 Codebase audit, batch 4: validation, chat, web app, dial.

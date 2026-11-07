@@ -1,5 +1,5 @@
 name: ClimateIQ
-version: "1.0.88"
+version: "1.0.89"
 slug: climateiq
 description: AI-Powered Intelligent Climate Management for Home Assistant
 url: "https://github.com/JoshuaSeidel/climateIQ"
@@ -20,7 +20,9 @@ ingress_stream: true
 panel_icon: mdi:thermostat-auto
 panel_title: ClimateIQ
 
-# Port mappings (optional direct access, null = not exposed by default)
+# Port mappings.  host_network: true means 8099 is reachable on the LAN
+# regardless of this mapping — direct requests require the API key
+# (add-on option `api_key`, or Settings → API Access).
 ports:
   8099/tcp: null
 ports_description:
@@ -46,6 +48,7 @@ options:
   sensor_entities: []
   weather_entity: ""
   energy_entity: ""
+  api_key: ""
 schema:
   log_level: list(debug|info|warning|error)
   temperature_unit: list(F|C)
@@ -67,6 +70,7 @@ schema:
     - str
   weather_entity: str?
   energy_entity: str?
+  api_key: password?
 
 # Permissions
 hassio_api: true

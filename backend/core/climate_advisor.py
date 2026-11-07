@@ -273,29 +273,52 @@ async def _get_trend_data(
             time_to_target_hours = abs(gap_c / rate_c_per_hour)
 
     # ── Recent device actions ────────────────────────────────────────────────
+    # Thermostat-wide writes (schedules, maintenance, overrides) are recorded
+    # with zone_id NULL — matching only the schedule's zones meant this was
+    # always empty and the prompt claimed "changed 0 min ago".
     last_actions: list[dict[str, Any]] = []
-    if zone_id_strs:
-        try:
-            rows = await db.execute(
-                text(
-                    "SELECT created_at, parameters, reasoning "
-                    "FROM device_actions "
-                    "WHERE zone_id = ANY(:zone_ids) "
-                    "  AND action_type = 'set_temperature' "
-                    "  AND created_at >= NOW() - INTERVAL '4 hours' "
-                    "ORDER BY created_at DESC LIMIT 5"
-                ).bindparams(zone_ids=zone_id_strs)
+    try:
+        import uuid as _uuid
+
+        from sqlalchemy import or_
+        from sqlalchemy import select as _select
+
+        from backend.models.database import DeviceAction
+        from backend.models.enums import ActionType
+
+        zone_uuids: list[Any] = []
+        for zid in zone_id_strs:
+            try:
+                zone_uuids.append(_uuid.UUID(zid))
+            except ValueError:
+                continue
+        zone_filter = (
+            or_(DeviceAction.zone_id.is_(None), DeviceAction.zone_id.in_(zone_uuids))
+            if zone_uuids
+            else DeviceAction.zone_id.is_(None)
+        )
+        rows = await db.execute(
+            _select(DeviceAction)
+            .where(
+                DeviceAction.action_type == ActionType.set_temperature,
+                DeviceAction.created_at >= datetime.now(UTC) - timedelta(hours=4),
+                zone_filter,
             )
-            for row in rows.fetchall():
-                # Round timestamp to the minute — subsecond precision is
-                # ~20 wasted chars per action and never affects decisions.
-                last_actions.append({
-                    "at": row.created_at.strftime("%Y-%m-%d %H:%M") if row.created_at else "",
-                    "params": row.parameters or {},
-                    "reason": row.reasoning or "",
-                })
-        except Exception as exc:
-            logger.debug("ClimateAdvisor: device actions query failed: %s", exc)
+            .order_by(DeviceAction.created_at.desc())
+            .limit(5)
+        )
+        for act in rows.scalars().all():
+            # Round timestamp to the minute — subsecond precision is
+            # ~20 wasted chars per action and never affects decisions.
+            created = act.created_at
+            last_actions.append({
+                "at": created.astimezone(UTC).strftime("%Y-%m-%d %H:%M") if created else "",
+                "at_dt": created,
+                "params": act.parameters or {},
+                "reason": act.reasoning or "",
+            })
+    except Exception as exc:
+        logger.debug("ClimateAdvisor: device actions query failed: %s", exc)
 
     return TrendData(
         recent_5min=recent_5min,
@@ -904,16 +927,16 @@ class ClimateAdvisor:
             pass
 
         # ── 5. Time since last setpoint change ──────────────────────────────
-        mins_since_change = 0
+        # No recorded change in the 4-hour lookback → "4+ hours", not "0 min"
+        # (which told the model the setpoint had just moved and biased it
+        # toward waiting).
+        mins_since_change = 240
         if trend.last_actions:
-            last_ts_str = trend.last_actions[0].get("at", "")
-            try:
-                last_ts = datetime.fromisoformat(last_ts_str)
+            last_ts = trend.last_actions[0].get("at_dt")
+            if isinstance(last_ts, datetime):
                 if last_ts.tzinfo is None:
                     last_ts = last_ts.replace(tzinfo=UTC)
                 mins_since_change = int((datetime.now(UTC) - last_ts).total_seconds() / 60)
-            except (ValueError, TypeError):
-                pass
 
         # ── 6. Retrieve temperature unit for prompt display ──────────────────
         temp_unit = getattr(settings, "temperature_unit", "F")

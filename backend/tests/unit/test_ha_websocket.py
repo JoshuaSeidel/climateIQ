@@ -225,7 +225,8 @@ class TestParseStateChange:
             },
         )
         assert change is not None
-        assert change.temperature == 22.0
+        # current_temperature is the room reading; `temperature` is the setpoint.
+        assert change.temperature == 21.0
         assert change.humidity == 50.0
 
     def test_last_changed_and_updated(self, client: HAWebSocketClient) -> None:

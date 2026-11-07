@@ -241,7 +241,8 @@ class TestHAAuthMiddleware:
         inner = Starlette(routes=[Route("/api/data", _homepage)])
         with patch("backend.api.middleware.is_ha_addon", return_value=True):
             app = HAAuthMiddleware(inner, require_auth_for_direct=True)
-        transport = ASGITransport(app=app)
+        # Ingress is only trusted from the Supervisor's address.
+        transport = ASGITransport(app=app, client=("172.30.32.2", 50000))
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             with patch.dict("os.environ", {"SUPERVISOR_TOKEN": "test-token"}):
                 resp = await client.get(
@@ -266,12 +267,32 @@ class TestHAAuthMiddleware:
         with patch("backend.api.middleware.is_ha_addon", return_value=True):
             app = HAAuthMiddleware(inner, require_auth_for_direct=True)
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get(
-                "/api/data",
-                headers={"Authorization": "Bearer some-valid-token"},
-            )
-            assert resp.status_code == 200
+        with patch("backend.core.api_key._cached_key", "the-real-key"):
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.get(
+                    "/api/data",
+                    headers={"Authorization": "Bearer the-real-key"},
+                )
+                assert resp.status_code == 200
+                resp = await client.get(
+                    "/api/data",
+                    headers={"Authorization": "Bearer wrong-key"},
+                )
+                assert resp.status_code == 401
+
+    async def test_spoofed_ingress_header_from_lan_is_rejected(self) -> None:
+        inner = Starlette(routes=[Route("/api/data", _homepage)])
+        with patch("backend.api.middleware.is_ha_addon", return_value=True):
+            app = HAAuthMiddleware(inner, require_auth_for_direct=True)
+        transport = ASGITransport(app=app, client=("192.168.1.50", 50000))
+        with patch("backend.core.api_key._cached_key", "the-real-key"):
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                with patch.dict("os.environ", {"SUPERVISOR_TOKEN": "test-token"}):
+                    resp = await client.get(
+                        "/api/data",
+                        headers={"X-Ingress-Path": "/api/hassio_ingress/xyz"},
+                    )
+                assert resp.status_code == 401
 
     async def test_non_addon_mode_passes_all_requests(self, auth_app_non_addon: Starlette) -> None:
         transport = ASGITransport(app=auth_app_non_addon)

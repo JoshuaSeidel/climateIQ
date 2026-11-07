@@ -8,6 +8,7 @@ with real-time updates, weather integration, and AI-powered control.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -184,6 +185,58 @@ def _disp_to_c(u: float | None, unit: str) -> float | None:
     return round((u - 32) * 5 / 9, 2) if unit == "F" else round(u, 2)
 
 
+_FAN_BASELINE_REDIS_KEY = "climateiq:fan_baseline"
+_fan_baseline_restored = False
+
+
+async def _persist_fan_baseline() -> None:
+    """Save fan override records to Redis so they survive an add-on restart.
+
+    Without this, a fan we left at 100% was unknown after a restart: the
+    quiet-hours cap skipped it, nothing released it, and the next takeover
+    recorded 100% as the user's "baseline".
+    """
+    redis_client = app_state.redis_client
+    if redis_client is None:
+        return
+    try:
+        payload = {
+            eid: {
+                k: (v.isoformat() if isinstance(v, datetime) else v)
+                for k, v in rec.items()
+            }
+            for eid, rec in _fan_baseline.items()
+        }
+        await redis_client.set(_FAN_BASELINE_REDIS_KEY, json.dumps(payload))
+    except Exception as exc:
+        logger.debug("Could not persist fan baseline: %s", exc)
+
+
+async def _restore_fan_baseline_once() -> None:
+    global _fan_baseline_restored
+    if _fan_baseline_restored:
+        return
+    _fan_baseline_restored = True
+    redis_client = app_state.redis_client
+    if redis_client is None:
+        return
+    try:
+        raw = await redis_client.get(_FAN_BASELINE_REDIS_KEY)
+        if not raw:
+            return
+        for eid, rec in json.loads(raw).items():
+            if eid in _fan_baseline or not isinstance(rec, dict):
+                continue
+            for k in ("last_change_at", "released_at"):
+                if isinstance(rec.get(k), str):
+                    rec[k] = datetime.fromisoformat(rec[k])
+            _fan_baseline[eid] = rec
+        if _fan_baseline:
+            logger.info("Restored fan override state for %d fan(s)", len(_fan_baseline))
+    except Exception as exc:
+        logger.debug("Could not restore fan baseline: %s", exc)
+
+
 async def _read_fan_percent(ha_client_ref: Any, entity_id: str) -> int | None:
     """Return the current fan percentage for an entity, or None on error.
 
@@ -293,6 +346,7 @@ async def _apply_fan_target(
     last_set = hist.get("last_set_pct")
     if last_set is not None and abs(current - int(last_set)) > _FAN_HAND_CHANGE_TOLERANCE_PCT:
         _fan_baseline.pop(entity_id, None)
+        await _persist_fan_baseline()
         return False, f"user_changed(current={current}, we_set={last_set})"
 
     # Release path: target at/below baseline while overriding → restore.
@@ -315,6 +369,7 @@ async def _apply_fan_target(
         hist["last_change_at"] = now
         hist["released_at"] = now
         hist["last_set_pct"] = baseline
+        await _persist_fan_baseline()
         return True, f"release_to_baseline({baseline})"
 
     # Ramp path: raise (or hold) toward effective_target.
@@ -337,6 +392,7 @@ async def _apply_fan_target(
     hist["last_set_pct"] = effective_target
     if not hist["override_active"]:
         hist["released_at"] = now
+    await _persist_fan_baseline()
     return True, f"ramp_to({effective_target}, baseline={baseline})"
 
 
@@ -389,6 +445,7 @@ async def _enforce_fan_night_cap(ha_client_ref: Any, max_pct: int) -> None:
         hist["last_set_pct"] = ceiling
         if not hist["override_active"]:
             hist["released_at"] = now
+        await _persist_fan_baseline()
         logger.info(
             "Fan night cap: lowered %s %d%% → %d%% (cap %d%%, baseline %d%%)",
             entity_id, current, ceiling, max_pct, baseline,
@@ -519,12 +576,32 @@ async def poll_weather_data() -> None:
             )
             await temp_client.connect()
             ha_client = temp_client
+        forecast_entries: list[Any] = []
         try:
             weather_service = WeatherService(ha_client, weather_entity=weather_entity)
             weather_data = await weather_service.get_current()
+            # Also refresh the forecast cache — AI mode's heavy hot/cold-day
+            # preconditioning reads weather:forecast, which was previously
+            # only written by an API endpoint nothing called.
+            try:
+                forecast_entries = await weather_service.get_forecast(hours=48)
+            except Exception as fc_err:
+                logger.debug("Forecast fetch failed (non-critical): %s", fc_err)
         finally:
             if temp_client is not None:
                 await temp_client.disconnect()
+
+        if forecast_entries and app_state.redis_client:
+            await app_state.redis_client.setex(
+                "weather:forecast",
+                3600,
+                json.dumps(
+                    {
+                        "fetched_at": datetime.now(UTC).isoformat(),
+                        "data": [asdict(e) for e in forecast_entries],
+                    }
+                ),
+            )
 
         if weather_data:
             data_dict = asdict(weather_data)
@@ -2014,6 +2091,38 @@ async def maintain_climate_offset() -> None:
             _last_offset_temp[sched_key] = final_adjusted_c
             final_offset_c = final_adjusted_c - desired_temp_c
 
+            # Record the write: the advisor's "minutes since last setpoint
+            # change" and zone analytics' response-lag learning read
+            # device_actions, and maintenance is the most frequent writer.
+            try:
+                from backend.models.database import Device as _MDevice
+                from backend.models.database import DeviceAction as _MAction
+                from backend.models.enums import ActionType as _MActionType
+                from backend.models.enums import TriggerType as _MTrigger
+
+                _mdev = (
+                    await db.execute(
+                        sa_select(_MDevice).where(_MDevice.ha_entity_id == climate_entity).limit(1)
+                    )
+                ).scalar_one_or_none()
+                if _mdev is not None:
+                    db.add(_MAction(
+                        device_id=_mdev.id,
+                        zone_id=None,
+                        triggered_by=_MTrigger.schedule,
+                        action_type=_MActionType.set_temperature,
+                        parameters={
+                            "temperature": target_for_ha,
+                            "unit": temp_unit,
+                            "schedule_id": str(active_schedule.id),
+                            "desired_c": desired_temp_c,
+                        },
+                        reasoning=f"Climate maintenance (schedule '{active_schedule.name}')",
+                    ))
+                    await db.commit()
+            except Exception as rec_err:
+                logger.debug("Could not record maintenance action: %s", rec_err)
+
             if abs(final_offset_c) > 0.1:
                 offset_f = round(final_offset_c * 9 / 5, 1)
                 logger.info(
@@ -2428,6 +2537,7 @@ async def execute_active_mode() -> None:
             from backend.core.fan_limits import cap_for_time, load_fan_night_cap
             from backend.core.mode_windows import get_local_now
 
+            await _restore_fan_baseline_once()
             fan_cap_cfg = await load_fan_night_cap(db)
             fan_cap_pct: int | None = None
             if fan_cap_cfg.enabled:
@@ -5085,6 +5195,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             except Exception as e:
                 logger.warning("Failed to initialize HA REST client: %s", e)
 
+            # The websocket's unit fallback must be HA's unit *system*, not
+            # the user's display preference (they can differ).
+            try:
+                import backend.api.dependencies as _unit_deps
+
+                if app_state.ha_ws is not None and _unit_deps._ha_client is not None:
+                    _ha_cfg = await _unit_deps._ha_client.get_config()
+                    _ha_unit = _ha_cfg.get("unit_system", {}).get("temperature")
+                    if _ha_unit:
+                        app_state.ha_ws.set_ha_temp_unit(_ha_unit)
+            except Exception as e:
+                logger.debug("Could not read HA unit system for websocket: %s", e)
+
         # Initialize NotificationService singleton (requires HA client)
         if settings.home_assistant_token:
             try:
@@ -5234,8 +5357,8 @@ app.add_middleware(IngressMiddleware)
 # Home Assistant Ingress support (outermost middleware)
 if is_ha_addon():
     logger.info("Home Assistant add-on mode: enabling ingress middleware")
-    # HA auth middleware (trusts ingress-authenticated requests)
-    app.add_middleware(HAAuthMiddleware, require_auth_for_direct=False)
+    # HA auth: ingress (from the Supervisor) or the API key — never open.
+    app.add_middleware(HAAuthMiddleware, require_auth_for_direct=True)
     # WebSocket ingress middleware (raw ASGI, handles ws:// path rewriting)
     app.add_middleware(IngressWebSocketMiddleware)
 else:

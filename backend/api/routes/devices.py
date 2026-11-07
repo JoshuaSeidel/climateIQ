@@ -289,13 +289,23 @@ async def _dispatch_via_home_assistant(
     if not ha_token:
         return {"success": False, "error": "Home Assistant token not configured"}
 
-    # Build the HA service call based on action type
-    service_domain, service_name, service_data = _build_ha_service_call(device, payload)
-
     try:
         import httpx
 
         async with httpx.AsyncClient(timeout=15.0) as client:
+            # HA's unit system decides how a °C temperature must be sent.
+            cfg = await client.get(
+                f"{ha_url}/api/config",
+                headers={"Authorization": f"Bearer {ha_token}"},
+            )
+            cfg.raise_for_status()
+            ha_is_f = cfg.json().get("unit_system", {}).get("temperature") == "\u00b0F"
+            try:
+                service_domain, service_name, service_data = _build_ha_service_call(
+                    device, payload, ha_is_f=ha_is_f
+                )
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
             resp = await client.post(
                 f"{ha_url}/api/services/{service_domain}/{service_name}",
                 json=service_data,
@@ -313,66 +323,62 @@ async def _dispatch_via_home_assistant(
 def _build_ha_service_call(
     device: Device,
     payload: DeviceActionRequest,
+    *,
+    ha_is_f: bool = False,
 ) -> tuple[str, str, dict[str, Any]]:
-    """Map an ActionType to a Home Assistant service domain/name/data."""
-    entity_id = payload.parameters.get(
-        "entity_id", f"climate.{device.name.lower().replace(' ', '_')}"
-    )
+    """Map an ActionType to a Home Assistant service domain/name/data.
+
+    Targets the device's own ``ha_entity_id`` (an explicit ``entity_id``
+    parameter wins).  Temperatures are taken in °C (``target_c`` or
+    ``temperature``), clamped to the safety range and converted to HA's unit.
+    The service domain comes from the entity, so fans, covers and switches
+    get the right service.  Raises ValueError on missing input.
+    """
+    from backend.config import SETTINGS
+
     params = dict(payload.parameters)
-    params.setdefault("entity_id", entity_id)
+    entity_id = str(params.get("entity_id") or device.ha_entity_id or "").strip()
+    if not entity_id or "." not in entity_id:
+        raise ValueError("Device has no Home Assistant entity; pass parameters.entity_id")
+    entity_domain = entity_id.split(".", 1)[0]
 
     action = payload.action_type
 
     if action == ActionType.set_temperature:
-        return (
-            "climate",
-            "set_temperature",
-            {
-                "entity_id": params["entity_id"],
-                "temperature": params.get("temperature", params.get("target_c", 22)),
-            },
-        )
-    elif action == ActionType.set_mode:
-        return (
-            "climate",
-            "set_hvac_mode",
-            {
-                "entity_id": params["entity_id"],
-                "hvac_mode": params.get("mode", "auto"),
-            },
-        )
-    elif action == ActionType.turn_on:
-        domain = "climate" if device.type == DeviceType.thermostat else "switch"
-        return domain, "turn_on", {"entity_id": params["entity_id"]}
-    elif action == ActionType.turn_off:
-        domain = "climate" if device.type == DeviceType.thermostat else "switch"
-        return domain, "turn_off", {"entity_id": params["entity_id"]}
-    elif action in (ActionType.open_cover, ActionType.close_cover, ActionType.set_cover_position):
-        service = action.value  # open_cover, close_cover, set_cover_position
-        data: dict[str, Any] = {"entity_id": params["entity_id"]}
+        raw = params.get("target_c", params.get("temperature"))
+        if raw is None:
+            raise ValueError("set_temperature requires parameters.target_c (°C)")
+        try:
+            temp_c = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("target_c must be a number") from exc
+        temp_c = max(SETTINGS.safety_min_temp_c, min(SETTINGS.safety_max_temp_c, temp_c))
+        temp_ha = round(temp_c * 9 / 5 + 32, 1) if ha_is_f else round(temp_c, 1)
+        return "climate", "set_temperature", {"entity_id": entity_id, "temperature": temp_ha}
+    if action == ActionType.set_mode:
+        mode = params.get("mode")
+        if not mode:
+            raise ValueError("set_mode requires parameters.mode")
+        return "climate", "set_hvac_mode", {"entity_id": entity_id, "hvac_mode": mode}
+    if action in (ActionType.turn_on, ActionType.turn_off):
+        return entity_domain, action.value, {"entity_id": entity_id}
+    if action in (ActionType.open_cover, ActionType.close_cover, ActionType.set_cover_position):
+        data: dict[str, Any] = {"entity_id": entity_id}
         if action == ActionType.set_cover_position:
-            data["position"] = params.get("position", 50)
-        return "cover", service, data
-    elif action == ActionType.set_vent_position:
+            data["position"] = max(0, min(100, int(params.get("position", 50))))
+        return "cover", action.value, data
+    if action == ActionType.set_vent_position:
         return (
             "cover",
             "set_cover_position",
-            {
-                "entity_id": params["entity_id"],
-                "position": params.get("position", 100),
-            },
+            {"entity_id": entity_id, "position": max(0, min(100, int(params.get("position", 100))))},
         )
-    elif action == ActionType.set_fan_speed:
-        return (
-            "fan",
-            "set_percentage",
-            {
-                "entity_id": params["entity_id"],
-                "percentage": params.get("speed", params.get("percentage", 50)),
-            },
-        )
-    else:
-        return "homeassistant", "toggle", {"entity_id": params["entity_id"]}
+    if action == ActionType.set_fan_speed:
+        pct = params.get("speed", params.get("percentage"))
+        if pct is None:
+            raise ValueError("set_fan_speed requires parameters.percentage")
+        return "fan", "set_percentage", {"entity_id": entity_id, "percentage": max(0, min(100, int(pct)))}
+    return "homeassistant", "toggle", {"entity_id": entity_id}
 
 
 __all__ = ["router"]

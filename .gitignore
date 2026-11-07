@@ -134,3 +134,6 @@ logs/
 # ESPHome device secrets (real wifi creds)
 esp32-dial/secrets.yaml
 esp32-dial/.esphome/
+
+# Local runtime data (generated API key etc.)
+/data/

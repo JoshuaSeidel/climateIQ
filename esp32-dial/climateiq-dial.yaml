@@ -24,9 +24,10 @@ substitutions:
   # HA add-on mode: uvicorn binds 0.0.0.0:8099 with host_network, so use port 8099.
   # Standalone/docker mode: default port is 8420.
   climateiq_base_url: "http://homeassistant.local:8099"
-  # Only needed if CLIMATEIQ_API_KEY is set on the backend; otherwise leave as-is
-  # (the header is ignored when no key is configured server-side).
-  climateiq_api_key: ""
+  # Required: the backend rejects direct LAN requests without it (401).
+  # Set climateiq_api_key in secrets.yaml — the add-on's `api_key` option, or
+  # the key shown in ClimateIQ → Settings → Home Assistant → API Access.
+  climateiq_api_key: !secret climateiq_api_key
   # Dial range/step in YOUR display unit (F shown; use e.g. 15/28/1 for Celsius)
   temp_min: "55"
   temp_max: "85"

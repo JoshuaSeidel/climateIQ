@@ -63,3 +63,9 @@ async def client() -> AsyncGenerator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def _isolate_api_key_storage(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep generated API keys out of the repo's ./data directory."""
+    monkeypatch.setenv("CLIMATEIQ_DATA_DIR", str(tmp_path_factory.mktemp("climateiq-data")))

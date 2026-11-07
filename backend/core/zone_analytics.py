@@ -190,14 +190,17 @@ class ZoneAnalytics:
         zone_id: uuid.UUID,
         cutoff: datetime,
     ) -> list[dict[str, Any]]:
+        from sqlalchemy import or_
         from sqlalchemy import select as sa_select
 
         from backend.models.database import DeviceAction
 
+        # Thermostat-wide setpoint writes are recorded with zone_id NULL;
+        # include them or response lag / overshoot are never learned.
         result = await self._db.execute(
             sa_select(DeviceAction.created_at, DeviceAction.parameters)
             .where(
-                DeviceAction.zone_id == zone_id,
+                or_(DeviceAction.zone_id == zone_id, DeviceAction.zone_id.is_(None)),
                 DeviceAction.action_type == "set_temperature",
                 DeviceAction.created_at >= cutoff,
             )

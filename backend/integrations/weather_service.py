@@ -198,7 +198,12 @@ class WeatherService:
                 return [entry for entry in cached if isinstance(entry, ForecastEntry)][:hours]
             raise
 
-        raw_forecast = entity.attributes.get("forecast", [])
+        raw_forecast = entity.attributes.get("forecast") or []
+        if not raw_forecast:
+            # HA 2024.3+ removed the `forecast` attribute; forecasts come from
+            # the weather.get_forecasts service.  Prefer hourly, fall back to
+            # daily for integrations that only provide that.
+            raw_forecast = await self._fetch_forecast_via_service()
         entries = [
             self._parse_forecast_entry(item) for item in raw_forecast if isinstance(item, dict)
         ]
@@ -206,6 +211,25 @@ class WeatherService:
         self._forecast_cache = _CacheEntry(data=entries, timestamp=time.monotonic())
         logger.info("Fetched forecast with %d entries", len(entries))
         return entries[:hours]
+
+    async def _fetch_forecast_via_service(self) -> list[dict[str, Any]]:
+        for forecast_type in ("hourly", "daily"):
+            try:
+                result = await self._ha.call_service(
+                    "weather",
+                    "get_forecasts",
+                    data={"type": forecast_type},
+                    target={"entity_id": self._weather_entity},
+                    return_response=True,
+                )
+            except HAClientError as exc:
+                logger.debug("weather.get_forecasts (%s) failed: %s", forecast_type, exc)
+                continue
+            response = (result or {}).get("service_response", {}) if isinstance(result, dict) else {}
+            forecast = (response.get(self._weather_entity) or {}).get("forecast") or []
+            if isinstance(forecast, list) and forecast:
+                return [f for f in forecast if isinstance(f, dict)]
+        return []
 
     def invalidate_cache(self) -> None:
         """Force-expire both caches so the next call fetches fresh data."""

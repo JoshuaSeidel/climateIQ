@@ -283,8 +283,14 @@ class HAClient:
         service: str,
         data: dict[str, Any] | None = None,
         target: dict[str, Any] | None = None,
+        *,
+        return_response: bool = False,
     ) -> Any:
         """Call a Home Assistant service.
+
+        With ``return_response=True`` the service's response data is
+        requested (HA ``?return_response``), and the parsed body is
+        ``{"changed_states": [...], "service_response": {...}}``.
 
         Args:
             domain: Service domain (e.g. ``climate``, ``switch``).
@@ -303,6 +309,8 @@ class HAClient:
             payload.update(target)
 
         path = f"/api/services/{domain}/{service}"
+        if return_response:
+            path += "?return_response"
         logger.debug(
             "Calling service %s.%s | payload=%s",
             domain, service, payload,

@@ -34,6 +34,10 @@ if [ -f "$CONFIG_PATH" ]; then
     DEEPSEEK_API_KEY=$(jq -r '.deepseek_api_key // ""' "$CONFIG_PATH")
     OLLAMA_URL=$(jq -r '.ollama_url // ""' "$CONFIG_PATH")
 
+    # API key for direct (non-ingress) access, e.g. the ESP32 dial.
+    # Empty = ClimateIQ generates one (Settings → API Access).
+    CLIMATEIQ_DIRECT_API_KEY=$(jq -r '.api_key // ""' "$CONFIG_PATH")
+
     # Entity filters (optional — empty = accept all)
     # Arrays are joined as comma-separated strings for the env var.
     CLIMATE_ENTITIES=$(jq -r '(.climate_entities // []) | join(",")' "$CONFIG_PATH")
@@ -55,6 +59,7 @@ else
     GROK_API_KEY=""
     DEEPSEEK_API_KEY=""
     OLLAMA_URL=""
+    CLIMATEIQ_DIRECT_API_KEY=""
     CLIMATE_ENTITIES=""
     SENSOR_ENTITIES=""
     WEATHER_ENTITY=""
@@ -186,6 +191,10 @@ export CLIMATEIQ_REDIS_URL="${REDIS_URL}"
 export CLIMATEIQ_HOME_ASSISTANT_URL="http://supervisor/core"
 export CLIMATEIQ_HOME_ASSISTANT_TOKEN="${SUPERVISOR_TOKEN:-}"
 export CLIMATEIQ_HA_ADDON_MODE="true"
+export CLIMATEIQ_DATA_DIR="${DATA_DIR}"
+if [ -n "${CLIMATEIQ_DIRECT_API_KEY}" ]; then
+    export CLIMATEIQ_API_KEY="${CLIMATEIQ_DIRECT_API_KEY}"
+fi
 
 # LLM API keys
 export CLIMATEIQ_ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}"

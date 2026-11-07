@@ -824,21 +824,21 @@ async def get_comfort_scores(
     db: Annotated[AsyncSession, Depends(get_db)],
     hours: Annotated[int, Query(ge=1, le=720, description="Lookback window in hours")] = 24,
     temp_min: Annotated[
-        float,
-        Query(description="Comfort temp lower bound (°C)"),
-    ] = COMFORT_TEMP_MIN,
+        float | None,
+        Query(description="Comfort temp lower bound (°C); default: Settings comfort range"),
+    ] = None,
     temp_max: Annotated[
-        float,
-        Query(description="Comfort temp upper bound (°C)"),
-    ] = COMFORT_TEMP_MAX,
+        float | None,
+        Query(description="Comfort temp upper bound (°C); default: Settings comfort range"),
+    ] = None,
     humidity_min: Annotated[
-        float,
-        Query(description="Comfort humidity lower bound (%)"),
-    ] = COMFORT_HUMIDITY_MIN,
+        float | None,
+        Query(description="Comfort humidity lower bound (%); default: Settings"),
+    ] = None,
     humidity_max: Annotated[
-        float,
-        Query(description="Comfort humidity upper bound (%)"),
-    ] = COMFORT_HUMIDITY_MAX,
+        float | None,
+        Query(description="Comfort humidity upper bound (%); default: Settings"),
+    ] = None,
     zone_ids: Annotated[
         str | None,
         Query(description="Comma-separated zone UUIDs to filter (omit for all zones)"),
@@ -856,6 +856,35 @@ async def get_comfort_scores(
     Pass ``zone_ids`` as a comma-separated list of UUIDs to filter to
     specific zones.  Omit the parameter to include all active zones.
     """
+    # Unspecified bounds come from the user's comfort settings, not the
+    # hard-coded 20-24 °C defaults.
+    from backend.models.database import SystemSetting as _CSetting
+
+    _comfort_keys = {
+        "default_comfort_temp_min": COMFORT_TEMP_MIN,
+        "default_comfort_temp_max": COMFORT_TEMP_MAX,
+        "default_humidity_min": COMFORT_HUMIDITY_MIN,
+        "default_humidity_max": COMFORT_HUMIDITY_MAX,
+    }
+    _comfort: dict[str, float] = dict(_comfort_keys)
+    try:
+        _rows = (
+            await db.execute(select(_CSetting).where(_CSetting.key.in_(list(_comfort_keys))))
+        ).scalars().all()
+        for _row in _rows:
+            _v = (_row.value or {}).get("value")
+            if _v is not None:
+                try:
+                    _comfort[_row.key] = float(_v)
+                except (TypeError, ValueError):
+                    pass
+    except Exception as _cexc:
+        logger.debug("Comfort settings lookup failed: %s", _cexc)
+    temp_min = temp_min if temp_min is not None else _comfort["default_comfort_temp_min"]
+    temp_max = temp_max if temp_max is not None else _comfort["default_comfort_temp_max"]
+    humidity_min = humidity_min if humidity_min is not None else _comfort["default_humidity_min"]
+    humidity_max = humidity_max if humidity_max is not None else _comfort["default_humidity_max"]
+
     period_end = datetime.now(UTC)
     period_start = period_end - timedelta(hours=hours)
 

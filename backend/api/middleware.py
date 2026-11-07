@@ -111,18 +111,23 @@ class IngressWebSocketMiddleware:
 
 
 class HAAuthMiddleware:
-    """ASGI middleware that validates requests using the HA Supervisor auth API.
+    """ASGI auth for add-on mode.
 
-    When running as an HA add-on with ingress, the Supervisor handles
-    authentication. This middleware validates the ingress session by checking
-    with the Supervisor API. Requests that come through ingress (with the
-    X-Ingress-Path header) are considered pre-authenticated by HA.
+    The API listens on the host network, so it is reachable from the whole
+    LAN.  Two kinds of request are allowed:
 
-    For non-ingress requests (direct port access), this middleware can
-    optionally require a bearer token.
+    * **Home Assistant ingress** — proxied by the Supervisor, which has
+      already authenticated the HA user.  Identified by the ``X-Ingress-Path``
+      header *and* the Supervisor's source address (``172.30.32.2``).  The
+      header alone is not enough: any LAN client can send it (previously
+      that bypassed auth entirely).
+    * **Direct access with the API key** — ``Authorization: Bearer <key>``,
+      or ``?api_key=<key>`` for WebSocket clients.  See
+      ``backend.core.api_key``.
+
+    Everything else gets 401.  Health checks are always public.
     """
 
-    # Paths that never require authentication
     PUBLIC_PATHS = frozenset(
         {
             "/health",
@@ -131,11 +136,18 @@ class HAAuthMiddleware:
             "/health/detailed",
         }
     )
+    # Supervisor ingress proxy address (HA docs).  Overridable for unusual
+    # network setups via CLIMATEIQ_INGRESS_TRUSTED_IPS (comma-separated).
+    DEFAULT_INGRESS_IPS = frozenset({"172.30.32.2"})
 
-    def __init__(self, app: ASGIApp, *, require_auth_for_direct: bool = False) -> None:
+    def __init__(self, app: ASGIApp, *, require_auth_for_direct: bool = True) -> None:
         self.app = app
         self.require_auth_for_direct = require_auth_for_direct
-        self._addon_mode = is_ha_addon()
+        extra = os.environ.get("CLIMATEIQ_INGRESS_TRUSTED_IPS", "")
+        self._ingress_ips = self.DEFAULT_INGRESS_IPS | {
+            ip.strip() for ip in extra.split(",") if ip.strip()
+        }
+        self._logged_ingress_ip = False
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -143,57 +155,62 @@ class HAAuthMiddleware:
             return
 
         path = scope.get("path", "/")
-
-        # Always allow health checks
         if path in self.PUBLIC_PATHS:
             await self.app(scope, receive, send)
             return
 
-        # Check for ingress header - if present, HA has already authenticated
         headers = dict(scope.get("headers", []))
-        has_ingress = b"x-ingress-path" in headers
+        client = scope.get("client") or ("", 0)
+        client_ip = str(client[0] or "")
 
-        if has_ingress:
-            # Validate that the request actually came from the Supervisor by
-            # checking that SUPERVISOR_TOKEN is set (only available inside the
-            # add-on container) and that the ingress path matches the expected
-            # HA ingress URL pattern.
-            supervisor_token = os.environ.get("SUPERVISOR_TOKEN", "")
-            ingress_path = headers.get(b"x-ingress-path", b"").decode("utf-8")
-            if supervisor_token and ingress_path.startswith("/api/hassio_ingress/"):
-                # Legitimate ingress request — user is authenticated by HA
+        # ── HA ingress ────────────────────────────────────────────────
+        if b"x-ingress-path" in headers:
+            if client_ip in self._ingress_ips and os.environ.get("SUPERVISOR_TOKEN"):
+                if not self._logged_ingress_ip:
+                    logger.info("HA ingress requests arriving from %s", client_ip)
+                    self._logged_ingress_ip = True
                 await self.app(scope, receive, send)
                 return
-            elif supervisor_token:
-                # SUPERVISOR_TOKEN is set but ingress path doesn't match expected pattern
-                logger.warning("Ingress header with unexpected path: %s", ingress_path)
-                await self.app(scope, receive, send)
-                return
-            else:
-                # No SUPERVISOR_TOKEN — someone is spoofing the header
-                logger.warning("Rejecting spoofed X-Ingress-Path header from %s", path)
-                response = JSONResponse(
-                    status_code=403,
-                    content={"detail": "Invalid ingress request"},
-                )
-                await response(scope, receive, send)
-                return
+            logger.warning(
+                "Ingress header from untrusted address %s on %s — treating as a "
+                "direct request (set CLIMATEIQ_INGRESS_TRUSTED_IPS if this is the "
+                "Supervisor)",
+                client_ip, path,
+            )
 
-        if self._addon_mode and self.require_auth_for_direct:
-            # Direct access in add-on mode - check for bearer token
-            auth_header = headers.get(b"authorization", b"").decode("utf-8")
-            if not auth_header.startswith("Bearer "):
-                response = JSONResponse(
-                    status_code=401,
-                    content={
-                        "detail": "Authentication required. Access through Home Assistant UI."
-                    },
-                )
-                await response(scope, receive, send)
-                return
+        if not self.require_auth_for_direct:
+            await self.app(scope, receive, send)
+            return
 
-        # Non-addon mode or auth not required for direct access
-        await self.app(scope, receive, send)
+        # ── Direct access: API key ────────────────────────────────────
+        from backend.core.api_key import key_matches
+
+        auth_header = headers.get(b"authorization", b"").decode("utf-8", "replace")
+        token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+        if not token and scope["type"] == "websocket":
+            from urllib.parse import parse_qs
+
+            qs = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"))
+            token = (qs.get("api_key") or [""])[0]
+        if key_matches(token):
+            await self.app(scope, receive, send)
+            return
+
+        if scope["type"] == "websocket":
+            # Reject the handshake.
+            await send({"type": "websocket.close", "code": 4401})
+            return
+        response = JSONResponse(
+            status_code=401,
+            content={
+                "detail": (
+                    "Authentication required: open ClimateIQ from the Home Assistant "
+                    "sidebar, or send 'Authorization: Bearer <API key>' "
+                    "(Settings → API Access)."
+                )
+            },
+        )
+        await response(scope, receive, send)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):

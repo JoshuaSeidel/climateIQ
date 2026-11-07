@@ -452,6 +452,29 @@ async def update_settings(
 
 
 # ---------------------------------------------------------------------------
+# API key for direct (non-ingress) access — e.g. the ESP32 dial
+# ---------------------------------------------------------------------------
+@router.get("/api-key")
+async def get_api_key_info() -> dict[str, Any]:
+    """Return the API key.  Only reachable through HA ingress or with the key."""
+    from backend.core.api_key import get_api_key, is_key_from_env
+
+    return {"api_key": get_api_key(), "from_env": is_key_from_env()}
+
+
+@router.post("/api-key/rotate")
+async def rotate_api_key_route() -> dict[str, Any]:
+    """Generate a new key.  Every direct client (the dial) must be updated."""
+    from backend.core.api_key import is_key_from_env, rotate_api_key
+
+    try:
+        key = rotate_api_key()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {"api_key": key, "from_env": is_key_from_env()}
+
+
+# ---------------------------------------------------------------------------
 # Seasonal HVAC mode lock
 # ---------------------------------------------------------------------------
 @router.get("/seasonal-lock")

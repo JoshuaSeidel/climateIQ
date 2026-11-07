@@ -79,5 +79,11 @@ configuration:
     description: >-
       HA sensor entity for energy monitoring (e.g. sensor.total_energy_usage).
       Leave blank to select later from the ClimateIQ UI.
+  api_key:
+    name: API Key (direct access)
+    description: >-
+      Key required for direct LAN access to port 8099 (the ClimateIQ Dial,
+      scripts). The Home Assistant sidebar never needs it. Leave blank to have
+      ClimateIQ generate one — see Settings → Home Assistant → API Access.
 network:
   8099/tcp: ClimateIQ Web UI (direct access)

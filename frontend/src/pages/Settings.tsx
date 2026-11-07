@@ -36,6 +36,8 @@ import {
   Plus,
   Trash2,
   Moon,
+  KeyRound,
+  Copy,
 } from 'lucide-react'
 
 type SettingsTab = 'general' | 'homeassistant' | 'llm' | 'modes' | 'logic' | 'backup' | 'about'
@@ -134,7 +136,12 @@ export const Settings = () => {
       {/* Tab Content */}
       {activeTab === 'general' && <GeneralTab key={settings ? 'loaded' : 'loading'} settings={settings} loading={settingsLoading} />}
 
-      {activeTab === 'homeassistant' && <HomeAssistantTab key={settings ? 'loaded' : 'loading'} settings={settings} />}
+      {activeTab === 'homeassistant' && (
+        <div className="space-y-4">
+          <HomeAssistantTab key={settings ? 'loaded' : 'loading'} settings={settings} />
+          <ApiAccessCard />
+        </div>
+      )}
       {activeTab === 'llm' && (
         <LLMTab
           providers={llmProviders}
@@ -1972,6 +1979,113 @@ function BackupTab() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+// ============================================================================
+// API Access (direct / dial access key)
+// ============================================================================
+function ApiAccessCard() {
+  const queryClient = useQueryClient()
+  const [revealed, setRevealed] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [confirmRotate, setConfirmRotate] = useState(false)
+
+  const { data, isLoading, isError } = useQuery<{ api_key: string; from_env: boolean }>({
+    queryKey: ['api-key'],
+    queryFn: () => api.get('/settings/api-key'),
+  })
+
+  const rotate = useMutation({
+    mutationFn: () => api.post<{ api_key: string; from_env: boolean }>('/settings/api-key/rotate', {}),
+    onSuccess: (result) => {
+      queryClient.setQueryData(['api-key'], result)
+      setConfirmRotate(false)
+      setRevealed(true)
+    },
+  })
+
+  const key = data?.api_key ?? ''
+  const masked = key ? `${key.slice(0, 4)}${'•'.repeat(24)}${key.slice(-4)}` : ''
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(key)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setRevealed(true) // clipboard blocked (e.g. non-HTTPS) — show it to copy by hand
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <KeyRound className="h-5 w-5" />
+          API Access
+        </CardTitle>
+        <CardDescription>
+          The ClimateIQ API is reachable on your network at port 8099. Requests from the Home
+          Assistant sidebar are already signed in; anything else — the ClimateIQ Dial, scripts,
+          curl — must send this key as <code className="text-xs">Authorization: Bearer &lt;key&gt;</code>.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : isError ? (
+          <p className="text-sm text-red-500">Could not load the API key.</p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <code className="flex-1 min-w-0 break-all rounded-md border border-input bg-muted/40 px-3 py-2 text-xs">
+              {revealed ? key : masked}
+            </code>
+            <Button variant="outline" size="sm" onClick={() => setRevealed(!revealed)}>
+              {revealed ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </Button>
+            <Button variant="outline" size="sm" onClick={copy}>
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+            </Button>
+          </div>
+        )}
+
+        <div className="rounded-lg border border-border/60 p-3 text-xs text-muted-foreground space-y-1">
+          <p className="font-medium text-foreground">ClimateIQ Dial setup</p>
+          <p>
+            1. In <code>esp32-dial/secrets.yaml</code>, set{' '}
+            <code>climateiq_api_key: &quot;&lt;this key&gt;&quot;</code>.
+          </p>
+          <p>2. Re-flash the dial (ESPHome: Install → Wirelessly).</p>
+        </div>
+
+        {data?.from_env ? (
+          <p className="text-xs text-muted-foreground">
+            This key is fixed by the CLIMATEIQ_API_KEY setting and can&apos;t be rotated here.
+          </p>
+        ) : confirmRotate ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-amber-500">
+              The dial and any other direct clients stop working until you give them the new key.
+            </span>
+            <Button size="sm" className="bg-red-600 text-white hover:bg-red-700" disabled={rotate.isPending} onClick={() => rotate.mutate()}>
+              {rotate.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Rotate key'}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setConfirmRotate(false)}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button size="sm" variant="outline" onClick={() => setConfirmRotate(true)}>
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Generate new key
+          </Button>
+        )}
+        {rotate.isError && (
+          <p className="text-xs text-red-500">Rotation failed: {rotate.error?.message}</p>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

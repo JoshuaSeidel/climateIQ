@@ -26,7 +26,9 @@ _SENSOR_DOMAINS = frozenset({"sensor", "binary_sensor", "climate", "fan", "cover
 
 # Attributes we try to extract from HA entity state
 _NUMERIC_ATTRS = {
-    "temperature": ["temperature", "current_temperature"],
+    # current_temperature first: on climate entities `temperature` is the
+    # *setpoint*, not a room reading.
+    "temperature": ["current_temperature", "temperature"],
     "humidity": ["humidity", "current_humidity"],
     "pressure": ["pressure"],
     "lux": ["illuminance", "illuminance_lux"],
@@ -117,6 +119,14 @@ class HAWebSocketClient:
     # ------------------------------------------------------------------
     # Public API — lifecycle
     # ------------------------------------------------------------------
+
+    def set_ha_temp_unit(self, unit: str) -> None:
+        """Set HA's unit-system temperature unit ("°F"/"°C"/"F"/"C").
+
+        Used as the fallback for entities without a unit attribute.  Must be
+        HA's *unit system*, not the user's display preference.
+        """
+        self._ha_temp_unit = str(unit or "C").upper().strip("°") or "C"
 
     async def connect(self) -> None:
         """Connect, authenticate, and subscribe to state_changed events.
@@ -422,7 +432,9 @@ class HAWebSocketClient:
             if device_class == "temperature":
                 with suppress(ValueError, TypeError):
                     temp_val = float(state_val)
-                    if unit == "°F":
+                    # Accept "°F" and bare "F" (the HA-system fallback unit
+                    # is stored without the degree sign).
+                    if str(unit).strip().upper().lstrip("°") == "F":
                         temp_val = (temp_val - 32) * 5 / 9
                     change.temperature = temp_val
                     _dc_matched = True
