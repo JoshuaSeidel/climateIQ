@@ -76,7 +76,10 @@ class ZoneState:
             return False
         if not self.exclude_months:
             return True
-        return _utc_now().month in self.exclude_months
+        # The user's local month (Aug 31 21:00 EDT is already Sep in UTC).
+        from backend.core.user_tz import cached_local_now
+
+        return cached_local_now().month in self.exclude_months
 
     def register_device(self, device: Device) -> None:
         self.devices[device.id] = DeviceState(

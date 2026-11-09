@@ -452,6 +452,12 @@ async def update_settings(
         # Keep the process-wide settings object in step with the user's
         # choice — chat, prompts and notifications read the unit from it.
         SETTINGS.temperature_unit = str(changed["temperature_unit"]).upper()
+    if "climate_entities" in changed:
+        # The managed thermostat changed: forget the cached entity so the
+        # loops and drift handler pick up the new one now, not in 5 min.
+        import backend.api.main as _main
+
+        _main._primary_climate_cache = None
     return await _build_response(db)
 
 

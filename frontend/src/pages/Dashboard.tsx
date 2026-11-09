@@ -324,7 +324,17 @@ export const Dashboard = () => {
   const scheduleTargetRounded =
     overrideStatus?.schedule_target_temp != null ? Math.round(overrideStatus.schedule_target_temp) : null
   const manualTemp = manualEdit && manualEdit.unit === unitKey ? manualEdit.value : null
-  const overrideTarget = manualTemp ?? scheduleTargetRounded
+  // During an override the target is the override's own value (already in
+  // the display unit), not the schedule's — otherwise "Set Override" would
+  // silently send the schedule target back.
+  const activeOverrideTemp =
+    overrideStatus?.is_override_active && overrideStatus.override_temp != null
+      ? Math.round(overrideStatus.override_temp)
+      : null
+  const overrideTarget = manualTemp ?? activeOverrideTemp ?? scheduleTargetRounded
+  const overrideUntilLabel = overrideStatus?.is_override_active && overrideStatus.override_until
+    ? new Date(overrideStatus.override_until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : null
   const setManualTemp = (update: (prev: number | null) => number) =>
     setManualEdit({ value: update(overrideTarget), unit: unitKey })
 
@@ -368,11 +378,12 @@ export const Dashboard = () => {
           setError(result.message || 'Action failed.')
         }
         refetchZones()
+        refetchOverride()
       } catch {
         setError('Failed to execute action. Please try again.')
       }
     },
-    [refetchZones],
+    [refetchZones, refetchOverride],
   )
 
   const weather = weatherEnvelope?.data ?? null
@@ -510,7 +521,7 @@ export const Dashboard = () => {
             <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Manual Override</span>
             {overrideStatus?.is_override_active && (
               <span className="ml-auto rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.15em] text-orange-500 border border-orange-500/30">
-                Override Active
+                Override Active{overrideUntilLabel ? ` until ${overrideUntilLabel}` : ''}
               </span>
             )}
           </CardTitle>

@@ -69,7 +69,7 @@ DEFAULT_SEASONS: list[dict[str, Any]] = [
     {
         "name": "Winter",
         "start_month": 12, "start_day": 1,
-        "end_month": 2, "end_day": 28,
+        "end_month": 2, "end_day": 29,
         "preferred_mode": "heat",
         # 21°C ≈ 70°F — if outdoors warmer than that, allow cool
         "override_outdoor_above_c": 21.1,
@@ -125,6 +125,9 @@ def find_active_season(seasons: list[Season], today: date) -> Season | None:
     for s in seasons:
         if _season_contains(s, today.month, today.day):
             return s
+    if (today.month, today.day) == (2, 29):
+        # Seasons saved as "… to Feb 28" must not leave a leap-day gap.
+        return find_active_season(seasons, today.replace(day=28))
     return None
 
 
@@ -268,11 +271,11 @@ async def compute_lock_state(
     outdoor_c = await _read_outdoor_temp_c(db, ha_client)
     state.outdoor_temp_c = outdoor_c
 
+    key = season.name
     if outdoor_c is not None:
         # Hysteresis: once tripped, the override holds until the outdoor
         # temperature recovers 1 °C past the threshold (no flapping on a
         # reading that hovers at the boundary).
-        key = season.name
         if season.override_outdoor_below_c is not None:
             if outdoor_c <= season.override_outdoor_below_c:
                 _override_latched.add(f"{key}:below")
@@ -283,28 +286,31 @@ async def compute_lock_state(
                 _override_latched.add(f"{key}:above")
             elif outdoor_c < season.override_outdoor_above_c - 1.0:
                 _override_latched.discard(f"{key}:above")
-        if (
-            season.preferred_mode == "cool"
-            and season.override_outdoor_below_c is not None
-            and f"{key}:below" in _override_latched
-        ):
-            state.override_active = True
-            state.reason = (
-                f"override: outdoor {outdoor_c:.1f}°C ≤ "
-                f"{season.override_outdoor_below_c:.1f}°C — heat allowed"
-            )
-            return state
-        if (
-            season.preferred_mode == "heat"
-            and season.override_outdoor_above_c is not None
-            and f"{key}:above" in _override_latched
-        ):
-            state.override_active = True
-            state.reason = (
-                f"override: outdoor {outdoor_c:.1f}°C ≥ "
-                f"{season.override_outdoor_above_c:.1f}°C — cool allowed"
-            )
-            return state
+    # The latch decides, also when the weather entity is briefly unavailable
+    # (spec §8b/§9.2) — a missing reading must not close an open escape valve.
+    _out = "unavailable" if outdoor_c is None else f"{outdoor_c:.1f}°C"
+    if (
+        season.preferred_mode == "cool"
+        and season.override_outdoor_below_c is not None
+        and f"{key}:below" in _override_latched
+    ):
+        state.override_active = True
+        state.reason = (
+            f"override: outdoor {_out} ≤ "
+            f"{season.override_outdoor_below_c:.1f}°C — heat allowed"
+        )
+        return state
+    if (
+        season.preferred_mode == "heat"
+        and season.override_outdoor_above_c is not None
+        and f"{key}:above" in _override_latched
+    ):
+        state.override_active = True
+        state.reason = (
+            f"override: outdoor {_out} ≥ "
+            f"{season.override_outdoor_above_c:.1f}°C — cool allowed"
+        )
+        return state
 
     # An active time-of-day window is the more specific statement of intent, so
     # it takes precedence over the season.  While a window covers the current

@@ -1312,7 +1312,6 @@ async def _execute_tool_call(
         from backend.core.manual_control import (
             ManualControlError,
             apply_manual_setpoint,
-            display_unit,
             in_safety_range,
             is_managed_thermostat,
         )
@@ -1326,36 +1325,23 @@ async def _execute_tool_call(
         if not in_safety_range(target_c):
             return {"success": False, "error": f"target_c {target_c:g} is outside the safety range"}
 
-        if settings.home_assistant_token:
-            device_result = await db.execute(
-                select(Device).where(Device.zone_id == uuid.UUID(str(zone_id)))
-            )
-            devices = device_result.scalars().all()
-            climate_device = next(
-                (d for d in devices if d.ha_entity_id and d.type.value == "thermostat"),
-                None,
-            )
-            if climate_device and await is_managed_thermostat(db, climate_device.ha_entity_id):
-                # The whole-house thermostat: a manual override (direction,
-                # HA unit, override recorded) — not a raw write that the
-                # control loop would revert seconds later.
-                unit_zt = await display_unit(db)
-                shown = target_c * 9 / 5 + 32 if unit_zt == "F" else target_c
-                try:
-                    res_zt = await apply_manual_setpoint(db, round(shown, 1), source="chat zone")
-                except ManualControlError as exc:
-                    return {"success": False, "error": str(exc)}
-                return {"success": True, "temperature_set": target_c, "mode": res_zt["mode"]}
-            if climate_device and climate_device.ha_entity_id:
-                async with HAClient(
-                    str(settings.home_assistant_url), settings.home_assistant_token
-                ) as ha:
-                    zt_cfg = await ha.get_config()
-                    zt_is_f = zt_cfg.get("unit_system", {}).get("temperature") == "°F"
-                    zt_value = round(float(target_c) * 9 / 5 + 32, 1) if zt_is_f else float(target_c)
-                    await ha.set_temperature(climate_device.ha_entity_id, zt_value)
-                return {"success": True, "temperature_set": target_c}
-        return {"success": False, "error": "No thermostat device found or HA not configured"}
+        # One path with chat commands (spec §2): no zone thermostat or the
+        # managed one → a manual override (honouring hold_minutes); a
+        # separate zone thermostat → written directly.  Sensor-only zones
+        # (the normal setup) used to fail with "no thermostat device".
+        hold_raw = func_args.get("hold_minutes")
+        hold_h: float | None = None
+        if hold_raw is not None:
+            try:
+                hold_h = float(hold_raw) / 60.0
+            except (TypeError, ValueError):
+                return {"success": False, "error": "hold_minutes must be a number"}
+        err_zt = await _command_set_zone_temp(
+            db, uuid.UUID(str(zone_id)), target_c, "chat zone", duration_hours=hold_h
+        )
+        if err_zt is not None:
+            return {"success": False, "error": err_zt}
+        return {"success": True, "temperature_set": target_c}
 
     elif func_name == "set_device_state":
         device_id = func_args.get("device_id")
@@ -2701,7 +2687,11 @@ async def clear_chat_history(
 
 
 async def _command_set_zone_temp(
-    db: AsyncSession, zone_id: Any, temp_c: float, source: str
+    db: AsyncSession,
+    zone_id: Any,
+    temp_c: float,
+    source: str,
+    duration_hours: float | None = None,
 ) -> str | None:
     """Set a zone's temperature from a chat command.  Returns an error or None.
 
@@ -2729,7 +2719,9 @@ async def _command_set_zone_temp(
         unit = await display_unit(db)
         shown = temp_c * 9 / 5 + 32 if unit == "F" else temp_c
         try:
-            await apply_manual_setpoint(db, round(shown, 1), source=source)
+            await apply_manual_setpoint(
+                db, round(shown, 1), source=source, duration_hours=duration_hours
+            )
         except ManualControlError as exc:
             return str(exc)
         return None

@@ -129,7 +129,10 @@ class Zone(Base):
             return False
         if not self.exclude_months:
             return True  # year-round exclusion
-        return datetime.now(UTC).month in self.exclude_months
+        # The user's local month (Aug 31 21:00 EDT is already Sep in UTC).
+        from backend.core.user_tz import cached_local_now
+
+        return cached_local_now().month in self.exclude_months
 
 
 class Sensor(Base):

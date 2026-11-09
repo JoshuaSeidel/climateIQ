@@ -270,8 +270,11 @@ class House:
         mode_windows._escape_latched.clear()
         seasonal_lock._override_latched.clear()
         user_tz._last_ha_tz = None
+        user_tz._last_resolved = None
         main_mod._preconditioning.clear()
         main_mod._runtime_state_loaded = False
+        main_mod._mode_switch_loaded = False
+        main_mod._gap_handed_back = False
         main_mod._fan_user_owned.clear()
         main_mod._ha_unit_cache = None
         main_mod._primary_climate_cache = None

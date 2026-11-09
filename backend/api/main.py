@@ -47,6 +47,7 @@ from backend.core.manual_control import display_unit as _display_unit
 from backend.core.pattern_engine import OccupancyReading, PatternEngine, ThermalReading
 from backend.core.pid_controller import PIDConfig, PIDController
 from backend.core.rule_engine import RuleEngine
+from backend.core.write_guard import RUN_THRESHOLD_C as _RUN_THRESHOLD_C
 from backend.core.zone_manager import ZoneManager
 from backend.integrations.ha_websocket import HAWebSocketClient
 from backend.models.database import close_db, get_session_maker, init_db
@@ -95,6 +96,11 @@ _notification_service: NotificationService | None = None
 _last_executed_schedules: set[str] = set()
 # Track the last offset-adjusted temperature sent per schedule (schedule_id -> temp_c)
 _last_offset_temp: dict[str, float] = {}
+# Scheduled mode: has control been handed back to the Ecobee's own program
+# for the current gap (no governing schedule)?  Reset whenever a schedule
+# governs or an override pauses control, so the handback happens once when
+# the last schedule ends, after Resume, or when an override expires in a gap.
+_gap_handed_back = False
 # Active-mode LLM optimization state.  Keyed on climate_entity so a multi-
 # thermostat future doesn't cross the streams.  Holds the last change-gate
 # hash and the timestamp of the last real LLM call, so we can enforce both a
@@ -281,6 +287,71 @@ async def _read_fan_percent(ha_client_ref: Any, entity_id: str) -> int | None:
     return 0
 
 
+async def _fan_speed_count(ha_client_ref: Any, entity_id: str) -> int | None:
+    """Number of discrete speeds (from ``percentage_step``), None = continuous."""
+    try:
+        st = await ha_client_ref.get_state(entity_id)
+        step = float((st.attributes or {}).get("percentage_step") or 0) if st else 0.0
+    except Exception:
+        return None
+    if step <= 1.0 or step > 100.0:
+        return None
+    return max(1, round(100.0 / step))
+
+
+async def _fan_readback(ha_client_ref: Any, entity_id: str, requested: int) -> int:
+    """What the fan reports right after our write (falls back to ``requested``)."""
+    got = await _read_fan_percent(ha_client_ref, entity_id)
+    return requested if got is None else got
+
+
+async def _write_fan_pct(
+    ha_client_ref: Any, entity_id: str, pct: int, *, cap: int | None, floor: int = 0
+) -> int:
+    """Set a fan and return what it reports.  Never ends above ``cap``.
+
+    A stepped fan that doesn't publish ``percentage_step`` snaps the request
+    up (50 → 66 on 3 speeds); then step down to the speed below.
+    """
+    if pct <= 0:
+        await ha_client_ref.call_service("fan", "turn_off", target={"entity_id": entity_id})
+        return await _fan_readback(ha_client_ref, entity_id, 0)
+    await ha_client_ref.call_service(
+        "fan", "set_percentage", target={"entity_id": entity_id}, data={"percentage": pct}
+    )
+    actual = await _fan_readback(ha_client_ref, entity_id, pct)
+    req = pct
+    for _ in range(4):  # one-off descent; each try lands a speed lower
+        if cap is None or actual <= cap or req <= floor:
+            break
+        req = max(floor, req - (actual - req))
+        if req <= 0:
+            await ha_client_ref.call_service("fan", "turn_off", target={"entity_id": entity_id})
+        else:
+            await ha_client_ref.call_service(
+                "fan", "set_percentage",
+                target={"entity_id": entity_id}, data={"percentage": req},
+            )
+        actual = await _fan_readback(ha_client_ref, entity_id, max(req, 0))
+    return actual
+
+
+def _fan_snap(pct: int, speeds: int | None, *, down: bool = False) -> int:
+    """The percentage a stepped fan will actually report for ``pct``.
+
+    HA rounds a requested percentage *up* to the next speed (50 → 66 on a
+    3-speed fan); ``down`` picks the highest speed at or below ``pct``
+    instead (for caps).  Tracking the requested value made our own writes
+    look like hand changes and the quiet-hours cap rewrite every tick.
+    """
+    if not speeds or pct <= 0:
+        return max(0, pct)
+    # ±1 absorbs HA's integer rounding (medium on a 3-speed fan reads 66).
+    idx = (pct + 1) * speeds // 100 if down else -(-(pct - 1) * speeds // 100)
+    idx = max(0, min(speeds, idx))
+    return idx * 100 // speeds
+
+
 async def _apply_fan_target(
     ha_client_ref: Any,
     entity_id: str,
@@ -357,8 +428,15 @@ async def _apply_fan_target(
     baseline = int(hist["baseline_pct"])
     override_active = bool(hist.get("override_active"))
 
-    # Enforce baseline floor.
+    # Enforce baseline floor, then snap to a speed the fan really has
+    # (rounding down when a cap applies, so a 50 % cap means 33 %, not 66 %).
     effective_target = max(baseline, target_pct)
+    speeds = await _fan_speed_count(ha_client_ref, entity_id)
+    if speeds:
+        snapped = _fan_snap(effective_target, speeds)
+        if max_pct is not None and snapped > max(baseline, int(max_pct)):
+            snapped = max(baseline, _fan_snap(int(max_pct), speeds, down=True))
+        effective_target = snapped
 
     # Read current so we can no-op if there's no meaningful change.
     current = await _read_fan_percent(ha_client_ref, entity_id)
@@ -398,7 +476,15 @@ async def _apply_fan_target(
         await _persist_fan_baseline()
         return True, f"release_to_baseline({baseline})"
 
-    # Ramp path: raise (or hold) toward effective_target.
+    # Ramp path: raise (or hold) toward effective_target.  Repeating the
+    # request we already made (the fan settled on its nearest speed) is a
+    # no-op, or a stepped fan would be rewritten every tick.
+    if (
+        hist.get("last_req_pct") == effective_target
+        and last_set is not None
+        and current == int(last_set)
+    ):
+        return False, f"already_at({current}, requested {effective_target})"
     if abs(effective_target - current) <= _FAN_HAND_CHANGE_TOLERANCE_PCT // 2:
         # No write needed but keep the override flag consistent — and
         # remember what we hold, so a later hand change is detected.
@@ -408,16 +494,19 @@ async def _apply_fan_target(
         return False, f"already_at({current})"
 
     try:
-        await ha_client_ref.call_service(
-            "fan", "set_percentage",
-            target={"entity_id": entity_id},
-            data={"percentage": effective_target},
+        # Track what the fan actually reports (a stepped fan without
+        # percentage_step snaps 75 → 100), so our own write is never taken
+        # for a hand change.
+        actual = await _write_fan_pct(
+            ha_client_ref, entity_id, effective_target,
+            cap=None if max_pct is None else max(baseline, int(max_pct)), floor=baseline,
         )
     except Exception as exc:
         return False, f"set_failed:{exc}"
-    hist["override_active"] = effective_target > baseline
+    hist["override_active"] = actual > baseline
     hist["last_change_at"] = now
-    hist["last_set_pct"] = effective_target
+    hist["last_req_pct"] = effective_target
+    hist["last_set_pct"] = actual
     if not hist["override_active"]:
         hist["released_at"] = now
     await _persist_fan_baseline()
@@ -457,7 +546,9 @@ async def _enforce_fan_night_cap(ha_client_ref: Any, max_pct: int) -> None:
         if not hist.get("override_active"):
             continue
         baseline = int(hist.get("baseline_pct", 0))
-        ceiling = max(baseline, max(0, int(max_pct)))
+        # A stepped fan can't sit at 50 %: use its highest speed under the cap.
+        speeds = await _fan_speed_count(ha_client_ref, entity_id)
+        ceiling = max(baseline, _fan_snap(max(0, int(max_pct)), speeds, down=True))
         current = await _read_fan_percent(ha_client_ref, entity_id)
         if current is None or current <= ceiling:
             continue
@@ -472,23 +563,16 @@ async def _enforce_fan_night_cap(ha_client_ref: Any, max_pct: int) -> None:
             await _persist_fan_baseline()
             continue
         try:
-            if ceiling == 0:
-                await ha_client_ref.call_service(
-                    "fan", "turn_off",
-                    target={"entity_id": entity_id},
-                )
-            else:
-                await ha_client_ref.call_service(
-                    "fan", "set_percentage",
-                    target={"entity_id": entity_id},
-                    data={"percentage": ceiling},
-                )
+            actual = await _write_fan_pct(
+                ha_client_ref, entity_id, ceiling, cap=ceiling, floor=baseline
+            )
         except Exception as exc:
             logger.warning("Fan night cap: could not lower %s: %s", entity_id, exc)
             continue
-        hist["override_active"] = ceiling > baseline
+        hist["override_active"] = actual > baseline
         hist["last_change_at"] = now
-        hist["last_set_pct"] = ceiling
+        hist["last_req_pct"] = ceiling
+        hist["last_set_pct"] = actual
         if not hist["override_active"]:
             hist["released_at"] = now
         await _persist_fan_baseline()
@@ -862,6 +946,41 @@ async def check_sensor_health() -> None:
 # Tracks the last HVAC mode switch per climate entity so we can enforce a
 # cooldown and prevent rapid heat↔cool oscillation.
 _last_mode_switch: dict[str, tuple[str, datetime]] = {}
+_mode_switch_loaded = False
+
+
+async def _ensure_mode_switch_loaded() -> None:
+    """Restore the last heat/cool/off switch after a restart.
+
+    In memory only, a restart lost the reversal cooldown (spec §4.5) and
+    Learn's "did ClimateIQ turn it off?" check (spec §2), leaving the
+    Ecobee off with its program unable to run.
+    """
+    global _mode_switch_loaded
+    if _mode_switch_loaded:
+        return
+    _mode_switch_loaded = True
+    try:
+        async with get_session_maker()() as _db:
+            saved = await _kv_get(_db, "runtime_last_mode_switch") or {}
+        for ent, (mode, iso) in saved.items():
+            _last_mode_switch.setdefault(str(ent), (str(mode), datetime.fromisoformat(str(iso))))
+    except Exception as exc:
+        logger.debug("Could not restore last mode switch: %s", exc)
+
+
+async def _record_mode_switch(entity: str, mode: str) -> None:
+    """Remember (and persist) a thermostat mode change ClimateIQ made."""
+    await _ensure_mode_switch_loaded()
+    _last_mode_switch[entity] = (mode, datetime.now(UTC))
+    try:
+        async with get_session_maker()() as _db:
+            await _kv_set(
+                _db, "runtime_last_mode_switch",
+                {k: [m, t.isoformat()] for k, (m, t) in _last_mode_switch.items()},
+            )
+    except Exception as exc:
+        logger.debug("Could not persist last mode switch: %s", exc)
 
 # Default minimum seconds between mode reversals (overridden per-call by the
 # `mode_switch_cooldown_minutes` system setting; this constant is the fallback
@@ -939,8 +1058,13 @@ async def _switch_hvac_mode_if_needed(
     db: Any = None,
     zone_avg_c: float | None = None,
     zone_ids: list[Any] | None = None,
+    owner_modes: set[str] | None = None,
 ) -> None:
     """Switch the thermostat to target_mode only when it is not already in that mode.
+
+    ``owner_modes``: the system modes in which the calling loop owns the
+    thermostat (spec §2) — re-checked under the lock, so a tick that started
+    before a mode change can't switch heat/cool for its former owner.
 
     Reads the current state first so we avoid an unnecessary HA service call on
     every execute_schedules / maintain_climate_offset tick.
@@ -985,6 +1109,7 @@ async def _switch_hvac_mode_if_needed(
         # switching to/from "off" (an off schedule, coming back on) is never
         # delayed.
         reversal = {current, target_mode} == {"heat", "cool"}
+        await _ensure_mode_switch_loaded()
         if reversal and not override_cooldown and effective_cooldown_s > 0:
             last = _last_mode_switch.get(climate_entity)
             if last is not None:
@@ -1000,11 +1125,17 @@ async def _switch_hvac_mode_if_needed(
                     return
 
         async with THERMOSTAT_LOCK:
-            if not await _writes_still_permitted(None):
-                logger.info("%s: Learn/override took effect mid-tick — no mode switch", context)
+            if not await _writes_still_permitted(owner_modes):
+                logger.info(
+                    "%s: mode change/Learn/override took effect mid-tick — no mode switch",
+                    context,
+                )
+                return
+            _now_state = await ha_client.get_state(climate_entity)
+            if _now_state is not None and (_now_state.state or "").lower() == target_mode:
                 return
             await ha_client.set_hvac_mode(climate_entity, target_mode)
-            _last_mode_switch[climate_entity] = (target_mode, datetime.now(UTC))
+            await _record_mode_switch(climate_entity, target_mode)
         # Spec §8: one notification per heat/cool/off change.
         await _notify(
             "Thermostat mode",
@@ -1094,6 +1225,10 @@ async def _auto_select_hvac_mode(
         elif on_forbidden_mode:
             # Must leave auto/heat_cool: the lock's side, else by error sign.
             picked = lock or ("heat" if error_c >= 0 else "cool")
+        elif current_mode == "off" and abs(error_c) > _RUN_THRESHOLD_C:
+            # Coming back from an off schedule: "keep the current mode"
+            # would leave rooms 1 °F short with nothing running (spec §5.4).
+            picked = "heat" if error_c > 0 else "cool"
         else:
             return None, False  # inside the dead-band: keep the current mode
 
@@ -1701,6 +1836,7 @@ async def maintain_climate_offset() -> None:
     already handle offset in their own loops, so this task skips those
     modes to avoid conflicts.
     """
+    global _gap_handed_back
 
     from sqlalchemy import select as sa_select
 
@@ -1733,6 +1869,7 @@ async def maintain_climate_offset() -> None:
                 return
             if await _manual_override_active(db):
                 logger.debug("Climate maintenance: manual override active — paused")
+                _gap_handed_back = False
                 return
 
             # ── Determine climate entity ────────────────────────────────
@@ -1782,7 +1919,30 @@ async def maintain_climate_offset() -> None:
                 # No active schedule -- nothing to maintain
                 _last_offset_temp.clear()
                 logger.info("Climate maintenance: no active schedule found")
+                if (
+                    not _gap_handed_back
+                    and config is not None
+                    and config.current_mode == SystemMode.scheduled
+                ):
+                    # Spec §2: in a Scheduled-mode gap the Ecobee's own
+                    # program owns the thermostat.  Hand back once, so an
+                    # offset-compensated hold (or a cleared override's
+                    # setpoint) doesn't keep heating/cooling indefinitely.
+                    async with THERMOSTAT_LOCK:
+                        if await _writes_still_permitted({"scheduled"}):
+                            try:
+                                await ha_client.resume_ecobee_program(
+                                    climate_entity, resume_all=False
+                                )
+                                _gap_handed_back = True
+                                logger.info(
+                                    "Climate maintenance: no schedule governs — "
+                                    "handed back to the Ecobee program"
+                                )
+                            except Exception as exc:
+                                logger.warning("Could not resume the Ecobee program: %s", exc)
                 return
+            _gap_handed_back = False
 
             desired_temp_c = active_schedule.target_temp_c
             zone_ids = active_schedule.zone_ids or None
@@ -1811,6 +1971,7 @@ async def maintain_climate_offset() -> None:
                     cooldown_s=_cooldown_s,
                     db=db,
                     zone_ids=zone_ids,
+                    owner_modes={"scheduled", "follow_me"},
                 )
 
             # ── Apply offset compensation (dead-band + formula) ─────────
@@ -2004,6 +2165,7 @@ async def maintain_climate_offset() -> None:
                             db=db,
                             zone_avg_c=avg_zone_c,
                             zone_ids=zone_ids,
+                            owner_modes={"scheduled", "follow_me"},
                         )
                     else:
                         logger.debug(
@@ -2158,6 +2320,8 @@ async def execute_follow_me_mode() -> None:
 
             if not zones:
                 return
+            _fm_start = await ha_client.get_state(climate_entity)
+            fm_start_mode = str(_fm_start.state or "").lower() if _fm_start else ""
 
             # ── Occupancy (shared inference with Active mode) ───────────
             # None = no occupancy data for the zone.  If no zone has data we
@@ -2199,7 +2363,12 @@ async def execute_follow_me_mode() -> None:
             for zone in zones:
                 occ = await infer_zone_occupancy(str(zone.id), db)
                 if occ is None:
-                    continue
+                    # No fresh signal: keep the last stable state (it can
+                    # only go vacant through the dwell), else unknown.
+                    prev = _zone_occupancy_stable.get(str(zone.id))
+                    if prev is None:
+                        continue
+                    occ = bool(prev["raw"])
                 known += 1
                 # Same dwell hysteresis as Active mode — a brief motion/light
                 # blip must not change the target.
@@ -2245,7 +2414,7 @@ async def execute_follow_me_mode() -> None:
                 await _switch_hvac_mode_if_needed(
                     ha_client, climate_entity, fm_mode, "Follow-me",
                     override_cooldown=fm_urgent, cooldown_s=_fm_cooldown_s,
-                    db=db, zone_ids=fm_zone_ids,
+                    db=db, zone_ids=fm_zone_ids, owner_modes={"follow_me"},
                 )
 
             # ── Final guarded write (spec §5) ───────────────────────────
@@ -2265,10 +2434,23 @@ async def execute_follow_me_mode() -> None:
                 fm_key = f"follow_me:{climate_entity}"
                 written_c = float(outcome.get("setpoint_c") or target_temp_c)
                 fm_last = _active_mode_last_notify.get(fm_key)
-                fm_notify = fm_last is None or (
-                    abs(written_c - float(fm_last["setpoint_c"])) >= _AI_NOTIFY_MIN_DELTA_C
-                    and (datetime.now(UTC) - fm_last["at"]).total_seconds()
-                    >= _AI_NOTIFY_MIN_INTERVAL_S
+                _fm_now = await ha_client.get_state(climate_entity)
+                fm_now_mode = str(_fm_now.state or "").lower() if _fm_now else ""
+                # A tick that switched heat↔cool already sent the switch
+                # notification (spec §8) — record the baseline silently.
+                if fm_now_mode != fm_start_mode:
+                    _active_mode_last_notify[fm_key] = {
+                        "at": datetime.now(UTC),
+                        "setpoint_c": written_c,
+                        "mode": zone_names,
+                    }
+                fm_notify = fm_now_mode == fm_start_mode and (
+                    fm_last is None
+                    or (
+                        abs(written_c - float(fm_last["setpoint_c"])) >= _AI_NOTIFY_MIN_DELTA_C
+                        and (datetime.now(UTC) - fm_last["at"]).total_seconds()
+                        >= _AI_NOTIFY_MIN_INTERVAL_S
+                    )
                 )
                 if fm_notify:
                     unit = (await _display_unit(db)).upper()
@@ -2894,6 +3076,7 @@ async def execute_active_mode() -> None:
                     cooldown_s=_dir_cooldown_s,
                     db=db,
                     zone_ids=direction_zone_ids,
+                    owner_modes={"active"},
                 )
                 # Re-read so the setpoint logic below works in the new mode.
                 hvac_mode, current_target_c, thermostat_current_c = await _read_thermostat()
@@ -4080,6 +4263,24 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
             lux = rdg.lux
         if presence is not None and lux is not None:
             break
+    if presence is None and sensor_ids:
+        # Presence rows are stored on state *change*, so someone sitting
+        # still for >15 min has no recent row.  The last known state still
+        # holds (bounded to a day so a dead sensor eventually stops counting).
+        last_p = (
+            await db.execute(  # type: ignore[attr-defined]
+                sa_select(SensorReading.presence)
+                .where(
+                    SensorReading.sensor_id.in_(sensor_ids),
+                    SensorReading.presence.is_not(None),
+                    SensorReading.recorded_at >= datetime.now(UTC) - _td(hours=24),
+                )
+                .order_by(SensorReading.recorded_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if last_p is not None:
+            presence = bool(last_p)
 
     # -- Signal 1: Direct presence sensor (weight: 0.6) --
     presence_score: float | None = None
@@ -4900,24 +5101,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                         url=str(settings.home_assistant_url),
                         token=settings.home_assistant_token,
                     )
-                    await _rest_client.connect()
+                    # Assigned even if HA is down right now: the client
+                    # auto-connects on its next request.  Leaving it None
+                    # (HA starting after a host reboot) stopped every
+                    # control loop until the add-on was restarted.
                     _deps._ha_client = _rest_client
-                    logger.info("HA REST client initialized for live thermostat data")
+                    try:
+                        await _rest_client.connect()
+                        logger.info("HA REST client initialized for live thermostat data")
+                    except Exception as e:
+                        logger.warning("HA not reachable yet (%s) — will connect on demand", e)
             except Exception as e:
                 logger.warning("Failed to initialize HA REST client: %s", e)
 
             # The websocket's unit fallback must be HA's unit *system*, not
-            # the user's display preference (they can differ).
-            try:
+            # the user's display preference (they can differ).  Retried in
+            # the background until HA answers.
+            async def _sync_ws_unit() -> None:
                 import backend.api.dependencies as _unit_deps
 
-                if app_state.ha_ws is not None and _unit_deps._ha_client is not None:
-                    _ha_cfg = await _unit_deps._ha_client.get_config()
-                    _ha_unit = _ha_cfg.get("unit_system", {}).get("temperature")
-                    if _ha_unit:
-                        app_state.ha_ws.set_ha_temp_unit(_ha_unit)
-            except Exception as e:
-                logger.debug("Could not read HA unit system for websocket: %s", e)
+                for _attempt in range(120):  # ~1 h
+                    try:
+                        if app_state.ha_ws is not None and _unit_deps._ha_client is not None:
+                            _ha_cfg = await _unit_deps._ha_client.get_config()
+                            _ha_unit = _ha_cfg.get("unit_system", {}).get("temperature")
+                            if _ha_unit:
+                                app_state.ha_ws.set_ha_temp_unit(_ha_unit)
+                                return
+                    except Exception as e:
+                        logger.debug("Could not read HA unit system for websocket: %s", e)
+                    await asyncio.sleep(30)
+
+            _bg_unit_task = asyncio.create_task(_sync_ws_unit())
+            _background_tasks.add(_bg_unit_task)
+            _bg_unit_task.add_done_callback(_background_tasks.discard)
 
         # Initialize NotificationService singleton (requires HA client)
         if settings.home_assistant_token:

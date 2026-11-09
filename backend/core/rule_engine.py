@@ -81,7 +81,9 @@ class RuleEngine:
             delta = humidity - target_humidity
             if abs(delta) >= self._humidity_delta:
                 preferred_type = DeviceType.dehumidifier if delta > 0 else DeviceType.humidifier
-                device = self._select_device(zone, preferred={preferred_type})
+                # Only a real (de)humidifier — never fall back to another
+                # device (it turned on a space heater for "humidity high").
+                device = self._select_device(zone, preferred={preferred_type}, strict=True)
                 if device:
                     reason = "humidity high" if delta > 0 else "humidity low"
                     params: dict[str, float | int | str | bool] = {
@@ -216,14 +218,19 @@ class RuleEngine:
         zone: ZoneState,
         *,
         preferred: set[DeviceType] | None = None,
+        strict: bool = False,
     ) -> DeviceState | None:
         devices = list(zone.devices.values())
         if not devices:
             return None
         if preferred:
+            wanted = {p.value for p in preferred}
             for device in devices:
-                if isinstance(device.type, DeviceType) and device.type in preferred:
+                dtype = getattr(device.type, "value", device.type)
+                if str(dtype) in wanted:
                     return device
+            if strict:
+                return None
         for device in devices:
             caps = device.capabilities or {}
             if caps.get("supports_temperature"):

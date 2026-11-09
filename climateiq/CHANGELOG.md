@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.0.93] - 2026-11-09
+
+Heating/cooling correctness, round 3. Four fresh reviews against `docs/CONTROL_SPEC.md` confirmed 19 bugs. Each is fixed, has a regression test (`backend/tests/scenario/test_round3_findings.py`, `test_r3_*.py`), and is recorded in the spec.
+
+### Fixed — scheduled control
+- **Furnace cycled on/off every minute** when a room hovered ½°F from target. The guard now has hysteresis: once heat (or cool) had to run, it keeps running until the rooms reach target.
+- **A compensated setpoint outlived its schedule.** When the last schedule ends (or after Resume, or when an override expires in a gap), Scheduled mode now hands control back to the Ecobee's own program.
+- **After an "off" schedule**, the next schedule now turns heat/cool back on when rooms are more than ½°F off target, instead of waiting for 1°F.
+
+### Fixed — manual control & modes
+- **Stale ticks could switch heat/cool after a mode change.** Heat/cool switches now re-check that the loop still owns the thermostat, as setpoint writes already did.
+- **A rejected or failed override deleted the override already running.** It now changes nothing.
+- **Overriding while the thermostat was off** now turns on heat or cool so the override actually holds.
+- **Chat:** "set the bedroom to 70" works for sensor-only rooms, and `hold_minutes` is honoured.
+- **Dashboard** shows the override temperature and "until" time during an override; quick actions refresh the badge immediately.
+
+### Fixed — AI, Follow-Me, fans
+- **Stepped fans (low/medium/high):**
+  - The quiet-hours cap uses the highest speed at or below the cap (3-speed: low), rather than rewriting the fan every tick.
+  - The fan's own speed snapping is no longer mistaken for a hand change, so raised fans are released again.
+- **Follow-Me:**
+  - It no longer sets the house back when a presence sensor has stayed "on" for 15+ minutes.
+  - A heat↔cool switch sends one notification.
+
+### Fixed — robustness
+- **Excluded months** use the local month, not UTC's. A summer-only basement exclusion ended at 8pm on Aug 31 and flipped the house to heat.
+- **A brief weather outage** no longer closes an open seasonal escape valve.
+- **HA down at add-on startup** no longer leaves control dead until a restart.
+- **Restarts:**
+  - Learn no longer leaves the Ecobee off.
+  - The heat↔cool cooldown is kept.
+- **Changing the thermostat entity in Settings** takes effect immediately for override re-assertion and drift correction.
+- **The rule engine** no longer turns on a non-humidity device (e.g. a space heater) for humidity.
+- **Feb 29** is covered by the winter season.
+
 ## [1.0.92] - 2026-11-09
 
 Heating/cooling correctness, round 2. Four fresh reviews against `docs/CONTROL_SPEC.md` found more bugs. Each fix below has a scenario regression test in `backend/tests/scenario/test_round2_findings.py`, and the spec records each decision.

@@ -45,7 +45,7 @@ def parse_tz(value: Any) -> ZoneInfo | None:
         return None
 
 
-async def resolve_user_tz(db: Any, ha_client: Any) -> ZoneInfo:
+async def _resolve_user_tz(db: Any, ha_client: Any) -> ZoneInfo:
     """Return the user's timezone (see module docstring for the order)."""
     if db is not None:
         try:
@@ -88,6 +88,24 @@ async def resolve_user_tz(db: Any, ha_client: Any) -> ZoneInfo:
 
 
 _CACHE_KEY = "ha_timezone_cache"
+
+
+# Last zone any caller resolved — for sync code (ORM properties) that can't
+# await a lookup.  Every control loop resolves it each tick.
+_last_resolved: ZoneInfo | None = None
+
+
+async def resolve_user_tz(db: Any, ha_client: Any) -> ZoneInfo:
+    """The user's timezone (spec §3.3): DB setting → HA → caches → UTC."""
+    global _last_resolved
+    tz = await _resolve_user_tz(db, ha_client)
+    _last_resolved = tz
+    return tz
+
+
+def cached_local_now() -> datetime:
+    """Local "now" in the last resolved timezone (UTC before the first lookup)."""
+    return datetime.now(_last_resolved or _last_ha_tz or _UTC)
 
 
 async def _persist_ha_tz(db: Any, name: str) -> None:

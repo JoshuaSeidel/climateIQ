@@ -373,8 +373,15 @@ class HAWebSocketClient:
                 if domain not in _SENSOR_DOMAINS:
                     continue
 
-                # Entity filter (if configured)
-                if self._entity_filter and entity_id not in self._entity_filter:
+                # Entity filter (if configured).  Thermostats always pass:
+                # the managed one can be changed in Settings at runtime, and
+                # its events drive override re-assertion and drift
+                # correction (the climate handler checks the entity itself).
+                if (
+                    self._entity_filter
+                    and entity_id not in self._entity_filter
+                    and domain != "climate"
+                ):
                     logger.debug("WS filter dropped entity %s (not in %d-entry filter)", entity_id, len(self._entity_filter))
                     continue
 

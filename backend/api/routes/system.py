@@ -105,13 +105,14 @@ async def _ecobee_handover(db: AsyncSession, new_mode: SystemMode, _logger: Any)
             modes = [str(m) for m in (state.attributes.get("hvac_modes") or [])]
             # Only if *ClimateIQ* turned it off (an off-schedule) — a
             # thermostat the user switched off stays off.
+            await _main._ensure_mode_switch_loaded()
             last = _main._last_mode_switch.get(entity)
             we_turned_off = last is not None and last[0] == "off"
             if str(state.state or "").lower() == "off" and we_turned_off:
                 for native in ("heat_cool", "auto"):
                     if native in modes:
                         await ha_client.set_hvac_mode(entity, native)
-                        _main._last_mode_switch[entity] = (native, datetime.now(UTC))
+                        await _main._record_mode_switch(entity, native)
                         _logger.info("Learn: ClimateIQ had turned it off — set to '%s'", native)
                         break
         except Exception as exc:
@@ -411,11 +412,12 @@ async def execute_quick_action(
 
         async def _preset(name: str, label: str) -> QuickActionResponse:
             from backend.core.control_lock import THERMOSTAT_LOCK
-            from backend.core.manual_override import clear_override
+            from backend.core.manual_override import restore_override, snapshot_override
 
             # Record first, then write (no loop tick can slip in between);
-            # roll back if the write fails.
+            # on failure put back whatever override was running.
             async with THERMOSTAT_LOCK:
+                previous = await snapshot_override(db)
                 await set_override(db, None, source=f"quick-action:{action}")
                 try:
                     await _ha_client.call_service(
@@ -423,7 +425,7 @@ async def execute_quick_action(
                         data={"preset_mode": name}, target={"entity_id": entity},
                     )
                 except BaseException:
-                    await clear_override(db, reason="preset write failed")
+                    await restore_override(db, previous, reason="preset write failed")
                     raise
             return QuickActionResponse(
                 success=True, message=f"Set to {label}", action=action,

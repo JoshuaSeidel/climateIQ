@@ -134,16 +134,19 @@ async def apply_manual_setpoint(
     # recorded *before* any write (so no loop tick can slip in between and
     # undo it), and rolled back if the write fails.
     from backend.core.control_lock import THERMOSTAT_LOCK
-    from backend.core.manual_override import clear_override
+    from backend.core.manual_override import restore_override, snapshot_override
 
     async with THERMOSTAT_LOCK:
+        previous = await snapshot_override(db)
         expires = await set_override(
             db, requested_c, source=source, duration_hours=duration_hours
         )
         try:
             actual = await _write_manual(db, ha, entity, requested_c, force_mode)
         except BaseException:
-            await clear_override(db, reason="manual write failed")
+            # A rejected/failed request changes nothing: the override that
+            # was running (if any) stays.
+            await restore_override(db, previous, reason="manual write failed")
             raise
     return await _finish_manual(db, entity, value, unit, requested_c, actual, source, expires)
 
@@ -162,6 +165,15 @@ async def _write_manual(
             ha, entity, requested_c, db=db, zone_ids=None
         )
         mode = picked
+    if mode is None:
+        # Inside the dead-band the selector keeps the current mode — but an
+        # off/auto thermostat would then never hold the override (and the
+        # override pauses every loop).  Pick by the sign of the error.
+        cur = await ha.get_state(entity)
+        if str(cur.state or "").lower() not in ("heat", "cool"):
+            avg_c, _ = await get_avg_zone_temp_c(db, None, ha)
+            if avg_c is not None:
+                mode = "heat" if requested_c >= avg_c else "cool"
     if mode in ("heat", "cool"):
         allowed = await main_mod._direction_allowed(db, ha, mode, None, None)
         if not allowed:
@@ -169,7 +181,7 @@ async def _write_manual(
         state = await ha.get_state(entity)
         if str(state.state or "").lower() != mode:
             await ha.set_hvac_mode(entity, mode)
-            main_mod._last_mode_switch[entity] = (mode, datetime.now().astimezone())
+            await main_mod._record_mode_switch(entity, mode)
     state = await ha.get_state(entity)
     actual = str(state.state or "").lower()
     if actual in ("heat", "cool"):

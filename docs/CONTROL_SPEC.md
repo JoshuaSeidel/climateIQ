@@ -26,7 +26,7 @@ Exactly one owner per situation.  Every other path must not write.
 | System mode | Owner of setpoint + heat/cool mode |
 |---|---|
 | **Learn** | Nobody.  Control is handed back to the Ecobee's own program (resume program, restore its occupancy features; only if ClimateIQ itself last switched it `off`, set its own `heat_cool`/`auto` — an `off` the user chose stays off).  No schedule firing, preconditioning, maintenance, drift correction, AI, or Follow-Me writes. |
-| **Scheduled** | Schedule control: `maintain_climate_offset` (every minute) for whichever schedule governs (§3, §7).  `execute_schedules` never writes — it only sends "Schedule Activated" and decides preconditioning.  Drift correction only re-runs maintenance. |
+| **Scheduled** | Schedule control: `maintain_climate_offset` (every minute) for whichever schedule governs (§3, §7).  **[Decision]** In a gap (nothing governs) the Ecobee's own program owns the thermostat: ClimateIQ hands back once (resume program) when the last schedule ends, after Resume, or when an override expires in a gap.  `execute_schedules` never writes — it only sends "Schedule Activated" and decides preconditioning.  Drift correction only re-runs maintenance. |
 | **Follow-Me** | If a schedule is active → schedule control exactly as in Scheduled mode.  Only when **no** schedule is active does the Follow-Me loop control by occupancy. **[Decision]** Schedules are binding in every automatic mode. |
 | **Active (AI)** | `execute_active_mode`, bounded by the schedule guard (§6).  The final guarded write runs every tick, even when the LLM is skipped or unavailable (formula fallback). |
 
@@ -42,6 +42,11 @@ Overrides on top of any automatic mode:
   `duration_hours` if given (max 24 h), or **Resume**.  Resume, switching
   system mode, and emergency shutoff clear it immediately.  If the Ecobee
   drops the hold itself, the override setpoint is re-asserted.
+- A rejected or failed manual request changes nothing — an override
+  already running stays.  If the thermostat is `off`/`auto`, the override
+  picks heat or cool by the sign of (requested − rooms) so it actually
+  holds.  Chat's zone tool and commands use the same path (sensor-only
+  zones included, `hold_minutes` honoured).
 - **Resume** (quick action, dial long-press, chat cancel): clears the
   override and hands control to its owner — the Ecobee program in Learn,
   otherwise the owning loop runs immediately.
@@ -51,7 +56,8 @@ Overrides on top of any automatic mode:
 - "Override" in the dashboard/dial/API means **only** this ClimateIQ
   override (`is_override`, `override_temp`, `override_until`) — never an
   Ecobee hold, which ClimateIQ itself creates on every write.
-- **Every automatic write re-checks** the system mode and override right
+- **Every automatic write — setpoint and heat/cool switch —
+  re-checks** that its loop still owns the thermostat and the override right
   before writing, under the single thermostat lock that manual writes, mode
   changes and emergency shutoff also take, so an emergency shutoff / Learn /
   override issued during a long tick (LLM call) always wins.
@@ -92,7 +98,8 @@ Overrides on top of any automatic mode:
    schedule's zones (empty list = all non-excluded zones).
 2. Switch to heat when zones are more than the dead-band (0.6 °C ≈ 1 °F) below
    target; to cool when more than the dead-band above.  Inside the dead-band,
-   keep the current mode.
+   keep the current mode — except `off` (after an off schedule): leave it once
+   rooms are past the §5.4 run threshold.
 3. Never select the thermostat's own `auto`/`heat_cool`; move off it.
 4. Restrictions, in order, can only *forbid* a direction:
    a schedule set to `off` → off;
@@ -125,7 +132,9 @@ Overrides on top of any automatic mode:
    (and ≥ target); cool mirror.  This threshold is smaller than the 1 °F
    direction dead-band, so a room 1 °F short in heat mode still gets heat.
    The setpoint never exceeds target ± max offset (§5.2), even if the room
-   never warms (closed vent, stuck sensor).
+   never warms (closed vent, stuck sensor).  Hysteresis: once it had to run,
+   that setpoint may stand until the rooms reach target (no on/off cycling
+   when a room hovers at the threshold).
 5. **Time-window / lock block:** if the current mode's direction is forbidden,
    park the setpoint 1 °F past the thermostat reading (heat: below; cool:
    above), or at the safety limit if there is no reading.  This is applied
@@ -160,8 +169,11 @@ Overrides on top of any automatic mode:
     the offset formula; the guarded write still happens.
 3. Heat/cool selection follows §4 every tick.
 4. Fans: only zones with `allow_fan_control`; never below the user's baseline;
-   quiet-hours cap (default 50 % 19:00–07:00); fans changed by hand are left
-   alone; raised fans are released when the governing zones reach target;
+   quiet-hours cap (default 50 % 19:00–07:00) — on a stepped fan the
+   highest speed at or below the cap (3-speed: low); the value the fan
+   actually reports is tracked, so its own speed snapping is never mistaken
+   for a hand change and a capped fan isn't rewritten each tick; fans
+   changed by hand are left alone; raised fans are released when the governing zones reach target;
    override state survives restarts.
 
 ## 7. Preconditioning (starting early)
@@ -180,7 +192,9 @@ Overrides on top of any automatic mode:
 ## 6b. Follow-Me
 
 1. Only in gaps (§2).  Occupancy from the shared inference
-   (`infer_zone_occupancy`); if no zone has occupancy data, no change.
+   (`infer_zone_occupancy`); a presence sensor's last state holds until it
+   changes (up to 24 h); a zone with no fresh signal keeps its last stable
+   state; if no zone has occupancy data, no change.
 2. Occupied zones → their comfort-band midpoints.  Nobody home → a 2 °C
    setback from the house midpoint in the energy-saving direction of the
    current mode (no fixed 18 °C).  The setback **never switches heat↔cool**
@@ -205,6 +219,17 @@ threshold.
 ## 9. Robustness
 
 1. A failure reading one sensor/entity never aborts the whole tick.
+   If HA is unreachable when the add-on starts, control resumes on its own
+   once HA is up (the HA client connects on demand; no restart needed).
+   Thermostat events always reach the drift/override handler, even right
+   after the thermostat entity is changed in Settings.
+1a. Seasonal "excluded months" use the local month, not UTC's.  A missing
+   outdoor reading leaves the seasonal escape valve as it was (latched),
+   and a season saved as ending Feb 28 also covers Feb 29.
+1b. The last heat/cool/off switch survives restarts (reversal cooldown,
+   Learn's "did ClimateIQ turn it off" check).
+1c. The rule engine's humidity actions only ever turn on a humidifier or
+   dehumidifier — never a fallback device.
 2. Missing data → do nothing rather than guess (no zone readings → no
    direction change; no thermostat reading → no compensation).
 3. Every loop is idempotent: running it twice in a row with unchanged inputs

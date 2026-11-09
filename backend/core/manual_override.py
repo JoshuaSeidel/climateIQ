@@ -142,3 +142,31 @@ async def clear_override(db: Any, *, reason: str, expected_set_at: str | None = 
     await db.delete(row)
     await db.commit()
     logger.info("Manual override cleared (%s)", reason)
+
+
+async def snapshot_override(db: Any) -> dict[str, Any] | None:
+    """The raw stored override (for restoring if a new one fails)."""
+    row = await _row(db)
+    if row is None or not row.value:
+        return None
+    return dict(row.value)
+
+
+async def restore_override(db: Any, snapshot: dict[str, Any] | None, *, reason: str) -> None:
+    """Put back the override that was in place before a failed request.
+
+    A rejected or failed manual request must change nothing (spec §2) — it
+    used to delete the override that was already running.
+    """
+    from backend.models.database import SystemSetting
+
+    if snapshot is None:
+        await clear_override(db, reason=reason)
+        return
+    row = await _row(db)
+    if row is None:
+        db.add(SystemSetting(key=_KEY, value=snapshot))
+    else:
+        row.value = snapshot
+    await db.commit()
+    logger.info("Manual override restored (%s)", reason)
