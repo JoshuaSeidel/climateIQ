@@ -1236,10 +1236,15 @@ async def execute_schedules() -> None:
                 # ── Preconditioning: start HVAC early if needed ─────────
                 precondition_key = f"precondition:{schedule.id}:{now_local.strftime('%Y-%m-%d')}"
                 seconds_until_start = (sched_dt - now_local).total_seconds()
+                from backend.core.schedule_guard import other_schedule_active
+
                 if (
                     seconds_until_start > 120
                     and precondition_key not in _last_executed_schedules
                     and app_state.zone_manager
+                    # Never start early while another schedule is active —
+                    # it would override what the user set for right now.
+                    and other_schedule_active(list(schedules), schedule.id, now_local) is None
                 ):
                     # Fetch outdoor temp once per pass (from the weather cache
                     # populated by poll_weather_data). Weather may be unavailable
@@ -1766,7 +1771,9 @@ async def maintain_climate_offset() -> None:
                     continue  # already started — normal selection applies
                 if precond_start is None or p_start < precond_start:
                     precond_sched, precond_start = schedule, p_start
-            if precond_sched is not None:
+            # Only in a gap between schedules: an active schedule (e.g.
+            # Sleeping until 06:30) always wins over the next one's warm-up.
+            if precond_sched is not None and active_schedule is None:
                 logger.info(
                     "Climate maintenance: preconditioning for '%s' (starts %s) governs",
                     precond_sched.name, precond_sched.start_time,
@@ -2970,7 +2977,9 @@ async def execute_active_mode() -> None:
                 precond_key = (
                     f"precondition:{upcoming_schedule.id}:{now_local.strftime('%Y-%m-%d')}"
                 )
-                if precond_key in _last_executed_schedules:
+                # Only in a gap between schedules — an active schedule
+                # always wins over the next one's warm-up.
+                if precond_key in _last_executed_schedules and active_schedule is None:
                     preconditioning = True
                     logger.debug(
                         "Active-mode: preconditioning for '%s' in progress — it governs",

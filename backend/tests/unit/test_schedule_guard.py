@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from types import SimpleNamespace
+
 import pytest
 
 from backend.core.schedule_guard import (
     enforce_schedule_setpoint,
     moves_toward_target,
+    other_schedule_active,
     precondition_allowed,
+    schedule_active_at,
 )
 
 # Bedtime: nursery target 20°C (68°F).
@@ -89,3 +94,31 @@ class TestPreconditionAllowed:
 
     def test_no_reading_skips(self) -> None:
         assert not precondition_allowed(None, 22.2, "heat")
+
+
+# Regression: 2026-11-09 05:15 — Daytime's warm-up overrode Sleeping.
+_ALL_DAYS = (0, 1, 2, 3, 4, 5, 6)
+
+
+def _sched(sid: str, start: str, end: str) -> SimpleNamespace:
+    return SimpleNamespace(id=sid, days_of_week=list(_ALL_DAYS), start_time=start, end_time=end)
+
+
+class TestOtherScheduleActive:
+    def test_sleeping_blocks_daytime_warmup_before_dawn(self) -> None:
+        sleeping = _sched("sleep", "20:00", "06:30")
+        daytime = _sched("day", "06:30", "18:00")
+        found = other_schedule_active([sleeping, daytime], "day", datetime(2026, 11, 9, 5, 15))
+        assert found is sleeping
+
+    def test_gap_allows_warmup(self) -> None:
+        daytime = _sched("day", "06:30", "18:00")
+        evening = _sched("oliver", "18:00", "20:00")
+        assert other_schedule_active([daytime, evening], "day", datetime(2026, 11, 9, 5, 15)) is None
+
+    def test_schedule_active_at_wraps_midnight(self) -> None:
+        days = list(_ALL_DAYS)
+        assert schedule_active_at(days, "20:00", "06:30", datetime(2026, 11, 9, 23, 0))
+        assert schedule_active_at(days, "20:00", "06:30", datetime(2026, 11, 9, 6, 30))
+        assert not schedule_active_at(days, "20:00", "06:30", datetime(2026, 11, 9, 12, 0))
+        assert not schedule_active_at([5, 6], "20:00", "06:30", datetime(2026, 11, 9, 23, 0))

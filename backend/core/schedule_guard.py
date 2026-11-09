@@ -19,6 +19,9 @@ than, plain Schedule mode.
 
 from __future__ import annotations
 
+from datetime import datetime, time
+from typing import Any
+
 # Focus-zone error (°C) inside which the zones count as "on target".  Matches
 # the Active-mode steady-state gate.
 SCHEDULE_DEADBAND_C: float = 0.5
@@ -140,3 +143,60 @@ def precondition_allowed(
     if gap_c < -deadband_c:
         return "cool" in mode
     return False
+
+
+def schedule_active_at(
+    days_of_week: list[int] | None,
+    start_time: str,
+    end_time: str | None,
+    now_local: datetime,
+) -> bool:
+    """Whether a schedule's window contains ``now_local`` (local wall time).
+
+    Same rules as the scheduler: ``days_of_week`` 0=Mon, no end = until
+    23:59, and an end before the start wraps past midnight.
+    """
+    if now_local.weekday() not in (days_of_week or []):
+        return False
+    try:
+        s_h, s_m = map(int, str(start_time).split(":")[:2])
+        start_t = time(s_h, s_m)
+    except (ValueError, TypeError):
+        return False
+    end_t = time(23, 59)
+    if end_time:
+        try:
+            e_h, e_m = map(int, str(end_time).split(":")[:2])
+            end_t = time(e_h, e_m)
+        except (ValueError, TypeError):
+            pass
+    cur = now_local.time().replace(second=0, microsecond=0)
+    if end_t < start_t:
+        return cur >= start_t or cur <= end_t
+    return start_t <= cur <= end_t
+
+
+def other_schedule_active(
+    schedules: list[Any],
+    upcoming_id: Any,
+    now_local: datetime,
+) -> Any | None:
+    """Return a schedule (other than ``upcoming_id``) that is active right now.
+
+    Preconditioning must never override a schedule the user set for the
+    current time: with one thermostat, warming the house for the 6:30
+    "Daytime" schedule also heats the bedrooms that the still-active
+    "Sleeping" schedule wants at 69°F.  Early starts only happen in gaps
+    between schedules.
+    """
+    for sched in schedules:
+        if getattr(sched, "id", None) == upcoming_id:
+            continue
+        if schedule_active_at(
+            getattr(sched, "days_of_week", None),
+            getattr(sched, "start_time", ""),
+            getattr(sched, "end_time", None),
+            now_local,
+        ):
+            return sched
+    return None

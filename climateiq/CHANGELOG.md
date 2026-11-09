@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.90] - 2026-11-09
+
+### Fixed
+- **An upcoming schedule's warm-up overrode the schedule still in effect.** At 05:00 the system started preconditioning for "Daytime" (72°F at 06:30, Foyer/Kitchen/Office/Living/Dining at ~70°F, 47°F outside). Since 1.0.87, preconditioning governed climate maintenance even while "Sleeping" (69°F, Master Bedroom + Oliver's Room, until 06:30) was active. The thermostat was held in heat at 74°F, and with one thermostat the bedrooms reached 74°F. Preconditioning now only starts, and only governs maintenance or AI mode, when no other schedule is active. An active schedule always wins until it ends. New helpers: `schedule_guard.schedule_active_at()` and `other_schedule_active()`.
+
 ## [1.0.89] - 2026-11-07
 
 ### Security
