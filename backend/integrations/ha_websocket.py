@@ -21,6 +21,8 @@ from websockets.asyncio.client import ClientConnection
 
 logger = logging.getLogger(__name__)
 
+_HANDSHAKE_TIMEOUT_S = 10.0
+
 # Domains we care about for sensor ingestion
 _SENSOR_DOMAINS = frozenset({"sensor", "binary_sensor", "climate", "fan", "cover", "switch"})
 
@@ -253,6 +255,16 @@ class HAWebSocketClient:
     # Internal — connection & auth
     # ------------------------------------------------------------------
 
+    async def _recv_handshake(self) -> Any:
+        """recv() during connect/auth, bounded so a silent server can't hang startup."""
+        ws = self._ws
+        if ws is None:
+            raise HAWebSocketError("WebSocket not open")
+        try:
+            return await asyncio.wait_for(ws.recv(), timeout=_HANDSHAKE_TIMEOUT_S)
+        except TimeoutError as exc:
+            raise HAWebSocketError("Timed out waiting for HA during handshake") from exc
+
     async def _open_and_auth(self) -> None:
         """Open a WebSocket connection and perform HA authentication."""
         try:
@@ -268,7 +280,7 @@ class HAWebSocketClient:
             raise HAWebSocketError(f"Connection failed: {exc}") from exc
 
         # Wait for auth_required
-        raw = await self._ws.recv()
+        raw = await self._recv_handshake()
         msg = json.loads(raw)
         if msg.get("type") != "auth_required":
             raise HAWebSocketError(f"Expected auth_required, got: {msg.get('type')}")
@@ -284,7 +296,7 @@ class HAWebSocketClient:
         )
 
         # Wait for auth response
-        raw = await self._ws.recv()
+        raw = await self._recv_handshake()
         msg = json.loads(raw)
         if msg.get("type") == "auth_invalid":
             raise HAWebSocketAuthError(
@@ -307,7 +319,7 @@ class HAWebSocketClient:
             )
         )
 
-        raw = await self._ws.recv()
+        raw = await self._recv_handshake()
         result = json.loads(raw)
         if not result.get("success", False):
             raise HAWebSocketError(f"Failed to subscribe to state_changed: {result}")

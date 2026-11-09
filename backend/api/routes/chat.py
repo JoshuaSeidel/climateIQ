@@ -1139,30 +1139,44 @@ def _normalize_parsed_command(
     unit = _parse_temp_unit(str(parsed.get("unit")) if parsed.get("unit") else None, default_unit)
 
     if action == "set_temperature":
-        temp_val = parsed.get("temperature") or parsed.get("temperature_c") or parsed.get("temp")
-        if temp_val is None:
-            temp_float = None
-        else:
+        # ``temperature_c`` (from parse_command) is already °C; raw
+        # ``temperature``/``temp`` (LLM path) is in ``unit``.
+        temp_val = parsed.get("temperature") or parsed.get("temp")
+        already_c = False
+        if temp_val is None and parsed.get("temperature_c") is not None:
+            temp_val, already_c = parsed.get("temperature_c"), True
+        temp_float = None
+        if temp_val is not None:
             try:
                 temp_float = float(temp_val)
             except (TypeError, ValueError):
                 temp_float = None
         if temp_float is not None:
-            normalized["temperature_c"] = _convert_to_c(temp_float, unit)
-            normalized["input_unit"] = unit
+            if already_c:
+                normalized["temperature_c"] = temp_float
+                normalized["input_unit"] = _parse_temp_unit(parsed.get("input_unit"), unit)
+            else:
+                normalized["temperature_c"] = _convert_to_c(temp_float, unit)
+                normalized["input_unit"] = unit
 
     if action == "adjust_temperature":
-        amount_val = parsed.get("amount") or parsed.get("amount_c")
-        if amount_val is None:
-            amount_float = None
-        else:
+        amount_val = parsed.get("amount")
+        amount_already_c = False
+        if amount_val is None and parsed.get("amount_c") is not None:
+            amount_val, amount_already_c = parsed.get("amount_c"), True
+        amount_float = None
+        if amount_val is not None:
             try:
                 amount_float = float(amount_val)
             except (TypeError, ValueError):
                 amount_float = None
         if amount_float is not None:
-            normalized["amount_c"] = _convert_delta_to_c(amount_float, unit)
-            normalized["input_unit"] = unit
+            if amount_already_c:
+                normalized["amount_c"] = amount_float
+                normalized["input_unit"] = _parse_temp_unit(parsed.get("input_unit"), unit)
+            else:
+                normalized["amount_c"] = _convert_delta_to_c(amount_float, unit)
+                normalized["input_unit"] = unit
 
     return normalized
 

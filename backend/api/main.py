@@ -159,7 +159,8 @@ _FAN_USER_OWNED_REDIS_KEY = "climateiq:fan_user_owned"
 
 
 # Longer than this between observations → the dwell restarts.
-_OCCUPANCY_OBSERVE_GAP_S = 5 * 60
+# Longer than two Active-mode ticks (5 min each, plus jitter): only a real outage restarts the dwell.
+_OCCUPANCY_OBSERVE_GAP_S = 11 * 60
 
 
 def _stable_occupancy(zone_id: str, raw: bool) -> bool:
@@ -833,6 +834,8 @@ async def cleanup_old_readings() -> None:
 # Track which sensors we've already notified about to avoid spamming
 # every 10 minutes. Cleared when the sensor comes back online (last_seen updates).
 _offline_notified: set[str] = set()
+_offline_loaded = False
+_OFFLINE_KEY = "runtime_offline_notified"
 
 
 async def check_sensor_health() -> None:
@@ -868,6 +871,17 @@ async def check_sensor_health() -> None:
             )
             stale_sensors = result.scalars().all()
             stale_ids = {str(s.id) for s in stale_sensors}
+
+            # Survive restarts: one push per offline episode, not per boot.
+            global _offline_loaded
+            if not _offline_loaded:
+                try:
+                    _offline_notified.update(
+                        str(k) for k in (await _kv_get(db, _OFFLINE_KEY) or [])
+                    )
+                    _offline_loaded = True
+                except Exception as load_err:
+                    logger.warning("Could not restore offline-sensor state: %s", load_err)
 
             # Clear notification state for sensors that came back online
             _offline_notified.difference_update(_offline_notified - stale_ids)
@@ -919,6 +933,10 @@ async def check_sensor_health() -> None:
                 if sensor_key in _offline_notified:
                     continue
                 _offline_notified.add(sensor_key)
+                try:
+                    await _kv_set(db, _OFFLINE_KEY, sorted(_offline_notified))
+                except Exception as save_err:
+                    logger.warning("Could not persist offline-sensor state: %s", save_err)
 
                 logger.warning(
                     "Sensor offline: %s (last seen: %s)",
@@ -960,6 +978,11 @@ async def check_sensor_health() -> None:
                     except Exception as notif_err:
                         logger.warning("Sensor offline notification failed: %s", notif_err)
 
+            if _offline_loaded:
+                try:
+                    await _kv_set(db, _OFFLINE_KEY, sorted(_offline_notified))
+                except Exception as save_err:
+                    logger.warning("Could not persist offline-sensor state: %s", save_err)
             if stale_sensors:
                 logger.info("Sensor health check: %d sensors offline", len(stale_sensors))
     except Exception as e:
@@ -1587,24 +1610,33 @@ async def _load_runtime_state(db: Any) -> None:
     global _runtime_state_loaded, _last_executed_schedules, _gap_handed_back
     if _runtime_state_loaded:
         return
-    _runtime_state_loaded = True
+    # Read first; only a successful read marks the state loaded.  A transient
+    # DB error must not let the tick run on empty state and then overwrite the
+    # persisted state with it (spec §8, §7.4).
     try:
         pre = await _kv_get(db, "runtime_preconditioning") or {}
+        gap_flag = await _kv_get(db, "runtime_gap_handed_back")
+        notified = await _kv_get(db, "runtime_schedule_notified") or []
+        mode_notify = await _kv_get(db, "runtime_mode_notify") or {}
+    except Exception as exc:
+        logger.warning("Could not restore runtime state (will retry): %s", exc)
+        raise
+    _runtime_state_loaded = True
+    try:
         for sid, iso in pre.items():
             _preconditioning.setdefault(str(sid), datetime.fromisoformat(str(iso)))
-        if await _kv_get(db, "runtime_gap_handed_back"):
+        if gap_flag:
             _gap_handed_back = True  # don't cancel a user's Ecobee hold after a restart
-        notified = await _kv_get(db, "runtime_schedule_notified") or []
         _last_executed_schedules |= {str(k) for k in notified}
         # AI / Follow-Me notification throttle (spec §8: at most one per
         # meaningful change — a restart used to re-announce the same value).
-        for k, rec in (await _kv_get(db, "runtime_mode_notify") or {}).items():
+        for k, rec in mode_notify.items():
             if isinstance(rec, dict) and isinstance(rec.get("at"), str):
                 _active_mode_last_notify.setdefault(
                     str(k), {**rec, "at": datetime.fromisoformat(rec["at"])}
                 )
     except Exception as exc:
-        logger.debug("Could not restore runtime state: %s", exc)
+        logger.warning("Could not parse persisted runtime state: %s", exc)
 
 
 async def _save_runtime_state(db: Any) -> None:
@@ -2986,7 +3018,12 @@ async def execute_active_mode() -> None:
                             if not isinstance(entry, dict):
                                 continue
                             th_c = to_celsius(entry.get("temperature"), weather_unit)
-                            tl_c = to_celsius(entry.get("templow"), weather_unit)
+                            _tl = entry.get("templow")
+                            # Hourly forecasts carry only "temperature".
+                            tl_c = to_celsius(
+                                _tl if _tl is not None else entry.get("temperature"),
+                                weather_unit,
+                            )
                             if th_c is not None:
                                 highs.append(th_c)
                             if tl_c is not None:
@@ -3139,12 +3176,12 @@ async def execute_active_mode() -> None:
                 if governing_schedule is not None
                 else list(zone_data)
             )
+            _dflt = {"default_comfort_temp_min": 20.0, "default_comfort_temp_max": 24.0}
             if direction_target_c is None:
                 # Freeform: every zone counts, at its comfort-band midpoint —
                 # zones without a band use the default comfort range.
                 from backend.models.database import SystemSetting as _AMSetting
 
-                _dflt = {"default_comfort_temp_min": 20.0, "default_comfort_temp_max": 24.0}
                 for _row in (
                     await db.execute(
                         sa_select(_AMSetting).where(_AMSetting.key.in_(list(_dflt)))
@@ -3251,11 +3288,23 @@ async def execute_active_mode() -> None:
                     for _, zd in focus_zones
                 )
             else:
+                # Unbanded zones use the default comfort range only when no zone
+                # has a band (same rule as direction selection, spec §6.2).
+                _any_band = any(
+                    zd.get("temp_min") is not None and zd.get("temp_max") is not None
+                    for zd in zone_data.values()
+                )
+
+                def _band_edge(zd: Any, key: str, dkey: str) -> float | None:
+                    if zd.get(key) is not None:
+                        return float(zd[key])
+                    return None if _any_band else float(_dflt[dkey])
+
                 _settled = all(
                     _reached(
                         zd.get("temp_c"),
-                        None if zd.get("temp_min") is None else float(zd["temp_min"]),
-                        None if zd.get("temp_max") is None else float(zd["temp_max"]),
+                        _band_edge(zd, "temp_min", "default_comfort_temp_min"),
+                        _band_edge(zd, "temp_max", "default_comfort_temp_max"),
                     )
                     for zd in zone_data.values()
                 )

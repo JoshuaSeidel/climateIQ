@@ -201,6 +201,11 @@ async def _write_manual(
             await main_mod._record_mode_switch(entity, mode)
     state = await ha.get_state(entity)
     actual = str(state.state or "").lower()
+    if actual in ("heat", "cool") and mode not in ("heat", "cool"):
+        # The selector vetoed the needed direction (lock/window) and kept the
+        # current mode — which may itself be the forbidden one (spec §2, §4.4).
+        if not await main_mod._direction_allowed(db, ha, actual, None, None):
+            raise ManualControlError(f"{actual} is not allowed right now (lock or time window)")
     if actual in ("heat", "cool"):
         intent: str | None = actual
     else:

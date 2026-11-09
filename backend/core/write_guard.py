@@ -148,8 +148,8 @@ def guard_setpoint(
             # "rooms at/above target" takes over.  Capping at the reading
             # here flipped the furnace on/off every minute when the room
             # hovered at the threshold.  A fresh value still doesn't overshoot.
-            keep = target_c if reading is None else max(target_c, reading + ONE_F_C)
-            hi = min(hi, _ceil_f(keep))
+            # The standing limit is the max-offset band (hi); only a fresh
+            # value is capped (fresh_cap below).
             lo = -math.inf  # a parked setpoint (below the reading) stays valid
             fresh_cap = _ceil_f(target_c if reading is None else max(target_c, reading))
             value = min(_round_f(desired_c), fresh_cap, hi)
@@ -174,8 +174,6 @@ def guard_setpoint(
         else:
             # Mirror of the heat hysteresis: a must-run cool setpoint (down
             # to reading - 1 °F) stands until the rooms reach target.
-            keep = target_c if reading is None else min(target_c, reading - ONE_F_C)
-            lo = max(lo, _floor_f(keep))
             hi = math.inf  # a parked setpoint (above the reading) stays valid
             fresh_floor = _floor_f(target_c if reading is None else min(target_c, reading))
             value = max(_round_f(desired_c), fresh_floor, lo)

@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.95] - 2026-11-09
+
+Heating/cooling correctness, round 5. Four more reviews confirmed bugs in the guard, manual control, chat commands, fans and startup. Each is fixed with a regression test (`backend/tests/scenario/test_r5_*.py`).
+
+### Fixed
+- **Setpoint churn at the run threshold:** a setpoint written while heat/cool had to run now stands until the rooms reach target (the standing band is the max-offset limit, not reading ± 1°F).
+- **Manual override ran a forbidden direction:** when a lock or window vetoed the needed direction, the override was written in whatever mode the thermostat was already in. It is now rejected.
+- **Chat "set living room to 72" / "warmer by 4"** converted °F to °C twice (rejected as out of range, or the wrong delta applied).
+- **Occupancy dwell** no longer restarts on Active-mode tick jitter (observation-gap threshold is now 11 minutes).
+- **Freeform AI mode** no longer releases raised fans for unbanded zones while they are outside the default comfort range.
+- **Hourly forecasts** now provide a forecast low, so HEAVY_COLD_DAY works.
+- **HA WebSocket handshake** times out after 10 s instead of hanging startup on a silent server.
+- **A transient DB error restoring runtime state** no longer lets a tick run on empty state and overwrite the saved state.
+- **"Sensor offline" push** is sent once per offline episode, not once per restart.
+
 ## [1.0.94] - 2026-11-09
 
 Heating/cooling correctness, round 4. Four more reviews against `docs/CONTROL_SPEC.md` confirmed bugs in handback, fans, occupancy, manual control and startup. Each is fixed and has a regression test (`backend/tests/scenario/test_r4_*.py`).
