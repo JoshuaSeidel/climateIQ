@@ -113,7 +113,11 @@ _active_mode_state: dict[str, dict[str, Any]] = {}
 # door", "lights just turned on") which then triggers a full LLM call.  We
 # gate the raw signal with hysteresis: raw must hold OCC for 3 min before
 # stable flips ON; raw must hold VAC for 10 min before stable flips OFF.
+_follow_me_observed = False
 _zone_occupancy_stable: dict[str, dict[str, Any]] = {}
+# Set once the Follow-Me loop has observed occupancy in this process, so a
+# restart (empty dwell state) isn't mistaken for "no occupancy data".
+_follow_me_observed = False
 _OCCUPANCY_DWELL_OCC_S: int = 3 * 60
 _OCCUPANCY_DWELL_VAC_S: int = 10 * 60
 
@@ -239,6 +243,10 @@ async def _persist_fan_baseline() -> None:
     redis_client = app_state.redis_client
     if redis_client is None:
         return
+    # Never overwrite saved state with an empty, never-restored in-memory copy.
+    await _restore_fan_baseline_once()
+    if not _fan_baseline_restored:
+        return
     try:
         payload = {
             eid: {
@@ -261,17 +269,21 @@ async def _restore_fan_baseline_once() -> None:
     global _fan_baseline_restored
     if _fan_baseline_restored:
         return
-    _fan_baseline_restored = True
     redis_client = app_state.redis_client
     if redis_client is None:
         return
     try:
         owned_raw = await redis_client.get(_FAN_USER_OWNED_REDIS_KEY)
+        raw = await redis_client.get(_FAN_BASELINE_REDIS_KEY)
+    except Exception as exc:
+        logger.warning("Could not read fan state from Redis (will retry): %s", exc)
+        return
+    _fan_baseline_restored = True
+    try:
         if owned_raw:
             for eid, iso in json.loads(owned_raw).items():
                 if isinstance(iso, str):
                     _fan_user_owned.setdefault(eid, datetime.fromisoformat(iso))
-        raw = await redis_client.get(_FAN_BASELINE_REDIS_KEY)
         if not raw:
             return
         for eid, rec in json.loads(raw).items():
@@ -284,7 +296,7 @@ async def _restore_fan_baseline_once() -> None:
         if _fan_baseline:
             logger.info("Restored fan override state for %d fan(s)", len(_fan_baseline))
     except Exception as exc:
-        logger.debug("Could not restore fan baseline: %s", exc)
+        logger.warning("Could not parse persisted fan state: %s", exc)
 
 
 async def _read_fan_percent(ha_client_ref: Any, entity_id: str) -> int | None:
@@ -1011,20 +1023,45 @@ async def _ensure_mode_switch_loaded() -> None:
     global _mode_switch_loaded
     if _mode_switch_loaded:
         return
-    _mode_switch_loaded = True
     try:
         async with get_session_maker()() as _db:
             saved = await _kv_get(_db, "runtime_last_mode_switch") or {}
+    except Exception as exc:
+        logger.warning("Could not restore last mode switch (will retry): %s", exc)
+        return
+    _mode_switch_loaded = True
+    try:
         for ent, (mode, iso) in saved.items():
             _last_mode_switch.setdefault(str(ent), (str(mode), datetime.fromisoformat(str(iso))))
     except Exception as exc:
-        logger.debug("Could not restore last mode switch: %s", exc)
+        logger.warning("Could not parse persisted last mode switch: %s", exc)
+
+
+async def _restore_mode_switch(entity: str, snapshot: tuple[str, datetime] | None) -> None:
+    """Put back the last-switch record from before a rolled-back request."""
+    await _ensure_mode_switch_loaded()
+    if snapshot is None:
+        _last_mode_switch.pop(entity, None)
+    else:
+        _last_mode_switch[entity] = snapshot
+    if not _mode_switch_loaded:
+        return
+    try:
+        async with get_session_maker()() as _db:
+            await _kv_set(
+                _db, "runtime_last_mode_switch",
+                {k: [m, t.isoformat()] for k, (m, t) in _last_mode_switch.items()},
+            )
+    except Exception as exc:
+        logger.debug("Could not persist last mode switch: %s", exc)
 
 
 async def _record_mode_switch(entity: str, mode: str) -> None:
     """Remember (and persist) a thermostat mode change ClimateIQ made."""
     await _ensure_mode_switch_loaded()
     _last_mode_switch[entity] = (mode, datetime.now(UTC))
+    if not _mode_switch_loaded:
+        return  # don't overwrite the saved record with an unrestored copy
     try:
         async with get_session_maker()() as _db:
             await _kv_set(
@@ -1926,18 +1963,21 @@ async def _undo_our_off(ha_client: Any, entity: str, context: str) -> None:
         logger.warning("%s: could not restore the thermostat mode: %s", context, exc)
 
 
-async def _learn_expiry_handback(db: Any, ha_client: Any) -> None:
+async def _learn_expiry_handback(db: Any, ha_client: Any) -> bool:
+    """True when done (or no longer needed); False → retry next tick."""
     from backend.core.manual_control import climate_entity as _entity
 
     async with THERMOSTAT_LOCK:
         try:
             if await _manual_override_active(db):
-                return  # a new override took its place
+                return True  # a new override took its place
             entity = await _entity(db)
             await ha_client.resume_ecobee_program(entity, resume_all=True)
             logger.info("Override expired in Learn — resumed the Ecobee program")
+            return True
         except Exception as exc:
             logger.warning("Could not resume the Ecobee program after expiry: %s", exc)
+            return False
 
 
 @single_flight
@@ -1990,7 +2030,10 @@ async def maintain_climate_offset() -> None:
             ):
                 # An override set in Learn expired: Learn means the Ecobee's
                 # own program runs, so drop the hold (spec §2).
-                await _learn_expiry_handback(db, ha_client)
+                if not await _learn_expiry_handback(db, ha_client):
+                    from backend.core.manual_override import mark_expired_handback
+
+                    await mark_expired_handback(db)
             if config is not None and config.current_mode in (
                 SystemMode.active,
                 SystemMode.learn,
@@ -2057,6 +2100,7 @@ async def maintain_climate_offset() -> None:
                         # gap, so a schedule's boosted hold would linger.
                         or (
                             config.current_mode == SystemMode.follow_me
+                            and _follow_me_observed
                             and not _zone_occupancy_stable
                         )
                     )
@@ -2520,6 +2564,8 @@ async def execute_follow_me_mode() -> None:
                 # blip must not change the target.
                 if _stable_occupancy(str(zone.id), bool(occ)):
                     occupied_zones.append((zone, _zone_mid(zone)))
+            global _follow_me_observed
+            _follow_me_observed = True
             if known == 0:
                 logger.debug("Follow-me: no occupancy data for any zone — no change")
                 return
@@ -3014,7 +3060,17 @@ async def execute_active_mode() -> None:
                         fd = _json.loads(fcached).get("data", [])
                         highs: list[float] = []
                         lows: list[float] = []
-                        for entry in fd[:12] if isinstance(fd, list) else []:
+                        _fe = fd if isinstance(fd, list) else []
+                        # A daily forecast (HA fallback) spans days: only
+                        # today's entry belongs to the next 12 h.
+                        try:
+                            _t0 = datetime.fromisoformat(str(_fe[0].get("datetime")).replace("Z", "+00:00"))
+                            _t1 = datetime.fromisoformat(str(_fe[1].get("datetime")).replace("Z", "+00:00"))
+                            if (_t1 - _t0).total_seconds() >= 20 * 3600:
+                                _fe = _fe[:1]
+                        except (IndexError, AttributeError, TypeError, ValueError):
+                            pass
+                        for entry in _fe[:12]:
                             if not isinstance(entry, dict):
                                 continue
                             th_c = to_celsius(entry.get("temperature"), weather_unit)
@@ -3675,8 +3731,8 @@ async def execute_active_mode() -> None:
                                 name_part, pct_part = pair.split("=", 1)
                                 zone_key = name_part.strip().lower()
                                 try:
-                                    pct_target = round(float(pct_part.strip()))
-                                except (TypeError, ValueError):
+                                    pct_target = round(float(pct_part.strip().rstrip("%").strip()))
+                                except (TypeError, ValueError, OverflowError):
                                     continue
                                 matched_zd = fan_ok_zones.get(zone_key)
                                 if matched_zd is None:
@@ -4574,6 +4630,9 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
                                     break
                             except ValueError:
                                 pass
+                    # A light/switch being off says nothing about presence.
+                    if eid.lower().startswith(("light.", "switch.")):
+                        continue
                     if st in ("off", "not_home", "clear", "closed", "idle", "paused"):
                         any_off = True
                 if any_on:

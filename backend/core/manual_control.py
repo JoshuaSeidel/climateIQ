@@ -138,6 +138,10 @@ async def apply_manual_setpoint(
 
     async with THERMOSTAT_LOCK:
         previous = await snapshot_override(db)
+        import backend.api.main as _mm
+
+        await _mm._ensure_mode_switch_loaded()
+        switch_before = _mm._last_mode_switch.get(entity)
         try:
             _before = await ha.get_state(entity)
             mode_before = str(_before.state or "").lower() if _before else ""
@@ -158,9 +162,11 @@ async def apply_manual_setpoint(
                     _now = await ha.get_state(entity)
                     if _now is not None and str(_now.state or "").lower() != mode_before:
                         await ha.set_hvac_mode(entity, mode_before)
-                        import backend.api.main as main_mod
-
-                        await main_mod._record_mode_switch(entity, mode_before)
+                        # Undo our own switch record too: re-recording the old
+                        # mode would claim ClimateIQ chose it (a user's "off"
+                        # would then be "undone" in Learn) and restart the
+                        # reversal cooldown.
+                        await _mm._restore_mode_switch(entity, switch_before)
                 except Exception as exc:
                     logger.warning("Could not restore the thermostat mode: %s", exc)
             await restore_override(db, previous, reason="manual write failed")

@@ -1246,13 +1246,18 @@ async def parse_command(
         zone_name = adjust_match.group(2)
 
         # Try to extract amount from the original command (e.g. "5 degrees warmer")
+        # Only "by N" or "N degrees/°" counts — a digit in a zone name
+        # ("room 5") is not an amount.
         amount_match = re.search(
-            r"(\d+(?:\.\d+)?)\s*(?:degrees?)?\s*°?\s*([fc])?",
+            r"(?:\bby\s+(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:degrees?|°))"
+            r"\s*(?:degrees?)?\s*°?\s*([fc])?\b",
             command_lower,
         )
-        amount_raw = float(amount_match.group(1)) if amount_match else 2.0
+        amount_raw = (
+            float(amount_match.group(1) or amount_match.group(2)) if amount_match else 2.0
+        )
         amount_unit = _parse_temp_unit(
-            amount_match.group(2) if amount_match else None, default_unit
+            amount_match.group(3) if amount_match else None, default_unit
         )
         amount = _convert_delta_to_c(amount_raw, amount_unit)
 
@@ -1942,6 +1947,7 @@ async def _execute_tool_call(
             # Reject (never clamp) — "72" meant as °F must not become a
             # recurring 100 °F schedule.
             if not (settings.safety_min_temp_c <= target_c_value <= settings.safety_max_temp_c):
+                await db.rollback()  # drop the pending overwrite deletes / earlier adds
                 return {
                     "success": False,
                     "error": f"target_c {target_c_value:g} is outside the safety range",

@@ -75,6 +75,20 @@ def _reset_gap_handback() -> None:
         pass
 
 
+async def mark_expired_handback(db: Any) -> None:
+    """Re-arm the Learn expiry handback (a resume attempt failed)."""
+    from sqlalchemy import select
+
+    from backend.models.database import SystemSetting
+
+    existing = (
+        await db.execute(select(SystemSetting).where(SystemSetting.key == _EXPIRED_KEY))
+    ).scalar_one_or_none()
+    if existing is None:
+        db.add(SystemSetting(key=_EXPIRED_KEY, value={"value": True}))
+        await db.commit()
+
+
 async def pop_expired_handback(db: Any) -> bool:
     """True once after an override expired (Learn hands back to the Ecobee)."""
     from sqlalchemy import select

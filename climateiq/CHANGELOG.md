@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.96] - 2026-11-09
+
+Heating/cooling correctness, round 6. Four more reviews confirmed bugs, several of them regressions from the round-4/5 fixes. Each is fixed with a regression test (`backend/tests/scenario/test_r6_*.py`).
+
+### Fixed
+- **Guard hysteresis let any stale hold stand:** a setpoint may now stand near target only if it is within what the formula wants now (+1°F slack), so a leftover 78°F hold no longer heats a 70°F target, while the round-5 churn stays fixed.
+- **Follow-Me gap handback after a restart** wiped Follow-Me's own hold; it now waits until Follow-Me has observed occupancy once.
+- **Learn-mode override expiry** is retried if the first attempt to resume the Ecobee program fails.
+- **Last mode-switch and fan-state restore** are retried after a transient DB/Redis error instead of leaving empty state (and then overwriting the saved state).
+- **A rolled-back manual write** no longer records ClimateIQ's own "off" (Learn used to turn the user's off back on) or restart the reversal cooldown.
+- **Daily forecasts** are no longer read as "the next 12 hours" (a heat wave ten days out set HEAVY_HOT_DAY today).
+- **AI fan actions** accept `Bedroom=100%` and ignore `inf` without dropping the remaining zones.
+- **A light or switch that is off** no longer counts as "vacant" against a live presence sensor.
+- **Chat:** a digit in a zone name ("room 5") is no longer read as the warmer/cooler amount, and a failed `create_schedule` no longer leaves a half-applied overwrite.
+
 ## [1.0.95] - 2026-11-09
 
 Heating/cooling correctness, round 5. Four more reviews confirmed bugs in the guard, manual control, chat commands, fans and startup. Each is fixed with a regression test (`backend/tests/scenario/test_r5_*.py`).

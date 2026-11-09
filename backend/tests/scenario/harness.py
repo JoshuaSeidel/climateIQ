@@ -275,6 +275,7 @@ class House:
         main_mod._runtime_state_loaded = False
         main_mod._mode_switch_loaded = False
         main_mod._gap_handed_back = False
+        main_mod._follow_me_observed = False
         main_mod._fan_user_owned.clear()
         main_mod._ha_unit_cache = None
         main_mod._primary_climate_cache = None
