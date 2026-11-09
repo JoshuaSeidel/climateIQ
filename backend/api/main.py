@@ -155,6 +155,11 @@ _FAN_HAND_CHANGE_TOLERANCE_PCT: int = 20
 # previously the next LLM answer re-took the fan immediately.
 _FAN_USER_OWNED_S: int = 4 * 3600
 _fan_user_owned: dict[str, datetime] = {}
+_FAN_USER_OWNED_REDIS_KEY = "climateiq:fan_user_owned"
+
+
+# Longer than this between observations → the dwell restarts.
+_OCCUPANCY_OBSERVE_GAP_S = 5 * 60
 
 
 def _stable_occupancy(zone_id: str, raw: bool) -> bool:
@@ -172,11 +177,21 @@ def _stable_occupancy(zone_id: str, raw: bool) -> bool:
             "raw": raw,
             "raw_since": now,
             "stable": raw,
+            "last_seen": now,
         }
         return raw
-    if state["raw"] != raw:
+    # Dwell needs *continuous* observation: after a gap (a schedule governed,
+    # so nobody asked) a walk-past seen hours ago must not count as hours of
+    # presence — restart the dwell.
+    last_seen = state.get("last_seen")
+    if (
+        state["raw"] != raw
+        or not isinstance(last_seen, datetime)
+        or (now - last_seen).total_seconds() > _OCCUPANCY_OBSERVE_GAP_S
+    ):
         state["raw"] = raw
         state["raw_since"] = now
+    state["last_seen"] = now
     dwell = (now - state["raw_since"]).total_seconds()
     threshold = _OCCUPANCY_DWELL_OCC_S if raw else _OCCUPANCY_DWELL_VAC_S
     if state["stable"] != raw and dwell >= threshold:
@@ -232,6 +247,11 @@ async def _persist_fan_baseline() -> None:
             for eid, rec in _fan_baseline.items()
         }
         await redis_client.set(_FAN_BASELINE_REDIS_KEY, json.dumps(payload))
+        # Fans the user took over stay theirs across a restart too (spec §6.4).
+        await redis_client.set(
+            _FAN_USER_OWNED_REDIS_KEY,
+            json.dumps({eid: t.isoformat() for eid, t in _fan_user_owned.items()}),
+        )
     except Exception as exc:
         logger.debug("Could not persist fan baseline: %s", exc)
 
@@ -245,6 +265,11 @@ async def _restore_fan_baseline_once() -> None:
     if redis_client is None:
         return
     try:
+        owned_raw = await redis_client.get(_FAN_USER_OWNED_REDIS_KEY)
+        if owned_raw:
+            for eid, iso in json.loads(owned_raw).items():
+                if isinstance(iso, str):
+                    _fan_user_owned.setdefault(eid, datetime.fromisoformat(iso))
         raw = await redis_client.get(_FAN_BASELINE_REDIS_KEY)
         if not raw:
             return
@@ -299,41 +324,45 @@ async def _fan_speed_count(ha_client_ref: Any, entity_id: str) -> int | None:
     return max(1, round(100.0 / step))
 
 
-async def _fan_readback(ha_client_ref: Any, entity_id: str, requested: int) -> int:
-    """What the fan reports right after our write (falls back to ``requested``)."""
-    got = await _read_fan_percent(ha_client_ref, entity_id)
-    return requested if got is None else got
-
-
 async def _write_fan_pct(
     ha_client_ref: Any, entity_id: str, pct: int, *, cap: int | None, floor: int = 0
 ) -> int:
-    """Set a fan and return what it reports.  Never ends above ``cap``.
+    """Set a fan and return its (expected) speed.  Never ends above ``cap``.
 
     A stepped fan that doesn't publish ``percentage_step`` snaps the request
-    up (50 → 66 on 3 speeds); then step down to the speed below.
+    up (50 → 66 on 3 speeds); then step down to the speed below.  Many fans
+    (Zigbee, Z-Wave, Bond) report their new state a moment later — a
+    readback still showing the old value means "not reported yet", and the
+    expected value is used (a stale 0 made our own raise look like a hand
+    change, so the fan escaped the quiet-hours cap and was never released).
     """
-    if pct <= 0:
-        await ha_client_ref.call_service("fan", "turn_off", target={"entity_id": entity_id})
-        return await _fan_readback(ha_client_ref, entity_id, 0)
-    await ha_client_ref.call_service(
-        "fan", "set_percentage", target={"entity_id": entity_id}, data={"percentage": pct}
-    )
-    actual = await _fan_readback(ha_client_ref, entity_id, pct)
-    req = pct
-    for _ in range(4):  # one-off descent; each try lands a speed lower
-        if cap is None or actual <= cap or req <= floor:
-            break
-        req = max(floor, req - (actual - req))
+    speeds = await _fan_speed_count(ha_client_ref, entity_id)
+    before = await _read_fan_percent(ha_client_ref, entity_id)
+
+    async def _set(req: int) -> int:
         if req <= 0:
-            await ha_client_ref.call_service("fan", "turn_off", target={"entity_id": entity_id})
+            await ha_client_ref.call_service(
+                "fan", "turn_off", target={"entity_id": entity_id}
+            )
         else:
             await ha_client_ref.call_service(
                 "fan", "set_percentage",
                 target={"entity_id": entity_id}, data={"percentage": req},
             )
-        actual = await _fan_readback(ha_client_ref, entity_id, max(req, 0))
-    return actual
+        expected = _fan_snap(max(req, 0), speeds)
+        got = await _read_fan_percent(ha_client_ref, entity_id)
+        if got is None or (got == before and got != expected):
+            return -1  # not reported yet
+        return got
+
+    req = pct
+    actual = await _set(req)
+    for _ in range(4):  # one-off descent; each try lands a speed lower
+        if actual < 0 or cap is None or actual <= cap or req <= floor:
+            break
+        req = max(floor, req - (actual - req))
+        actual = await _set(req)
+    return _fan_snap(max(req, 0), speeds) if actual < 0 else actual
 
 
 def _fan_snap(pct: int, speeds: int | None, *, down: bool = False) -> int:
@@ -1555,7 +1584,7 @@ async def _load_runtime_state(db: Any) -> None:
     In-memory only, a restart mid-warm-up dropped the warm-up (spec §7.4)
     and a restart mid-occurrence re-sent "Schedule Activated" (spec §8).
     """
-    global _runtime_state_loaded, _last_executed_schedules
+    global _runtime_state_loaded, _last_executed_schedules, _gap_handed_back
     if _runtime_state_loaded:
         return
     _runtime_state_loaded = True
@@ -1563,8 +1592,17 @@ async def _load_runtime_state(db: Any) -> None:
         pre = await _kv_get(db, "runtime_preconditioning") or {}
         for sid, iso in pre.items():
             _preconditioning.setdefault(str(sid), datetime.fromisoformat(str(iso)))
+        if await _kv_get(db, "runtime_gap_handed_back"):
+            _gap_handed_back = True  # don't cancel a user's Ecobee hold after a restart
         notified = await _kv_get(db, "runtime_schedule_notified") or []
         _last_executed_schedules |= {str(k) for k in notified}
+        # AI / Follow-Me notification throttle (spec §8: at most one per
+        # meaningful change — a restart used to re-announce the same value).
+        for k, rec in (await _kv_get(db, "runtime_mode_notify") or {}).items():
+            if isinstance(rec, dict) and isinstance(rec.get("at"), str):
+                _active_mode_last_notify.setdefault(
+                    str(k), {**rec, "at": datetime.fromisoformat(rec["at"])}
+                )
     except Exception as exc:
         logger.debug("Could not restore runtime state: %s", exc)
 
@@ -1576,6 +1614,14 @@ async def _save_runtime_state(db: Any) -> None:
             {k: v.isoformat() for k, v in _preconditioning.items()},
         )
         await _kv_set(db, "runtime_schedule_notified", sorted(_last_executed_schedules))
+        await _kv_set(db, "runtime_gap_handed_back", bool(_gap_handed_back))
+        await _kv_set(
+            db, "runtime_mode_notify",
+            {
+                k: {**v, "at": v["at"].isoformat() if isinstance(v.get("at"), datetime) else v.get("at")}
+                for k, v in _active_mode_last_notify.items()
+            },
+        )
     except Exception as exc:
         logger.debug("Could not persist runtime state: %s", exc)
 # Strong refs for fire-and-forget tasks (Resume → Active tick, etc.).
@@ -1823,6 +1869,45 @@ async def apply_schedule_now(schedule: _Schedule) -> None:
 # ============================================================================
 
 
+async def _undo_our_off(ha_client: Any, entity: str, context: str) -> None:
+    """Handing back to the Ecobee: undo an ``off`` that *ClimateIQ* set.
+
+    Its program can't run while the thermostat is off.  An ``off`` the user
+    chose stays off.  Caller holds THERMOSTAT_LOCK.
+    """
+    try:
+        state = await ha_client.get_state(entity)
+        if state is None or str(state.state or "").lower() != "off":
+            return
+        await _ensure_mode_switch_loaded()
+        last = _last_mode_switch.get(entity)
+        if last is None or last[0] != "off":
+            return
+        modes = [str(m) for m in (state.attributes.get("hvac_modes") or [])]
+        for native in ("heat_cool", "auto"):
+            if native in modes:
+                await ha_client.set_hvac_mode(entity, native)
+                await _record_mode_switch(entity, native)
+                logger.info("%s: ClimateIQ had turned it off — set to '%s'", context, native)
+                return
+    except Exception as exc:
+        logger.warning("%s: could not restore the thermostat mode: %s", context, exc)
+
+
+async def _learn_expiry_handback(db: Any, ha_client: Any) -> None:
+    from backend.core.manual_control import climate_entity as _entity
+
+    async with THERMOSTAT_LOCK:
+        try:
+            if await _manual_override_active(db):
+                return  # a new override took its place
+            entity = await _entity(db)
+            await ha_client.resume_ecobee_program(entity, resume_all=True)
+            logger.info("Override expired in Learn — resumed the Ecobee program")
+        except Exception as exc:
+            logger.warning("Could not resume the Ecobee program after expiry: %s", exc)
+
+
 @single_flight
 async def maintain_climate_offset() -> None:
     """Continuously adjust the thermostat to compensate for sensor offset.
@@ -1862,6 +1947,18 @@ async def maintain_climate_offset() -> None:
             # schedule control owns the thermostat in Follow-Me too (spec §2)
             # — with no active schedule this pass finds nothing to do and the
             # Follow-Me loop handles occupancy.
+            from backend.core.manual_override import get_active_override, pop_expired_handback
+
+            # Learn mode reads no override elsewhere, so detect expiry here.
+            await get_active_override(db)
+            if (
+                await pop_expired_handback(db)
+                and config is not None
+                and config.current_mode == SystemMode.learn
+            ):
+                # An override set in Learn expired: Learn means the Ecobee's
+                # own program runs, so drop the hold (spec §2).
+                await _learn_expiry_handback(db, ha_client)
             if config is not None and config.current_mode in (
                 SystemMode.active,
                 SystemMode.learn,
@@ -1922,19 +2019,29 @@ async def maintain_climate_offset() -> None:
                 if (
                     not _gap_handed_back
                     and config is not None
-                    and config.current_mode == SystemMode.scheduled
+                    and (
+                        config.current_mode == SystemMode.scheduled
+                        # Follow-Me with no occupancy data does nothing in a
+                        # gap, so a schedule's boosted hold would linger.
+                        or (
+                            config.current_mode == SystemMode.follow_me
+                            and not _zone_occupancy_stable
+                        )
+                    )
                 ):
                     # Spec §2: in a Scheduled-mode gap the Ecobee's own
                     # program owns the thermostat.  Hand back once, so an
                     # offset-compensated hold (or a cleared override's
                     # setpoint) doesn't keep heating/cooling indefinitely.
                     async with THERMOSTAT_LOCK:
-                        if await _writes_still_permitted({"scheduled"}):
+                        if await _writes_still_permitted({"scheduled", "follow_me"}):
                             try:
                                 await ha_client.resume_ecobee_program(
                                     climate_entity, resume_all=False
                                 )
+                                await _undo_our_off(ha_client, climate_entity, "Gap handback")
                                 _gap_handed_back = True
+                                await _save_runtime_state(db)
                                 logger.info(
                                     "Climate maintenance: no schedule governs — "
                                     "handed back to the Ecobee program"
@@ -1942,7 +2049,9 @@ async def maintain_climate_offset() -> None:
                             except Exception as exc:
                                 logger.warning("Could not resume the Ecobee program: %s", exc)
                 return
-            _gap_handed_back = False
+            if _gap_handed_back:
+                _gap_handed_back = False
+                await _save_runtime_state(db)
 
             desired_temp_c = active_schedule.target_temp_c
             zone_ids = active_schedule.zone_ids or None
@@ -2368,7 +2477,12 @@ async def execute_follow_me_mode() -> None:
                     prev = _zone_occupancy_stable.get(str(zone.id))
                     if prev is None:
                         continue
-                    occ = bool(prev["raw"])
+                    # Keep the last *stable* state without advancing the
+                    # dwell — a lost signal is not evidence either way.
+                    known += 1
+                    if prev.get("stable"):
+                        occupied_zones.append((zone, _zone_mid(zone)))
+                    continue
                 known += 1
                 # Same dwell hysteresis as Active mode — a brief motion/light
                 # blip must not change the target.
@@ -2444,6 +2558,7 @@ async def execute_follow_me_mode() -> None:
                         "setpoint_c": written_c,
                         "mode": zone_names,
                     }
+                    await _save_runtime_state(db)
                 fm_notify = fm_now_mode == fm_start_mode and (
                     fm_last is None
                     or (
@@ -2468,6 +2583,7 @@ async def execute_follow_me_mode() -> None:
                             "setpoint_c": written_c,
                             "mode": zone_names,
                         }
+                        await _save_runtime_state(db)
                     except Exception as notif_err:
                         logger.warning("Follow-me notification failed: %s", notif_err)
 
@@ -3110,12 +3226,39 @@ async def execute_active_mode() -> None:
                 )
                 call_llm = False
 
-            # Release raised fans once the governing zones have settled —
-            # on target (schedule) or all inside their bands (freeform).
-            # The LLM's "=0" was the only other release path.
-            _settled = (focus_on_target and constraints_ok) or (
-                schedule_target_c is None and all(_in_band(zd) for zd in zone_data.values())
-            )
+            # Release raised fans once the governing zones have *reached*
+            # target — direction-aware, so a room that overshot (cooled past
+            # target) counts — on the governing zones alone (an unrelated
+            # out-of-band room used to block the release forever).  The
+            # LLM's "=0" is the only other release path, and it may be down.
+            # Mode at tick start: an overshoot flips the direction this very
+            # tick, and the fan was raised for the mode that just overshot.
+            _rel_mode = tick_start_mode
+
+            def _reached(t: Any, lo: float | None, hi: float | None) -> bool:
+                if t is None:
+                    return True
+                t = float(t)
+                if _rel_mode == "cool":
+                    return hi is None or t <= hi + 0.5
+                if _rel_mode == "heat":
+                    return lo is None or t >= lo - 0.5
+                return (lo is None or t >= lo - 0.5) and (hi is None or t <= hi + 0.5)
+
+            if schedule_target_c is not None:
+                _settled = bool(focus_zones) and all(
+                    _reached(zd.get("temp_c"), schedule_target_c, schedule_target_c)
+                    for _, zd in focus_zones
+                )
+            else:
+                _settled = all(
+                    _reached(
+                        zd.get("temp_c"),
+                        None if zd.get("temp_min") is None else float(zd["temp_min"]),
+                        None if zd.get("temp_max") is None else float(zd["temp_max"]),
+                    )
+                    for zd in zone_data.values()
+                )
             if _settled:
                 for zd in zone_data.values():
                     if not zd.get("allow_fan_control"):
@@ -3606,6 +3749,7 @@ async def execute_active_mode() -> None:
                         "setpoint_c": written_c,
                         "mode": cur_mode,
                     }
+                    await _save_runtime_state(db)
                 elif not notify and last_notif is not None:
                     since_s = (datetime.now(UTC) - last_notif["at"]).total_seconds()
                     moved_c = abs(written_c - float(last_notif["setpoint_c"]))
@@ -3629,6 +3773,7 @@ async def execute_active_mode() -> None:
                             "setpoint_c": written_c,
                             "mode": cur_mode,
                         }
+                        await _save_runtime_state(db)
                     except Exception as notif_err:
                         logger.warning("Active-mode notification failed: %s", notif_err)
 

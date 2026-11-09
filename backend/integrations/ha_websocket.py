@@ -135,7 +135,6 @@ class HAWebSocketClient:
         host reboot), the reconnect loop is still started so the connection
         comes up on its own once HA is ready — previously a failed first
         attempt left sensor ingestion dead until the add-on was restarted.
-        Only an invalid token raises.
         """
         async with self._lock:
             if self._reconnect_task is not None and not self._reconnect_task.done():
@@ -144,9 +143,11 @@ class HAWebSocketClient:
             self._stop = False
             try:
                 await self._open_and_auth()
-            except HAWebSocketAuthError:
+            except HAWebSocketAuthError as exc:
+                # HA can reject tokens briefly while it boots; the reconnect
+                # loop below retries, so don't leave the socket dead.
                 await self._close_ws()
-                raise
+                logger.error("HA WebSocket auth rejected (%s) — will keep retrying", exc)
             except Exception as exc:
                 await self._close_ws()
                 logger.warning(

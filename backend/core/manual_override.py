@@ -62,6 +62,35 @@ async def _override_expiry(db: Any, value: dict[str, Any]) -> datetime:
     return cap if boundary is None else min(boundary.astimezone(UTC), cap)
 
 
+_EXPIRED_KEY = "override_expired_handback"
+
+
+def _reset_gap_handback() -> None:
+    """Any override change re-arms the Scheduled-mode gap handback (spec §2)."""
+    try:
+        import backend.api.main as main_mod
+
+        main_mod._gap_handed_back = False
+    except Exception:  # noqa: S110
+        pass
+
+
+async def pop_expired_handback(db: Any) -> bool:
+    """True once after an override expired (Learn hands back to the Ecobee)."""
+    from sqlalchemy import select
+
+    from backend.models.database import SystemSetting
+
+    row = (
+        await db.execute(select(SystemSetting).where(SystemSetting.key == _EXPIRED_KEY))
+    ).scalar_one_or_none()
+    if row is None:
+        return False
+    await db.delete(row)
+    await db.commit()
+    return True
+
+
 async def set_override(
     db: Any,
     setpoint_c: float | None,
@@ -83,6 +112,7 @@ async def set_override(
     }
     expires = await _override_expiry(db, value)
     value["expires_at"] = expires.isoformat()  # informational; recomputed on read
+    _reset_gap_handback()
     row = await _row(db)
     if row is None:
         db.add(SystemSetting(key=_KEY, value={"value": value}))
@@ -140,7 +170,16 @@ async def clear_override(db: Any, *, reason: str, expected_set_at: str | None = 
             await db.commit()  # replaced meanwhile — keep the new override
             return
     await db.delete(row)
+    if reason == "expired":
+        # Nothing else notices an expiry in Learn (every loop stands down);
+        # leave a marker so maintenance hands the hold back to the Ecobee.
+        existing = (
+            await db.execute(select(SystemSetting).where(SystemSetting.key == _EXPIRED_KEY))
+        ).scalar_one_or_none()
+        if existing is None:
+            db.add(SystemSetting(key=_EXPIRED_KEY, value={"value": True}))
     await db.commit()
+    _reset_gap_handback()
     logger.info("Manual override cleared (%s)", reason)
 
 
@@ -169,4 +208,5 @@ async def restore_override(db: Any, snapshot: dict[str, Any] | None, *, reason: 
     else:
         row.value = snapshot
     await db.commit()
+    _reset_gap_handback()
     logger.info("Manual override restored (%s)", reason)

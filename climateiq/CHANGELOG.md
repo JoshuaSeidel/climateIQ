@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.94] - 2026-11-09
+
+Heating/cooling correctness, round 4. Four more reviews against `docs/CONTROL_SPEC.md` confirmed bugs in handback, fans, occupancy, manual control and startup. Each is fixed and has a regression test (`backend/tests/scenario/test_r4_*.py`).
+
+### Fixed — handback to the Ecobee
+- The Scheduled-mode gap handback is re-armed by any mode change, Resume, or override set/clear/restore, and survives a restart without cancelling a user's hold.
+- An "off" schedule ending into a gap no longer leaves the thermostat off; ClimateIQ restores the Ecobee's own mode.
+- An override that expires in Learn mode now resumes the Ecobee program (expiry is detected by the maintenance tick, not only by the status API).
+- Follow-Me with no occupancy data hands back in a gap instead of keeping a schedule's boosted setpoint.
+
+### Fixed — control guard & manual control
+- The hysteresis band no longer makes a parked setpoint look out of range (setpoint flapped every minute with a cold thermostat).
+- A failed manual setpoint write restores the previous heat/cool mode, and Resume now runs under the thermostat lock so a failing manual request can't resurrect a cleared override.
+
+### Fixed — fans, occupancy, startup
+- Fans that report their new speed late are no longer treated as hand-changed; the "user-owned" state and notification throttle survive restarts.
+- Raised fans release when the room overshoots target (direction flips in the same tick) and judge release on the governing zones only.
+- Follow-Me occupancy dwell restarts after a gap in observations and keeps the last stable state when a signal is lost.
+- A rejected Home Assistant WebSocket login at startup is retried in the background instead of leaving ingestion and drift correction dead.
+
 ## [1.0.93] - 2026-11-09
 
 Heating/cooling correctness, round 3. Four fresh reviews against `docs/CONTROL_SPEC.md` confirmed 19 bugs. Each is fixed, has a regression test (`backend/tests/scenario/test_round3_findings.py`, `test_r3_*.py`), and is recorded in the spec.

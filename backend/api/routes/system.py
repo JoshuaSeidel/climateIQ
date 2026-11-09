@@ -68,6 +68,8 @@ async def apply_system_mode(db: AsyncSession, new_mode: SystemMode) -> SystemCon
         await db.refresh(config)
         await clear_override(db, reason=f"mode changed to {new_mode.value}")
         _main._preconditioning.clear()
+        # A new owner: re-arm the Scheduled-mode gap handback (spec §2).
+        _main._gap_handed_back = False
         await _ecobee_handover(db, new_mode, _logger)
     return config
 
@@ -100,23 +102,7 @@ async def _ecobee_handover(db: AsyncSession, new_mode: SystemMode, _logger: Any)
             await ha_client.set_ecobee_occupancy_modes(entity, auto_away=True, follow_me=True)
         except Exception as exc:
             _logger.warning("Could not restore Ecobee occupancy features: %s", exc)
-        try:
-            state = await ha_client.get_state(entity)
-            modes = [str(m) for m in (state.attributes.get("hvac_modes") or [])]
-            # Only if *ClimateIQ* turned it off (an off-schedule) — a
-            # thermostat the user switched off stays off.
-            await _main._ensure_mode_switch_loaded()
-            last = _main._last_mode_switch.get(entity)
-            we_turned_off = last is not None and last[0] == "off"
-            if str(state.state or "").lower() == "off" and we_turned_off:
-                for native in ("heat_cool", "auto"):
-                    if native in modes:
-                        await ha_client.set_hvac_mode(entity, native)
-                        await _main._record_mode_switch(entity, native)
-                        _logger.info("Learn: ClimateIQ had turned it off — set to '%s'", native)
-                        break
-        except Exception as exc:
-            _logger.warning("Could not restore thermostat mode for Learn: %s", exc)
+        await _main._undo_our_off(ha_client, entity, "Learn")
 
 
 @router.post("/mode", response_model=SystemConfigResponse)

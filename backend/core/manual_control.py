@@ -138,6 +138,11 @@ async def apply_manual_setpoint(
 
     async with THERMOSTAT_LOCK:
         previous = await snapshot_override(db)
+        try:
+            _before = await ha.get_state(entity)
+            mode_before = str(_before.state or "").lower() if _before else ""
+        except Exception:
+            mode_before = ""
         expires = await set_override(
             db, requested_c, source=source, duration_hours=duration_hours
         )
@@ -145,7 +150,19 @@ async def apply_manual_setpoint(
             actual = await _write_manual(db, ha, entity, requested_c, force_mode)
         except BaseException:
             # A rejected/failed request changes nothing: the override that
-            # was running (if any) stays.
+            # was running (if any) stays — and so does the heat/cool mode
+            # (a switch made before the setpoint write failed would leave
+            # the restored override unable to work).
+            if mode_before:
+                try:
+                    _now = await ha.get_state(entity)
+                    if _now is not None and str(_now.state or "").lower() != mode_before:
+                        await ha.set_hvac_mode(entity, mode_before)
+                        import backend.api.main as main_mod
+
+                        await main_mod._record_mode_switch(entity, mode_before)
+                except Exception as exc:
+                    logger.warning("Could not restore the thermostat mode: %s", exc)
             await restore_override(db, previous, reason="manual write failed")
             raise
     return await _finish_manual(db, entity, value, unit, requested_c, actual, source, expires)
@@ -257,11 +274,15 @@ async def resume_automatic_control(db: Any, *, source: str) -> str:
 
     import backend.api.dependencies as deps
     import backend.api.main as main_mod
+    from backend.core.control_lock import THERMOSTAT_LOCK
     from backend.core.manual_override import clear_override
     from backend.models.database import SystemConfig
     from backend.models.enums import SystemMode
 
-    await clear_override(db, reason=source)
+    # Under the lock so a concurrently failing manual request can't restore
+    # the override after Resume cleared it.
+    async with THERMOSTAT_LOCK:
+        await clear_override(db, reason=source)
     cfg = (await db.execute(select(SystemConfig).limit(1))).scalar_one_or_none()
     mode = cfg.current_mode if cfg is not None else SystemMode.learn
     if mode == SystemMode.learn:
