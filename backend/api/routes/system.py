@@ -53,27 +53,38 @@ async def apply_system_mode(db: AsyncSession, new_mode: SystemMode) -> SystemCon
     """
     import logging as _logging
 
-    import backend.api.dependencies as _deps
     import backend.api.main as _main
-    from backend.core.manual_control import ManualControlError, climate_entity
+    from backend.core.control_lock import THERMOSTAT_LOCK
     from backend.core.manual_override import clear_override
 
     _logger = _logging.getLogger(__name__)
-    config = await _get_or_create_system_config(db)
-    config.current_mode = new_mode
-    config.last_synced_at = datetime.now(UTC)
-    await db.commit()
-    await db.refresh(config)
-    await clear_override(db, reason=f"mode changed to {new_mode.value}")
-    _main._preconditioning.clear()
+    # Under the thermostat lock: an in-flight loop write either completes
+    # before the switch or re-checks the new mode and stands down.
+    async with THERMOSTAT_LOCK:
+        config = await _get_or_create_system_config(db)
+        config.current_mode = new_mode
+        config.last_synced_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(config)
+        await clear_override(db, reason=f"mode changed to {new_mode.value}")
+        _main._preconditioning.clear()
+        await _ecobee_handover(db, new_mode, _logger)
+    return config
+
+
+async def _ecobee_handover(db: AsyncSession, new_mode: SystemMode, _logger: Any) -> None:
+    """Hand the Ecobee to/from ClimateIQ for ``new_mode`` (caller holds the lock)."""
+    import backend.api.dependencies as _deps
+    import backend.api.main as _main
+    from backend.core.manual_control import ManualControlError, climate_entity
 
     ha_client = _deps._ha_client
     if ha_client is None:
-        return config
+        return
     try:
         entity = await climate_entity(db)
     except ManualControlError:
-        return config
+        return
 
     if new_mode in (SystemMode.scheduled, SystemMode.active, SystemMode.follow_me):
         try:
@@ -92,15 +103,19 @@ async def apply_system_mode(db: AsyncSession, new_mode: SystemMode) -> SystemCon
         try:
             state = await ha_client.get_state(entity)
             modes = [str(m) for m in (state.attributes.get("hvac_modes") or [])]
-            if str(state.state or "").lower() == "off":
+            # Only if *ClimateIQ* turned it off (an off-schedule) — a
+            # thermostat the user switched off stays off.
+            last = _main._last_mode_switch.get(entity)
+            we_turned_off = last is not None and last[0] == "off"
+            if str(state.state or "").lower() == "off" and we_turned_off:
                 for native in ("heat_cool", "auto"):
                     if native in modes:
                         await ha_client.set_hvac_mode(entity, native)
-                        _logger.info("Learn: thermostat was off — set to '%s'", native)
+                        _main._last_mode_switch[entity] = (native, datetime.now(UTC))
+                        _logger.info("Learn: ClimateIQ had turned it off — set to '%s'", native)
                         break
         except Exception as exc:
             _logger.warning("Could not restore thermostat mode for Learn: %s", exc)
-    return config
 
 
 @router.post("/mode", response_model=SystemConfigResponse)
@@ -195,72 +210,80 @@ async def emergency_shutoff(
     logger = logging.getLogger(__name__)
     settings = _get_settings()
 
-    # 1. Set system mode to learn (safe/passive) and drop any override
-    # .limit(1), like every other reader — the singleton's id isn't always 1.
-    result = await db.execute(select(SystemConfig).limit(1))
-    config = result.scalar_one_or_none()
-    if config:
-        config.current_mode = SystemMode.learn
-        await db.commit()
-    from backend.core.manual_override import clear_override
+    # The whole shutoff runs under the thermostat lock: a loop write that is
+    # mid-flight finishes first and every later one re-checks, sees Learn,
+    # and stands down — nothing can turn the HVAC back on.
+    from backend.core.control_lock import THERMOSTAT_LOCK
 
-    await clear_override(db, reason="emergency shutoff")
-
-    # 2. Turn off all devices via HA
     devices_off = 0
-    errors = []
-    if settings.home_assistant_token:
-        try:
-            async with HAClient(
-                str(settings.home_assistant_url), settings.home_assistant_token
-            ) as ha:
-                device_result = await db.execute(select(Device))
-                devices = device_result.scalars().all()
+    errors: list[str] = []
+    async with THERMOSTAT_LOCK:
+        # 1. Set system mode to learn (safe/passive) and drop any override
+        # .limit(1), like every other reader — the singleton's id isn't always 1.
+        result = await db.execute(select(SystemConfig).limit(1))
+        config = result.scalar_one_or_none()
+        if config:
+            config.current_mode = SystemMode.learn
+            await db.commit()
+        from backend.core.manual_override import clear_override
 
-                # The thermostat is configured via climate_entities and often
-                # has no Device row — shut it off explicitly first.
-                from backend.models.database import SystemSetting as _ESetting
+        await clear_override(db, reason="emergency shutoff")
 
-                climate_targets: list[str] = []
-                _ce = (
-                    await db.execute(select(_ESetting).where(_ESetting.key == "climate_entities"))
-                ).scalar_one_or_none()
-                if _ce and _ce.value:
+        # 2. Turn off all devices via HA
+        devices_off = 0
+        errors = []
+        if settings.home_assistant_token:
+            try:
+                async with HAClient(
+                    str(settings.home_assistant_url), settings.home_assistant_token
+                ) as ha:
+                    device_result = await db.execute(select(Device))
+                    devices = device_result.scalars().all()
+
+                    # The thermostat is configured via climate_entities and often
+                    # has no Device row — shut it off explicitly first.
+                    from backend.models.database import SystemSetting as _ESetting
+
+                    climate_targets: list[str] = []
+                    _ce = (
+                        await db.execute(select(_ESetting).where(_ESetting.key == "climate_entities"))
+                    ).scalar_one_or_none()
+                    if _ce and _ce.value:
+                        climate_targets += [
+                            e.strip() for e in str(_ce.value.get("value", "")).split(",") if e.strip()
+                        ]
                     climate_targets += [
-                        e.strip() for e in str(_ce.value.get("value", "")).split(",") if e.strip()
+                        e.strip() for e in settings.climate_entities.split(",") if e.strip()
                     ]
-                climate_targets += [
-                    e.strip() for e in settings.climate_entities.split(",") if e.strip()
-                ]
-                handled: set[str] = set()
-                for entity in climate_targets:
-                    if entity in handled:
-                        continue
-                    handled.add(entity)
-                    try:
-                        await ha.set_hvac_mode(entity, "off")
-                        devices_off += 1
-                    except Exception as e:
-                        errors.append(f"{entity}: {e}")
-                        logger.error("Failed to shut off %s: %s", entity, e)
-
-                for device in devices:
-                    if device.ha_entity_id and device.ha_entity_id not in handled:
+                    handled: set[str] = set()
+                    for entity in climate_targets:
+                        if entity in handled:
+                            continue
+                        handled.add(entity)
                         try:
-                            domain = device.ha_entity_id.split(".", 1)[0]
-                            if domain == "climate":
-                                await ha.set_hvac_mode(device.ha_entity_id, "off")
-                            else:
-                                await ha.turn_off(device.ha_entity_id)
+                            await ha.set_hvac_mode(entity, "off")
                             devices_off += 1
                         except Exception as e:
-                            errors.append(f"{device.ha_entity_id}: {e}")
-                            logger.error("Failed to shut off %s: %s", device.ha_entity_id, e)
-        except Exception as e:
-            errors.append(f"HA connection failed: {e}")
-            logger.error("Emergency shutoff HA connection failed: %s", e)
-    else:
-        errors.append("No HA token configured — cannot send device commands")
+                            errors.append(f"{entity}: {e}")
+                            logger.error("Failed to shut off %s: %s", entity, e)
+
+                    for device in devices:
+                        if device.ha_entity_id and device.ha_entity_id not in handled:
+                            try:
+                                domain = device.ha_entity_id.split(".", 1)[0]
+                                if domain == "climate":
+                                    await ha.set_hvac_mode(device.ha_entity_id, "off")
+                                else:
+                                    await ha.turn_off(device.ha_entity_id)
+                                devices_off += 1
+                            except Exception as e:
+                                errors.append(f"{device.ha_entity_id}: {e}")
+                                logger.error("Failed to shut off %s: %s", device.ha_entity_id, e)
+            except Exception as e:
+                errors.append(f"HA connection failed: {e}")
+                logger.error("Emergency shutoff HA connection failed: %s", e)
+        else:
+            errors.append("No HA token configured — cannot send device commands")
 
     logger.warning(
         "EMERGENCY SHUTOFF executed: %d devices turned off, %d errors",
@@ -387,11 +410,21 @@ async def execute_quick_action(
             return round(c * 9 / 5 + 32) if unit == "F" else round(c * 2) / 2
 
         async def _preset(name: str, label: str) -> QuickActionResponse:
-            await _ha_client.call_service(
-                "climate", "set_preset_mode",
-                data={"preset_mode": name}, target={"entity_id": entity},
-            )
-            await set_override(db, None, source=f"quick-action:{action}")
+            from backend.core.control_lock import THERMOSTAT_LOCK
+            from backend.core.manual_override import clear_override
+
+            # Record first, then write (no loop tick can slip in between);
+            # roll back if the write fails.
+            async with THERMOSTAT_LOCK:
+                await set_override(db, None, source=f"quick-action:{action}")
+                try:
+                    await _ha_client.call_service(
+                        "climate", "set_preset_mode",
+                        data={"preset_mode": name}, target={"entity_id": entity},
+                    )
+                except BaseException:
+                    await clear_override(db, reason="preset write failed")
+                    raise
             return QuickActionResponse(
                 success=True, message=f"Set to {label}", action=action,
                 detail={"preset_mode": name},
@@ -1433,11 +1466,11 @@ async def get_override_status(
         # as a hold).  Only comfort-profile presets (sleep, away, home,
         # etc.) count as a real override that the user should see.
         _NORMAL_PRESETS = {"none", "", "temp"}
-        is_override = bool(
-            preset_mode
-            and preset_mode.lower() not in _NORMAL_PRESETS
-            and preset_mode.strip()
-        )
+        # Only a ClimateIQ manual override counts (below).  Ecobee comfort
+        # presets (home/sleep/away) appear during normal program operation
+        # and are not a hold the user set.
+        _ = _NORMAL_PRESETS
+        is_override = False
         # A ClimateIQ manual override (dashboard / dial / chat / quick action)
         # is the main kind — surface it and when it ends.
         override_until: str | None = None
@@ -1489,9 +1522,13 @@ async def get_override_status(
                 _sched_r = await db.execute(
                     select(Schedule).where(Schedule.is_enabled.is_(True))
                 )
-                from backend.core.schedule_guard import find_active_schedule
+                # Same decision the loops use, incl. preconditioning (§3.4).
+                import backend.api.main as _main_mod
+                from backend.core.schedule_guard import governing_schedule
 
-                _best = find_active_schedule(list(_sched_r.scalars().all()), _now_local)
+                _best, _ = governing_schedule(
+                    list(_sched_r.scalars().all()), _now_local, _main_mod._preconditioning
+                )
 
                 if _best and _best.zone_ids:
                     active_zone_ids = _best.zone_ids

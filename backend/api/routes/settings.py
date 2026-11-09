@@ -448,6 +448,10 @@ async def update_settings(
         await _upsert_kv(db, key, value)
 
     await db.commit()
+    if "temperature_unit" in changed:
+        # Keep the process-wide settings object in step with the user's
+        # choice — chat, prompts and notifications read the unit from it.
+        SETTINGS.temperature_unit = str(changed["temperature_unit"]).upper()
     return await _build_response(db)
 
 

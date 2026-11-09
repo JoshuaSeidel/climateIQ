@@ -69,13 +69,61 @@ async def resolve_user_tz(db: Any, ha_client: Any) -> ZoneInfo:
             ha_config = await ha_client.get_config()
             tz = parse_tz(ha_config.get("time_zone", ""))
             if tz is not None:
+                if _last_ha_tz is None or str(_last_ha_tz) != str(tz):
+                    await _persist_ha_tz(db, str(tz))
                 _last_ha_tz = tz
                 return tz
         except Exception as exc:
             logger.debug("user_tz: HA config lookup failed (%s)", exc)
     if _last_ha_tz is not None:
         return _last_ha_tz
+    # After a restart: the last HA timezone we saw, persisted — never
+    # silently UTC (spec §3.5).
+    cached = await _load_ha_tz(db)
+    if cached is not None:
+        _last_ha_tz = cached
+        return cached
+    logger.warning("user_tz: no timezone available — using UTC")
     return _UTC
+
+
+_CACHE_KEY = "ha_timezone_cache"
+
+
+async def _persist_ha_tz(db: Any, name: str) -> None:
+    if db is None:
+        return
+    try:
+        from sqlalchemy import select as sa_select
+
+        from backend.models.database import SystemSetting
+
+        row = (
+            await db.execute(sa_select(SystemSetting).where(SystemSetting.key == _CACHE_KEY))
+        ).scalar_one_or_none()
+        if row is None:
+            db.add(SystemSetting(key=_CACHE_KEY, value={"value": name}))
+        else:
+            row.value = {"value": name}
+        await db.commit()
+    except Exception as exc:
+        logger.debug("user_tz: could not persist HA timezone (%s)", exc)
+
+
+async def _load_ha_tz(db: Any) -> ZoneInfo | None:
+    if db is None:
+        return None
+    try:
+        from sqlalchemy import select as sa_select
+
+        from backend.models.database import SystemSetting
+
+        row = (
+            await db.execute(sa_select(SystemSetting).where(SystemSetting.key == _CACHE_KEY))
+        ).scalar_one_or_none()
+        return parse_tz(row.value) if row is not None and row.value else None
+    except Exception:
+        return None
 
 
 async def local_now(db: Any, ha_client: Any) -> datetime:

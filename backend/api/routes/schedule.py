@@ -58,6 +58,16 @@ async def _apply_schedule_now_bg(schedule: Schedule) -> None:
 _HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
 
 
+def _normalise_hvac_mode(v: str) -> str:
+    """Trim/lower and validate — "OFF " used to slip past every "off" check."""
+    mode = str(v or "").strip().lower()
+    aliases = {"heating": "heat", "cooling": "cool", "heat_cool": "auto"}
+    mode = aliases.get(mode, mode)
+    if mode not in ("auto", "heat", "cool", "off"):
+        raise ValueError("hvac_mode must be one of: auto, heat, cool, off")
+    return mode
+
+
 def _validate_days_list(v: list[int]) -> list[int]:
     if not v:
         raise ValueError("At least one day must be selected")
@@ -78,7 +88,7 @@ class ScheduleCreate(BaseModel):
     start_time: str = Field(..., pattern=_HHMM)  # HH:MM format
     end_time: str | None = Field(None, pattern=_HHMM)
     target_temp_c: float = Field(..., ge=4.4, le=37.8)
-    hvac_mode: str = Field(default="auto")  # auto, heating, cooling, off
+    hvac_mode: str = Field(default="auto")  # auto, heat, cool, off
     is_enabled: bool = True
     priority: int = Field(default=1, ge=1, le=10)  # Higher = more important
 
@@ -86,6 +96,11 @@ class ScheduleCreate(BaseModel):
     @classmethod
     def validate_days(cls, v: list[int]) -> list[int]:
         return _validate_days_list(v)
+
+    @field_validator("hvac_mode")
+    @classmethod
+    def validate_hvac_mode(cls, v: str) -> str:
+        return _normalise_hvac_mode(v)
 
     @field_validator("target_temp_c")
     @classmethod
@@ -117,6 +132,11 @@ class ScheduleUpdate(BaseModel):
     @classmethod
     def validate_days(cls, v: list[int] | None) -> list[int] | None:
         return None if v is None else _validate_days_list(v)
+
+    @field_validator("hvac_mode")
+    @classmethod
+    def validate_hvac_mode(cls, v: str | None) -> str | None:
+        return None if v is None else _normalise_hvac_mode(v)
 
 
 class ScheduleResponse(BaseModel):
@@ -313,22 +333,9 @@ def check_schedule_overlap(
     """Check if two schedules overlap in time and zones."""
 
 
-    # Check if they share zones (empty/None = all zones, always overlaps)
-    # Support both new `zone_ids` (list) and legacy `zone_id` (single value)
-    zone_ids1: list[str] = schedule1.get("zone_ids", [])
-    zone_ids2: list[str] = schedule2.get("zone_ids", [])
-
-    # Fallback to legacy zone_id if zone_ids is empty
-    if not zone_ids1 and schedule1.get("zone_id") is not None:
-        zone_ids1 = [str(schedule1["zone_id"])]
-    if not zone_ids2 and schedule2.get("zone_id") is not None:
-        zone_ids2 = [str(schedule2["zone_id"])]
-
-    # If either targets all zones (empty list), they overlap on zones
-    if zone_ids1 and zone_ids2:
-        # Both have specific zones — check for intersection
-        if not set(zone_ids1) & set(zone_ids2):
-            return False
+    # Zones don't matter: there is one whole-house thermostat, so two
+    # schedules active at the same time always compete — the higher
+    # priority one silences the other entirely (spec §3.2).
 
     # Time overlap on the real weekly timeline, with the same rules the
     # control loops use (spec §3.1): each occurrence belongs to the day it
@@ -471,6 +478,11 @@ async def get_upcoming_schedules(
                         if end_t <= start_t:
                             end_local_dt += timedelta(days=1)
                         end_utc = end_local_dt.astimezone(UTC)
+                    else:
+                        # No end time → until midnight (spec §3.1).
+                        end_utc = datetime.combine(
+                            check_date + timedelta(days=1), time(0, 0), tzinfo=user_tz,
+                        ).astimezone(UTC)
 
                     upcoming.append(
                         UpcomingSchedule(
@@ -583,7 +595,7 @@ async def get_active_schedule(
     if occurrence is None:  # pragma: no cover — find_active_schedule guarantees one
         return ActiveScheduleResponse(active=False, schedule=None)
     start_dt = occurrence[0].astimezone(UTC)
-    end_dt = occurrence[1].astimezone(UTC) if best.end_time else None
+    end_dt = occurrence[1].astimezone(UTC)  # no end time → midnight (spec §3.1)
 
     return ActiveScheduleResponse(
         active=True,

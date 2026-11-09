@@ -119,7 +119,7 @@ def precondition_allowed(
     upcoming_target_c: float,
     thermostat_mode: str,
     *,
-    deadband_c: float = SCHEDULE_DEADBAND_C,
+    deadband_c: float = 0.6,  # spec §4.2/§7.2 dead-band (≈1 °F)
 ) -> bool:
     """Whether starting an upcoming schedule early is real preconditioning.
 
@@ -144,6 +144,35 @@ def precondition_allowed(
     if gap_c < -deadband_c:
         return mode == "cool"
     return False
+
+
+def _utc(dt: datetime) -> datetime:
+    from datetime import UTC
+
+    return dt.astimezone(UTC) if dt.tzinfo is not None else dt
+
+
+def _real(dt: datetime) -> datetime:
+    """A wall time skipped by spring-forward → the transition instant.
+
+    zoneinfo resolves a nonexistent 02:30 with the old offset (= 03:30 after
+    the jump), starting a 02:30 schedule 30 min late.  Like the Ecobee and
+    cron, fire at the transition instead (03:00).  Existing times unchanged.
+    """
+    from datetime import UTC, timedelta
+
+    if dt.tzinfo is None:
+        return dt
+    tz = dt.tzinfo
+    wall = dt.replace(tzinfo=None, fold=0)
+    u0 = _utc(dt.replace(fold=0))
+    if u0.astimezone(tz).replace(tzinfo=None) == wall:
+        return dt
+    # Skipped: find the earliest instant whose wall time is ≥ the target.
+    u = _utc(dt.replace(fold=1))
+    while u < u0 and u.astimezone(tz).replace(tzinfo=None) < wall:
+        u += timedelta(minutes=1)
+    return u.astimezone(UTC).astimezone(tz)
 
 
 def _parse_hhmm(value: Any) -> time | None:
@@ -185,6 +214,7 @@ def active_occurrence(
         start_dt = now.replace(
             year=start_day.year, month=start_day.month, day=start_day.day,
             hour=start_t.hour, minute=start_t.minute,
+            fold=0,
         )
         if end_t is None:
             end_dt = start_dt.replace(hour=0, minute=0) + timedelta(days=1)
@@ -192,7 +222,10 @@ def active_occurrence(
             end_dt = start_dt.replace(hour=end_t.hour, minute=end_t.minute)
             if end_t <= start_t:
                 end_dt += timedelta(days=1)
-        if start_dt <= now < end_dt:
+        start_dt, end_dt = _real(start_dt), _real(end_dt)
+        # Compare instants, not wall clocks (Python compares same-tz aware
+        # datetimes by wall time) — DST's skipped/repeated hours.
+        if _utc(start_dt) <= _utc(now) < _utc(end_dt):
             return start_dt, end_dt
     return None
 
@@ -227,7 +260,7 @@ def find_active_schedule(schedules: list[Any], now_local: datetime) -> Any | Non
         )
         if occ is None:
             continue
-        key = (int(getattr(sched, "priority", 0) or 0), occ[0])
+        key = (int(getattr(sched, "priority", 0) or 0), _utc(occ[0]))
         if best_key is None or key > best_key:
             best, best_key = sched, key
     return best
@@ -285,6 +318,7 @@ def next_schedule_boundary(schedules: list[Any], now_local: datetime) -> datetim
             start_dt = now.replace(
                 year=day.year, month=day.month, day=day.day,
                 hour=start_t.hour, minute=start_t.minute,
+                fold=0,
             )
             if end_t is None:
                 end_dt = start_dt.replace(hour=0, minute=0) + timedelta(days=1)
@@ -292,8 +326,8 @@ def next_schedule_boundary(schedules: list[Any], now_local: datetime) -> datetim
                 end_dt = start_dt.replace(hour=end_t.hour, minute=end_t.minute)
                 if end_t <= start_t:
                     end_dt += timedelta(days=1)
-            for cand in (start_dt, end_dt):
-                if cand > now and (best is None or cand < best):
+            for cand in (_real(start_dt), _real(end_dt)):
+                if _utc(cand) > _utc(now) and (best is None or _utc(cand) < _utc(best)):
                     best = cand
     return best
 
@@ -324,8 +358,10 @@ def next_start(sched: Any, now_local: datetime) -> datetime | None:
         cand = now.replace(
             year=day.year, month=day.month, day=day.day,
             hour=start_t.hour, minute=start_t.minute,
+            fold=0,
         )
-        if cand > now_local:
+        cand = _real(cand)
+        if _utc(cand) > _utc(now_local):
             return cand
     return None
 
@@ -346,7 +382,7 @@ def upcoming_schedules(
         start = next_start(sched, now_local)
         if start is not None and 0 < seconds_until(start, now_local) <= within_s:
             out.append((sched, start))
-    out.sort(key=lambda p: (p[1], -int(getattr(p[0], "priority", 0) or 0)))
+    out.sort(key=lambda p: (_utc(p[1]), -int(getattr(p[0], "priority", 0) or 0)))
     return out
 
 
@@ -376,14 +412,14 @@ def governing_schedule(
         started_for = preconditioning.get(str(getattr(sched, "id", "")))
         if started_for is None:
             continue
-        if str(getattr(sched, "hvac_mode", "") or "").lower() == "off":
+        if str(getattr(sched, "hvac_mode", "") or "").strip().lower() == "off":
             continue
         start = next_start(sched, now_local)
         if start is None or start != started_for:
             continue
         if not 0 < seconds_until(start, now_local) <= MAX_PRECONDITION_LEAD_S:
             continue
-        if best is None or start < best[1]:
+        if best is None or _utc(start) < _utc(best[1]):
             best = (sched, start)
     if best is not None:
         return best[0], "preconditioning"

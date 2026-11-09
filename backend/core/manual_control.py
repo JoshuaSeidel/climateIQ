@@ -98,10 +98,8 @@ async def apply_manual_setpoint(
 ) -> dict[str, Any]:
     """Validate, choose direction, write, and record a manual override."""
     import backend.api.dependencies as deps
-    import backend.api.main as main_mod
     from backend.config import SETTINGS
     from backend.core.manual_override import set_override
-    from backend.core.temp_compensation import get_avg_zone_temp_c
 
     ha = deps._ha_client
     if ha is None:
@@ -121,6 +119,41 @@ async def apply_manual_setpoint(
             f"{lo_d:.0f}-{hi_d:.0f}°{unit}"
         )
     entity = await climate_entity(db)
+    if duration_hours is not None:
+        import math
+
+        try:
+            duration_hours = float(duration_hours)
+        except (TypeError, ValueError) as exc:
+            raise ManualControlError("duration_hours must be a number") from exc
+        if not math.isfinite(duration_hours) or duration_hours <= 0:
+            raise ManualControlError("duration_hours must be a positive number")
+        duration_hours = min(duration_hours, 24.0)  # spec §2: max 24 h
+
+    # Everything below runs under the thermostat lock: the override is
+    # recorded *before* any write (so no loop tick can slip in between and
+    # undo it), and rolled back if the write fails.
+    from backend.core.control_lock import THERMOSTAT_LOCK
+    from backend.core.manual_override import clear_override
+
+    async with THERMOSTAT_LOCK:
+        expires = await set_override(
+            db, requested_c, source=source, duration_hours=duration_hours
+        )
+        try:
+            actual = await _write_manual(db, ha, entity, requested_c, force_mode)
+        except BaseException:
+            await clear_override(db, reason="manual write failed")
+            raise
+    return await _finish_manual(db, entity, value, unit, requested_c, actual, source, expires)
+
+
+async def _write_manual(
+    db: Any, ha: Any, entity: str, requested_c: float, force_mode: str | None
+) -> str:
+    """Choose direction and write the setpoint (caller holds the lock)."""
+    import backend.api.main as main_mod
+    from backend.core.temp_compensation import get_avg_zone_temp_c
 
     # ── Direction (spec §4) ──────────────────────────────────────────────
     mode = force_mode
@@ -152,9 +185,19 @@ async def apply_manual_setpoint(
         await ha.set_temperature_with_hold(entity, value_ha, intent_mode=intent)
     except Exception:
         await ha.set_temperature(entity, value_ha, intent_mode=intent)
+    return actual
 
-    expires = await set_override(db, requested_c, source=source, duration_hours=duration_hours)
 
+async def _finish_manual(
+    db: Any,
+    entity: str,
+    value: float,
+    unit: str,
+    requested_c: float,
+    actual: str,
+    source: str,
+    expires: datetime,
+) -> dict[str, Any]:
     # Audit (best effort).
     try:
         from sqlalchemy import select

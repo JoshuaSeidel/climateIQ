@@ -155,10 +155,6 @@ class PatternEngine:
                 rate_c_per_min = abs(cache.get("avg_trend_c_per_min", 0.0)) or 0.0
             if rate_c_per_min < 1e-4:
                 rate_c_per_min = 0.05  # conservative default: ~3°C/hour
-            # Floor at 1°C/hour.  A learned rate near zero (e.g. a profile
-            # sampled while the HVAC was idle) otherwise turns a half-degree
-            # gap into the full 3-hour lead.
-            rate_c_per_min = max(rate_c_per_min, 1.0 / 60.0)
 
             # Adverse-outdoor delta: how hard HVAC is fighting the outdoors.
             adverse = 0.0
@@ -176,7 +172,11 @@ class PatternEngine:
             # of nominal effectiveness so we never blow past the 3-hour cap
             # on merely-warm days.
             outdoor_scale = max(0.30, 1.0 - adverse * 0.03)
-            effective_rate = max(1e-4, rate_c_per_min * outdoor_scale)
+            # Floor the *effective* rate at 1 °C/hour (spec §7.3) — after
+            # the outdoor slowdown, which could otherwise take it to
+            # 0.3 °C/h; a near-zero learned rate (profile sampled while the
+            # HVAC was idle) would turn a small gap into the full 3 h lead.
+            effective_rate = max(1.0 / 60.0, rate_c_per_min * outdoor_scale)
 
             base_minutes = gap_c / effective_rate
 

@@ -262,7 +262,11 @@ async def compute_window_state(
             avg_c = await _read_zone_avg_c(db, ha_client, zone_ids)
         state.zone_avg_c = avg_c
         if avg_c is not None:
-            heat_key, cool_key = f"{label}:heat", f"{label}:cool"
+            # Keyed by window *and* zone scope: the seasonal lock's
+            # whole-house check must not close a latch the schedule-zone
+            # check opened (that defeated the hysteresis).
+            scope = ",".join(sorted(str(z) for z in (zone_ids or []))) or "all"
+            heat_key, cool_key = f"{label}:{scope}:heat", f"{label}:{scope}:cool"
             if window.escape_below_c is not None:
                 if avg_c <= window.escape_below_c:
                     _escape_latched.add(heat_key)

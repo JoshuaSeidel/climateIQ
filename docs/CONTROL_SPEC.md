@@ -25,7 +25,7 @@ Exactly one owner per situation.  Every other path must not write.
 
 | System mode | Owner of setpoint + heat/cool mode |
 |---|---|
-| **Learn** | Nobody.  Control is handed back to the Ecobee's own program (resume program, restore its occupancy features; if ClimateIQ left it `off`, set its own `heat_cool`/`auto`).  No schedule firing, preconditioning, maintenance, drift correction, AI, or Follow-Me writes. |
+| **Learn** | Nobody.  Control is handed back to the Ecobee's own program (resume program, restore its occupancy features; only if ClimateIQ itself last switched it `off`, set its own `heat_cool`/`auto` — an `off` the user chose stays off).  No schedule firing, preconditioning, maintenance, drift correction, AI, or Follow-Me writes. |
 | **Scheduled** | Schedule control: `maintain_climate_offset` (every minute) for whichever schedule governs (§3, §7).  `execute_schedules` never writes — it only sends "Schedule Activated" and decides preconditioning.  Drift correction only re-runs maintenance. |
 | **Follow-Me** | If a schedule is active → schedule control exactly as in Scheduled mode.  Only when **no** schedule is active does the Follow-Me loop control by occupancy. **[Decision]** Schedules are binding in every automatic mode. |
 | **Active (AI)** | `execute_active_mode`, bounded by the schedule guard (§6).  The final guarded write runs every tick, even when the LLM is skipped or unavailable (formula fallback). |
@@ -48,9 +48,13 @@ Overrides on top of any automatic mode:
 - **Boost heat/cool**: 2 °F past the current setpoint in that direction
   (switching to it).  **Eco**: the eco preset if available, else 3 °F in the
   energy-saving direction of the current mode.
+- "Override" in the dashboard/dial/API means **only** this ClimateIQ
+  override (`is_override`, `override_temp`, `override_until`) — never an
+  Ecobee hold, which ClimateIQ itself creates on every write.
 - **Every automatic write re-checks** the system mode and override right
-  before writing, so an emergency shutoff / Learn / override issued during
-  a long tick (LLM call) takes effect.
+  before writing, under the single thermostat lock that manual writes, mode
+  changes and emergency shutoff also take, so an emergency shutoff / Learn /
+  override issued during a long tick (LLM call) always wins.
 - **Emergency shutoff** turns the thermostat off and switches to Learn.
 - The **rule engine** never writes to the managed thermostat or sends
   setpoints to non-climate devices.
@@ -66,7 +70,9 @@ Overrides on top of any automatic mode:
    wraps past midnight (end == start = 24 h); the portion after midnight
    belongs to the day it **started** **[Decision]** (a Friday 20:00-06:30
    schedule is active Saturday 03:00 even if Saturday isn't ticked).  No end
-   time = until midnight.  Conflict detection uses the same timeline.
+   time = until midnight.  Conflict detection uses the same timeline, and
+   flags overlaps even when the schedules cover different zones (there is
+   one thermostat, so only one can govern).
 2. If several are active, the highest `priority` wins; ties go to the one that
    started most recently.
 3. Local time comes from `backend/core/user_tz.py` everywhere.
@@ -76,6 +82,8 @@ Overrides on top of any automatic mode:
    always agree.
 5. Local time falls back to the last timezone read from Home Assistant if a
    lookup fails, never silently to UTC.
+6. DST: a start/end inside the spring-forward gap (e.g. 02:30) happens at the
+   transition (03:00); in the repeated fall-back hour the first pass counts.
 
 ## 4. Heat or cool
 
@@ -93,7 +101,9 @@ Overrides on top of any automatic mode:
    time-of-day windows (with their escape valves; an active window takes
    precedence over the season).
    If the needed direction is forbidden, leave the mode alone and park the
-   setpoint so the forbidden direction can't run (§5.5).
+   setpoint so the forbidden direction can't run (§5.5).  **[Decision]** A
+   lock never *picks* a direction: a heat lock does not switch a too-warm
+   house to heat; it only stops cool.
 5. Reversal cooldown (default 30 min) between heat↔cool switches, bypassed
    when the thermostat is working *against* the target (heating while zones are
    above target or cooling while below).
@@ -110,11 +120,18 @@ Overrides on top of any automatic mode:
    Cool mode with zones at or below target → setpoint ≥ max(target, thermostat
    reading).  The dead-band (zones within 1 °F on the self-correcting side)
    follows the same rule.
-4. **Must actually run when needed:** heat with zones below target → setpoint
-   strictly above the thermostat's reading (and ≥ target); cool mirror.
-5. **Time-window block:** if the current mode's direction is forbidden, park the
-   setpoint at the thermostat reading (heat: ≤ reading; cool: ≥ reading).  This
-   is applied before any "already at target, skip write" shortcut.
+4. **Must actually run when needed:** heat with zones more than 0.28 °C
+   (≈ ½ °F) below target → setpoint strictly above the thermostat's reading
+   (and ≥ target); cool mirror.  This threshold is smaller than the 1 °F
+   direction dead-band, so a room 1 °F short in heat mode still gets heat.
+   The setpoint never exceeds target ± max offset (§5.2), even if the room
+   never warms (closed vent, stuck sensor).
+5. **Time-window / lock block:** if the current mode's direction is forbidden,
+   park the setpoint 1 °F past the thermostat reading (heat: below; cool:
+   above), or at the safety limit if there is no reading.  This is applied
+   before any "already at target, skip write" shortcut.  On a dual-setpoint
+   thermostat the forbidden side is parked 3 °F past the reading once it
+   comes within 1 °F of it; a side already parked is not rewritten.
 6. **Safety range:** every write is clamped to `safety_min_temp_c ..
    safety_max_temp_c`; implausible values are rejected, not clamped into range.
 7. **Dual-setpoint thermostats** (heat_cool): writes move the side matching the
@@ -131,8 +148,16 @@ Overrides on top of any automatic mode:
    zones too warm → setpoint ≤ Schedule-mode setpoint; too cold → ≥; on target
    → within 0.5 °C of it.
 2. With no active schedule, the AI targets the zones' comfort-band midpoints
-   (§5 applies to that target).
-2a. The LLM prompt treats a *next* schedule as information only.
+   (§5 applies to that target).  Only zones with their own band govern;
+   zones without one count only when no zone has a band (then at the
+   default comfort range).  A cold unbanded basement must not drive heat
+   into rooms already inside their band.
+2a. The LLM prompt treats a *next* schedule as information only.  The
+    prompt is intentionally in °F (whole-°F thermostat); conversion to °C
+    happens on the way back, before the guard.
+2b. If the schedule's own zones are all excluded from metrics, other rooms
+    never stand in for them — no write that tick.  LLM failures fall back to
+    the offset formula; the guarded write still happens.
 3. Heat/cool selection follows §4 every tick.
 4. Fans: only zones with `allow_fan_control`; never below the user's baseline;
    quiet-hours cap (default 50 % 19:00–07:00); fans changed by hand are left
@@ -158,13 +183,18 @@ Overrides on top of any automatic mode:
    (`infer_zone_occupancy`); if no zone has occupancy data, no change.
 2. Occupied zones → their comfort-band midpoints.  Nobody home → a 2 °C
    setback from the house midpoint in the energy-saving direction of the
-   current mode (no fixed 18 °C).
+   current mode (no fixed 18 °C).  The setback **never switches heat↔cool**
+   — an empty house is not a reason to start the other direction.
+3. Occupancy changes only after a dwell (3 min to become occupied, 10 min
+   to become vacant), so a single motion blip doesn't move the target.
 
 ## 8. Notifications
 
 At most one per meaningful change: schedule start, heat↔cool switch, a
 setpoint move of ≥ 1 °C (and ≥ 1 h since the last), sensor offline (once per
-episode).
+episode).  A tick that switches heat↔cool sends only the switch
+notification.  Temperatures are shown in the user's display unit
+(Settings).  "Already notified" and preconditioning state survive restarts.
 
 ## 8b. Escape valves
 

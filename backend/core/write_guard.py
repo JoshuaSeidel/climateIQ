@@ -26,6 +26,11 @@ ONE_F_C = 5.0 / 9.0
 # Zones within this of target (°C) count as "on target" (≈1 °F) — same
 # dead-band as direction selection.
 DEADBAND_C = 0.6
+# Within the current mode, rooms more than this below (heat) / above (cool)
+# target must actually get HVAC (≈0.5 °F).  Smaller than DEADBAND_C, which
+# only governs *switching* direction — a room 1 °F short of target in heat
+# mode used to get nothing.
+RUN_THRESHOLD_C = 0.28
 # Plausible thermostat readings (°C).  Outside this the reading is ignored
 # (a dying override sensor must not drive the setpoint to 36 °F).
 _READING_MIN_C = -10.0
@@ -90,6 +95,8 @@ def guard_setpoint(
             forbidden (time window, lock) → park so it can't run (§5.5).
     """
     mode = (hvac_mode or "").lower()
+    if not math.isfinite(desired_c):
+        desired_c = target_c  # never let NaN/inf reach rounding or HA
     if zone_avg_c is None:
         return GuardResult(False, desired_c, -math.inf, math.inf, "no zone readings")
     if mode not in ("heat", "cool"):
@@ -103,30 +110,35 @@ def guard_setpoint(
     error_c = target_c - zone_avg_c  # + → rooms below target
     heat = mode == "heat"
 
-    # Band: start from the max-offset limits around target.
-    lo = target_c - max_offset_c
-    hi = target_c + max_offset_c
+    # Band: start from the max-offset limits around target (whole °F).
+    lo = _ceil_f(target_c - max_offset_c)
+    hi = _floor_f(target_c + max_offset_c)
     value = desired_c
     reason = "within limits"
 
     if heat:
         must_stay_off = (not direction_allowed) or error_c <= 0
-        must_run = direction_allowed and error_c > DEADBAND_C
+        must_run = direction_allowed and error_c > RUN_THRESHOLD_C
         if must_stay_off:
             # §5.3/§5.5: at or below min(target, reading - 1 °F) → heat off.
             cap = target_c if reading is None else min(target_c, reading - ONE_F_C)
-            if not direction_allowed and reading is not None:
-                cap = reading - ONE_F_C
+            if not direction_allowed:
+                # Blocked: below the reading; with no reading, only the
+                # safety floor guarantees heat can't run.
+                cap = reading - ONE_F_C if reading is not None else safety_min_c
             cap = _floor_f(cap)
             lo, hi = -math.inf, cap
             value = min(_floor_f(desired_c), cap)
             reason = "heat blocked" if not direction_allowed else "rooms at/above target"
         elif must_run:
-            # §5.4: strictly above the reading (and ≥ target) so heat runs.
+            # §5.4: strictly above the reading (and ≥ target) so heat runs —
+            # but never past target + max offset (§5.2).  A cold room that
+            # never warms (closed vent, stuck sensor) must not walk the
+            # setpoint up behind the thermostat's own rising reading.
+            hi = _floor_f(target_c + max_offset_c)
             floor = target_c if reading is None else max(target_c, reading + ONE_F_C)
-            floor = _ceil_f(floor)
+            floor = min(_ceil_f(floor), hi)
             lo = floor
-            hi = max(hi, floor)
             value = max(_round_f(desired_c), floor)
             reason = "rooms below target — heat must run"
         else:
@@ -135,20 +147,20 @@ def guard_setpoint(
             value = min(_round_f(desired_c), hi)
     else:
         must_stay_off = (not direction_allowed) or error_c >= 0
-        must_run = direction_allowed and error_c < -DEADBAND_C
+        must_run = direction_allowed and error_c < -RUN_THRESHOLD_C
         if must_stay_off:
             floor = target_c if reading is None else max(target_c, reading + ONE_F_C)
-            if not direction_allowed and reading is not None:
-                floor = reading + ONE_F_C
+            if not direction_allowed:
+                floor = reading + ONE_F_C if reading is not None else safety_max_c
             floor = _ceil_f(floor)
             lo, hi = floor, math.inf
             value = max(_ceil_f(desired_c), floor)
             reason = "cool blocked" if not direction_allowed else "rooms at/below target"
         elif must_run:
+            lo = _ceil_f(target_c - max_offset_c)
             cap = target_c if reading is None else min(target_c, reading - ONE_F_C)
-            cap = _floor_f(cap)
+            cap = max(_floor_f(cap), lo)
             hi = cap
-            lo = min(lo, cap)
             value = min(_round_f(desired_c), cap)
             reason = "rooms above target — cool must run"
         else:

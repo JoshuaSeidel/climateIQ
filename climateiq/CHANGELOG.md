@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.0.92] - 2026-11-09
+
+Heating/cooling correctness, round 2. Four fresh reviews against `docs/CONTROL_SPEC.md` found more bugs. Each fix below has a scenario regression test in `backend/tests/scenario/test_round2_findings.py`, and the spec records each decision.
+
+### Fixed
+- **Runaway heat setpoint:** a room that never warms (closed vent, stuck sensor) could walk the setpoint up behind the thermostat's own rising reading. Must-run setpoints are now capped at target + max offset.
+- **A room 1°F short of target got no heat.** The "must run" threshold is now ½°F, separate from the 1°F heat/cool switching dead-band.
+- **Heat/cool locks only forbid.** A heat lock no longer switches a too-warm house to heat; it just stops cooling.
+- **Dual-setpoint (heat_cool) parking is idempotent.** The forbidden side is parked once, not rewritten every minute. A blocked direction with no thermostat reading parks at the safety limit.
+- **Writer races:** automatic ticks, manual overrides, mode changes and emergency shutoff now share one thermostat lock. A tick that decided before a shutoff, Learn switch or override can no longer undo it.
+- **Override expiry:**
+  - Expiry follows schedules added after the override was set.
+  - Duration is capped at 24 h.
+  - Clearing an expired override can't delete a newer one.
+- **Learn mode** restores the Ecobee's heat_cool only if ClimateIQ itself turned it off.
+- **Override indicator** shows only ClimateIQ overrides, never ClimateIQ's own Ecobee holds.
+- **Follow-Me "nobody home" setback** never switches heat↔cool.
+- **AI mode:**
+  - It no longer falls back to driving by unrelated rooms when the schedule's zones are excluded.
+  - With no schedule, only rooms with their own comfort band govern, so a cold unbanded basement can't heat the house.
+  - A heat↔cool switch sends one notification, not two.
+- **Units:** chat commands and notifications use the display unit from Settings (°C users got °F values).
+- **DST:** a schedule starting inside the spring-forward gap (02:30) now starts at 03:00 instead of 03:30. Overrides end on time.
+- **Schedules:**
+  - Conflict detection flags overlaps across different zones (one thermostat).
+  - HH:MM:SS times are accepted.
+  - hvac_mode aliases are normalised.
+- **Dashboard "Set:"** matches the preconditioning target.
+- The "already notified" and preconditioning state survive add-on restarts.
+
 ## [1.0.91] - 2026-11-09
 
 Heating/cooling correctness overhaul, round 1. There is now a written spec (`docs/CONTROL_SPEC.md`) and a scenario test harness (`backend/tests/scenario/`) that runs the real control loops against a simulated thermostat and rooms on a real database. Four independent reviews were run against the spec and about 60 findings were fixed.

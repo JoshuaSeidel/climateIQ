@@ -35,6 +35,33 @@ async def _row(db: Any) -> Any:
     ).scalar_one_or_none()
 
 
+async def _override_expiry(db: Any, value: dict[str, Any]) -> datetime:
+    """When an override ends — computed from the *current* schedules.
+
+    Spec §2: the next schedule boundary after it was set (so adding/editing
+    a schedule moves the end), or ``duration_hours`` if given, never more
+    than 24 h.  Durations are real elapsed time (DST-safe).
+    """
+    from sqlalchemy import select
+
+    import backend.api.dependencies as deps
+    from backend.core.schedule_guard import next_schedule_boundary
+    from backend.core.user_tz import resolve_user_tz
+    from backend.models.database import Schedule
+
+    set_at = datetime.fromisoformat(str(value.get("set_at")))
+    cap = set_at + _MAX_HOLD
+    dur = value.get("duration_hours")
+    if dur is not None:
+        return min(set_at + timedelta(hours=float(dur)), cap)
+    tz = await resolve_user_tz(db, deps._ha_client)
+    schedules = list(
+        (await db.execute(select(Schedule).where(Schedule.is_enabled.is_(True)))).scalars().all()
+    )
+    boundary = next_schedule_boundary(schedules, set_at.astimezone(tz))
+    return cap if boundary is None else min(boundary.astimezone(UTC), cap)
+
+
 async def set_override(
     db: Any,
     setpoint_c: float | None,
@@ -44,33 +71,18 @@ async def set_override(
     now_local: datetime | None = None,
 ) -> datetime:
     """Record an override and return its expiry (timezone-aware)."""
-    from sqlalchemy import select
+    from backend.models.database import SystemSetting
 
-    from backend.core.schedule_guard import next_schedule_boundary
-    from backend.models.database import Schedule, SystemSetting
-
-    if now_local is None:
-        import backend.api.dependencies as deps
-        from backend.core.user_tz import local_now
-
-        now_local = await local_now(db, deps._ha_client)
-    if duration_hours is not None and float(duration_hours) > 0:
-        expires = now_local + timedelta(hours=float(duration_hours))
-    else:
-        schedules = list(
-            (await db.execute(select(Schedule).where(Schedule.is_enabled.is_(True))))
-            .scalars()
-            .all()
-        )
-        boundary = next_schedule_boundary(schedules, now_local)
-        expires = boundary if boundary is not None else now_local + _MAX_HOLD
-        expires = min(expires, now_local + _MAX_HOLD)
-    value = {
+    value: dict[str, Any] = {
         "setpoint_c": None if setpoint_c is None else float(setpoint_c),
-        "set_at": datetime.now(UTC).isoformat(),
-        "expires_at": expires.astimezone(UTC).isoformat(),
+        "set_at": (now_local or datetime.now(UTC)).astimezone(UTC).isoformat(),
+        "duration_hours": (
+            None if duration_hours is None else min(float(duration_hours), 24.0)
+        ),
         "source": source,
     }
+    expires = await _override_expiry(db, value)
+    value["expires_at"] = expires.isoformat()  # informational; recomputed on read
     row = await _row(db)
     if row is None:
         db.add(SystemSetting(key=_KEY, value={"value": value}))
@@ -85,26 +97,48 @@ async def set_override(
 
 
 async def get_active_override(db: Any) -> dict[str, Any] | None:
-    """The current override, or None (an expired one is cleared)."""
+    """The current override (with a fresh ``expires_at``), or None.
+
+    An expired override is removed — but only if it is still the same
+    override (``set_at`` unchanged), so a new one the user set at that
+    moment is never deleted by this cleanup.
+    """
     row = await _row(db)
     if row is None or not row.value:
         return None
     value = (row.value or {}).get("value")
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or not value.get("set_at"):
         return None
     try:
-        expires = datetime.fromisoformat(str(value.get("expires_at")))
-    except ValueError:
-        expires = datetime.now(UTC)
+        expires = await _override_expiry(db, value)
+    except Exception as exc:
+        logger.debug("Override expiry computation failed: %s", exc)
+        return value
     if expires <= datetime.now(UTC):
-        await clear_override(db, reason="expired")
+        await clear_override(db, reason="expired", expected_set_at=str(value.get("set_at")))
         return None
-    return value
+    return {**value, "expires_at": expires.isoformat()}
 
 
-async def clear_override(db: Any, *, reason: str) -> None:
-    row = await _row(db)
-    if row is not None:
-        await db.delete(row)
+async def clear_override(db: Any, *, reason: str, expected_set_at: str | None = None) -> None:
+    """Remove the override.  With ``expected_set_at``, only if it still matches."""
+    from sqlalchemy import select
+
+    from backend.models.database import SystemSetting
+
+    row = (
+        await db.execute(
+            select(SystemSetting).where(SystemSetting.key == _KEY).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if row is None:
         await db.commit()
-        logger.info("Manual override cleared (%s)", reason)
+        return
+    if expected_set_at is not None:
+        current = ((row.value or {}).get("value") or {}).get("set_at")
+        if str(current) != expected_set_at:
+            await db.commit()  # replaced meanwhile — keep the new override
+            return
+    await db.delete(row)
+    await db.commit()
+    logger.info("Manual override cleared (%s)", reason)

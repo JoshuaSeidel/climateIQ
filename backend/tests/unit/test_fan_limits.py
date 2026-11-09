@@ -60,8 +60,10 @@ class FakeHA:
 @pytest.fixture(autouse=True)
 def _clear_fan_state() -> Any:
     main_mod._fan_baseline.clear()
+    main_mod._fan_user_owned.clear()
     yield
     main_mod._fan_baseline.clear()
+    main_mod._fan_user_owned.clear()
 
 
 async def test_apply_fan_target_respects_cap() -> None:

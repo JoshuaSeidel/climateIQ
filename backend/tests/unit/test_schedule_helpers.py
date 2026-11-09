@@ -181,7 +181,9 @@ class TestCheckScheduleOverlap:
             "end_time": "12:00",
             "zone_id": zone_b,
         }
-        assert check_schedule_overlap(s1, s2) is False
+        # One whole-house thermostat: simultaneous schedules compete even
+        # for different rooms (spec §3.2), so this is a conflict.
+        assert check_schedule_overlap(s1, s2) is True
 
     def test_one_zone_none_always_overlaps(self) -> None:
         """zone_id=None means 'all zones', so it always overlaps with any zone."""

@@ -364,7 +364,9 @@ def _build_ha_service_call(
             temp_c = float(raw)
         except (TypeError, ValueError) as exc:
             raise ValueError("target_c must be a number") from exc
-        temp_c = max(SETTINGS.safety_min_temp_c, min(SETTINGS.safety_max_temp_c, temp_c))
+        # Reject, never clamp (spec §5.6).
+        if not (SETTINGS.safety_min_temp_c <= temp_c <= SETTINGS.safety_max_temp_c):
+            raise ValueError(f"target_c {temp_c:g} is outside the safety range")
         temp_ha = round(temp_c * 9 / 5 + 32, 1) if ha_is_f else round(temp_c, 1)
         return "climate", "set_temperature", {"entity_id": entity_id, "temperature": temp_ha}
     if action == ActionType.set_mode:

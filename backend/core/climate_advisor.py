@@ -425,35 +425,27 @@ async def _get_advisor_extra_context(
         from sqlalchemy import select as _sel
 
         import backend.api.dependencies as _deps
+        from backend.core.schedule_guard import seconds_until, upcoming_schedules
         from backend.core.user_tz import local_now
         from backend.models.database import Schedule
 
         now_local = await local_now(db, _deps._ha_client)
-        current_dow = now_local.weekday()  # 0 = Mon
-        now_mins = now_local.hour * 60 + now_local.minute
-
         sched_result = await db.execute(
             _sel(Schedule).where(Schedule.is_enabled.is_(True))
         )
+        # Shared implementation (spec §3.4): finds starts past midnight too.
         upcoming: list[tuple[int, str]] = []
-        for sched in sched_result.scalars().all():
-            days = sched.days_of_week or []
-            if current_dow not in days or not sched.start_time:
-                continue
-            try:
-                h, m = int(sched.start_time[:2]), int(sched.start_time[3:5])
-                sched_mins = h * 60 + m
-                diff_mins = sched_mins - now_mins
-                if 0 < diff_mins <= 120:
-                    target_f = round(sched.target_temp_c * 9 / 5 + 32, 1)
-                    upcoming.append((
-                        diff_mins,
-                        f"  in {diff_mins} min ({sched.start_time}): "
-                        f"'{sched.name}' → {target_f}°F "
-                        f"({sched.hvac_mode}, priority {sched.priority})",
-                    ))
-            except (ValueError, IndexError):
-                pass
+        for sched, start in upcoming_schedules(
+            list(sched_result.scalars().all()), now_local, within_s=2 * 3600
+        ):
+            diff_mins = int(seconds_until(start, now_local) // 60)
+            target_f = round(sched.target_temp_c * 9 / 5 + 32, 1)
+            upcoming.append((
+                diff_mins,
+                f"  in {diff_mins} min ({start.strftime('%H:%M')}): "
+                f"'{sched.name}' → {target_f}°F "
+                f"({sched.hvac_mode}, priority {sched.priority})",
+            ))
         upcoming.sort()
         schedule_lines = [line for _, line in upcoming]
         if not schedule_lines:
@@ -601,7 +593,9 @@ def _build_prompt(
             params = a.get("params", {})
             temp = params.get("temperature", "?")
             reason = a.get("reason", "") or "—"
-            actions_str += f"  {a['at'][:16]}  →  {temp}°{'F' if temp_unit == 'F' else 'C'}  ({reason[:60]})\n"
+            # Label with the unit the value was *recorded* in (HA's unit).
+            rec_unit = str(params.get("unit") or ("F" if temp_unit == "F" else "C")).upper()
+            actions_str += f"  {a['at'][:16]}  →  {temp}°{rec_unit}  ({reason[:60]})\n"
     else:
         actions_str = "  (no recent set_temperature actions)\n"
 
@@ -1078,16 +1072,16 @@ class ClimateAdvisor:
 
         now = datetime.now(UTC)
 
-        # Respect "wait" decisions until the wait expires
-        if (
-            cached.decision.action == "wait"
-            and cached.decision.wait_until
-            and now < cached.decision.wait_until
-        ):
-            logger.debug(
-                "ClimateAdvisor: respecting wait until %s", cached.decision.wait_until
-            )
-            return cached.decision
+        # Respect "wait" decisions until the wait expires — and not a moment
+        # longer (an expired wait used to be served until the 10-min cache
+        # age, turning a 5-min wait into 10).
+        if cached.decision.action == "wait" and cached.decision.wait_until:
+            if now < cached.decision.wait_until:
+                logger.debug(
+                    "ClimateAdvisor: respecting wait until %s", cached.decision.wait_until
+                )
+                return cached.decision
+            return None
 
         # Invalidate if zone avg has moved significantly (≥1°F) or cache is stale
         avg_delta = abs(current_avg_c - cached.avg_c_at_decision)
@@ -1158,6 +1152,11 @@ class ClimateAdvisor:
 
         # action == "adjust"
         setpoint_f = float(data.get("setpoint_f", _c_to_f(formula_adjusted_c)))
+        import math as _math
+
+        if not _math.isfinite(setpoint_f):
+            # json.loads accepts NaN/Infinity; never let one reach the guard.
+            raise ValueError(f"non-finite setpoint_f in LLM response: {setpoint_f!r}")
         setpoint_c = (setpoint_f - 32.0) * 5.0 / 9.0
         return AdvisorDecision(
             action="adjust",

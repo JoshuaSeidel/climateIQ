@@ -2759,6 +2759,11 @@ async def execute_command(
     - "Make it warmer"
     """
     settings = get_settings()
+    # The user's display unit (Settings), not the add-on option — the same
+    # unit set_override / apply_manual_setpoint interpret values in.
+    from backend.core.manual_control import display_unit as _cmd_display_unit
+
+    cmd_unit = await _cmd_display_unit(db)
 
     # Get available zones
     result = await db.execute(select(Zone).where(Zone.is_active.is_(True)))
@@ -2771,7 +2776,7 @@ async def execute_command(
         )
 
     # Parse the command
-    parsed = await parse_command(payload.command, list(zones), settings.temperature_unit)
+    parsed = await parse_command(payload.command, list(zones), cmd_unit)
 
     if not parsed:
         # Fall back to AI parsing
@@ -2796,7 +2801,7 @@ async def execute_command(
         except Exception:
             parsed = None
 
-    parsed = _normalize_parsed_command(parsed, list(zones), settings.temperature_unit)
+    parsed = _normalize_parsed_command(parsed, list(zones), cmd_unit)
 
     if parsed and payload.zone_id and not parsed.get("zone_id"):
         parsed["zone_id"] = payload.zone_id
@@ -2816,7 +2821,7 @@ async def execute_command(
     zone_name = parsed.get("zone_name")
 
     if action == "set_temperature":
-        temp_c = _get_temp_c(parsed, settings.temperature_unit)
+        temp_c = _get_temp_c(parsed, cmd_unit)
         zone_id = parsed.get("zone_id")
 
         if not zone_id:
@@ -2852,7 +2857,7 @@ async def execute_command(
                 zone_affected=zone_name,
             )
 
-        display_temp, display_unit = _format_temp_for_display(temp_c, settings.temperature_unit)
+        display_temp, display_unit = _format_temp_for_display(temp_c, cmd_unit)
         return CommandResponse(
             success=True,
             message=f"Setting {zone_name} to {display_temp:.1f}\u00b0{display_unit}",
@@ -2921,7 +2926,7 @@ async def execute_command(
             )
 
         display_amount, display_unit = _format_delta_for_display(
-            float(amount_c), settings.temperature_unit
+            float(amount_c), cmd_unit
         )
         return CommandResponse(
             success=True,
@@ -3022,7 +3027,7 @@ async def execute_command(
                 zone_affected=zone_name,
             )
         temp_c = reading.temperature_c
-        display_temp, display_unit = _format_temp_for_display(temp_c, settings.temperature_unit)
+        display_temp, display_unit = _format_temp_for_display(temp_c, cmd_unit)
         return CommandResponse(
             success=True,
             message=f"The temperature in {zone_name} is {display_temp:.1f}\u00b0{display_unit}",

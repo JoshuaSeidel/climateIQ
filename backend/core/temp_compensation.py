@@ -77,7 +77,13 @@ def _parse_temp_from_state(state: Any, ha_temp_unit: str) -> float | None:
 
     # Strategy 3: temperature stored as an attribute (e.g. climate entity,
     # some Zigbee multisensors report temperature in attributes only)
-    attr_temp = attrs.get("temperature") or attrs.get("current_temperature")
+    # On a climate entity (mini-split/TRV used as a zone sensor) `temperature`
+    # is the *setpoint* — only `current_temperature` is the room.  Prefer
+    # current_temperature everywhere; `is None` checks so 0 isn't skipped.
+    is_climate = str(getattr(state, "entity_id", "")).startswith("climate.")
+    attr_temp = attrs.get("current_temperature")
+    if attr_temp is None and not is_climate:
+        attr_temp = attrs.get("temperature")
     if attr_temp is not None:
         try:
             raw = float(attr_temp)
