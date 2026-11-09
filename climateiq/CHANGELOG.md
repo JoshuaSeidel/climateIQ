@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.97] - 2026-11-09
+
+Heating/cooling correctness, round 7. Four more reviews confirmed bugs; each is fixed with a regression test (`backend/tests/scenario/test_r7_*.py`).
+
+### Fixed
+- **A rejected or failed manual request re-armed the gap handback**, so the next tick cancelled any hold the user had put on the Ecobee. A failed request now leaves the flag alone.
+- **Resume in Learn** retries if resuming the Ecobee program fails, and runs under the thermostat lock.
+- **Chat:** "set living room to 21 for tonight" no longer reads the "f" of "for" as Fahrenheit; "by 3 degrees celsius" is honoured; "make it warmer/cooler" anchors on the zone's live temperature (never a days-old reading); a `create_schedule` call with no valid entry no longer deletes the existing schedules.
+- **Follow-Me after Active mode:** "no occupancy data" in Active mode is no longer recorded as a stable "vacant", which caused a 2°C setback on switching to Follow-Me and blocked the Follow-Me gap handback.
+- **A room whose only signal is a light** goes vacant when the light is off (the round-6 "ignore off lights" rule now applies only when another presence signal exists).
+- **Several presence sensors in one zone:** the zone is occupied if any sensor's last state is on, instead of whichever row was newest.
+- **Twice-daily forecasts** are no longer read as the next 12 hours.
+- **HA restarting mid-request** ("Server disconnected", read/write errors) is now an `HAConnectionError` like other connection failures, so one raw error no longer aborts the whole sensor-health pass.
+
 ## [1.0.96] - 2026-11-09
 
 Heating/cooling correctness, round 6. Four more reviews confirmed bugs, several of them regressions from the round-4/5 fixes. Each is fixed with a regression test (`backend/tests/scenario/test_r6_*.py`).

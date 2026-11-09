@@ -142,6 +142,7 @@ async def apply_manual_setpoint(
 
         await _mm._ensure_mode_switch_loaded()
         switch_before = _mm._last_mode_switch.get(entity)
+        _gap_before = _mm._gap_handed_back
         try:
             _before = await ha.get_state(entity)
             mode_before = str(_before.state or "").lower() if _before else ""
@@ -170,6 +171,8 @@ async def apply_manual_setpoint(
                 except Exception as exc:
                     logger.warning("Could not restore the thermostat mode: %s", exc)
             await restore_override(db, previous, reason="manual write failed")
+            # A failed request changes nothing — including the handback flag.
+            _mm._gap_handed_back = _gap_before
             raise
     return await _finish_manual(db, entity, value, unit, requested_c, actual, source, expires)
 
@@ -299,10 +302,15 @@ async def resume_automatic_control(db: Any, *, source: str) -> str:
     if mode == SystemMode.learn:
         ha = deps._ha_client
         if ha is not None:
-            try:
-                await ha.resume_ecobee_program(await climate_entity(db), resume_all=True)
-            except Exception as exc:
-                logger.debug("resume_ecobee_program failed: %s", exc)
+            async with THERMOSTAT_LOCK:
+                try:
+                    await ha.resume_ecobee_program(await climate_entity(db), resume_all=True)
+                except Exception as exc:
+                    # Retried by the maintenance tick (same marker as expiry).
+                    from backend.core.manual_override import mark_expired_handback
+
+                    logger.warning("resume_ecobee_program failed, will retry: %s", exc)
+                    await mark_expired_handback(db)
         return "Returned control to the thermostat's own program (Learn mode)."
     if mode == SystemMode.active:
         task = asyncio.create_task(main_mod.execute_active_mode())

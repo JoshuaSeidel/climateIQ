@@ -1219,13 +1219,16 @@ async def parse_command(
 
     # Pattern: "set [zone] to [temp] degrees"
     temp_match = re.search(
-        r"set\s+(.+?)\s+to\s+(\d+(?:\.\d+)?)\s*(?:degrees)?\s*°?\s*([fc])?",
+        r"set\s+(.+?)\s+to\s+(\d+(?:\.\d+)?)\s*(?:degrees)?\s*°?\s*"
+        r"(celsius|fahrenheit|[fc](?![a-z]))?",
         command_lower,
     )
     if temp_match:
         zone_name = temp_match.group(1)
         temp = float(temp_match.group(2))
-        unit = _parse_temp_unit(temp_match.group(3), default_unit)
+        unit = _parse_temp_unit(
+            (temp_match.group(3) or "")[:1] or None, default_unit
+        )
         temp_c = _convert_to_c(temp, unit)
 
         # Find matching zone
@@ -1250,14 +1253,15 @@ async def parse_command(
         # ("room 5") is not an amount.
         amount_match = re.search(
             r"(?:\bby\s+(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:degrees?|°))"
-            r"\s*(?:degrees?)?\s*°?\s*([fc])?\b",
+            r"\s*(?:degrees?)?\s*°?\s*(celsius|fahrenheit|[fc](?![a-z]))?",
             command_lower,
         )
         amount_raw = (
             float(amount_match.group(1) or amount_match.group(2)) if amount_match else 2.0
         )
         amount_unit = _parse_temp_unit(
-            amount_match.group(3) if amount_match else None, default_unit
+            (amount_match.group(3) or "")[:1] or None if amount_match else None,
+            default_unit,
         )
         amount = _convert_delta_to_c(amount_raw, amount_unit)
 
@@ -1972,6 +1976,7 @@ async def _execute_tool_call(
             created.append(schedule)
 
         if not created:
+            await db.rollback()  # a failed request must not delete the old schedules
             return {"success": False, "error": "No valid schedule entries provided"}
 
         await db.commit()
@@ -2892,29 +2897,23 @@ async def execute_command(
 
         new_temp: float | None = None
         try:
+            # Current zone temperature: live/fresh readings only (spec §9.2) —
+            # a days-old sensor value must not anchor an absolute override.
+            import backend.api.dependencies as _adj_deps
             from backend.config import get_settings as _get_settings
+            from backend.core.temp_compensation import get_avg_zone_temp_c
             from backend.integrations.ha_client import HAClient
             from backend.models.database import Device, Sensor, SensorReading
 
-            # Get current temperature from latest sensor reading
-            reading_stmt = (
-                select(SensorReading)
-                .join(Sensor, Sensor.id == SensorReading.sensor_id)
-                .where(Sensor.zone_id == zone_id)
-                .order_by(SensorReading.recorded_at.desc())
-                .limit(1)
-            )
-            reading_result = await db.execute(reading_stmt)
-            reading = reading_result.scalar_one_or_none()
-            if reading is None or reading.temperature_c is None:
-                # Don't invent a starting point (spec §9.2).
+            _cur_c, _ = await get_avg_zone_temp_c(db, [str(zone_id)], _adj_deps._ha_client)
+            if _cur_c is None:
                 return CommandResponse(
                     success=False,
                     message=f"No current temperature for {zone_name}; set an exact temperature instead.",
                     action="adjust_temperature",
                     zone_affected=zone_name,
                 )
-            current_temp_c = float(reading.temperature_c)
+            current_temp_c = float(_cur_c)
 
             if direction == "warmer":
                 new_temp = current_temp_c + float(amount_c)

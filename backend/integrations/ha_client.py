@@ -271,6 +271,12 @@ class HAClient:
             msg = f"Request to {path} timed out"
             logger.error(msg)
             raise HAConnectionError(msg) from exc
+        except httpx.TransportError as exc:
+            # HA restarting mid-request: "Server disconnected", read/write errors.
+            self._connected = False
+            msg = f"Connection to Home Assistant failed on {path}: {exc}"
+            logger.error(msg)
+            raise HAConnectionError(msg) from exc
 
         self._raise_for_status(response, context=context or f"{method} {path}")
         return response

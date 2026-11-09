@@ -113,7 +113,6 @@ _active_mode_state: dict[str, dict[str, Any]] = {}
 # door", "lights just turned on") which then triggers a full LLM call.  We
 # gate the raw signal with hysteresis: raw must hold OCC for 3 min before
 # stable flips ON; raw must hold VAC for 10 min before stable flips OFF.
-_follow_me_observed = False
 _zone_occupancy_stable: dict[str, dict[str, Any]] = {}
 # Set once the Follow-Me loop has observed occupancy in this process, so a
 # restart (empty dwell state) isn't mistaken for "no occupancy data".
@@ -2884,8 +2883,14 @@ async def execute_active_mode() -> None:
 
                 inferred_occ = await infer_zone_occupancy(str(zone.id), db)
                 if inferred_occ is None:
-                    inferred_occ = occ_val if occ_val is not None else False
-                stable_occ = _stable_occupancy(str(zone.id), bool(inferred_occ))
+                    inferred_occ = occ_val
+                # Unknown stays out of the shared dwell state (Follow-Me reads
+                # it): an Active-mode "no data" must not become a stable vacant.
+                stable_occ = (
+                    False
+                    if inferred_occ is None
+                    else _stable_occupancy(str(zone.id), bool(inferred_occ))
+                )
 
                 # Trend from learned OccupancyPattern — probability that the
                 # zone is occupied in the CURRENT and NEXT-30-min slot.  Used
@@ -3061,15 +3066,20 @@ async def execute_active_mode() -> None:
                         highs: list[float] = []
                         lows: list[float] = []
                         _fe = fd if isinstance(fd, list) else []
-                        # A daily forecast (HA fallback) spans days: only
-                        # today's entry belongs to the next 12 h.
+                        # Only entries within 12 h of the first belong to the
+                        # "next 12 h" — daily / twice-daily forecasts (HA
+                        # fallbacks) span days.
                         try:
                             _t0 = datetime.fromisoformat(str(_fe[0].get("datetime")).replace("Z", "+00:00"))
-                            _t1 = datetime.fromisoformat(str(_fe[1].get("datetime")).replace("Z", "+00:00"))
-                            if (_t1 - _t0).total_seconds() >= 20 * 3600:
-                                _fe = _fe[:1]
+                            _fe = [
+                                e for e in _fe
+                                if (
+                                    datetime.fromisoformat(str(e.get("datetime")).replace("Z", "+00:00"))
+                                    - _t0
+                                ).total_seconds() < 12 * 3600
+                            ]
                         except (IndexError, AttributeError, TypeError, ValueError):
-                            pass
+                            _fe = fd[:12] if isinstance(fd, list) else []
                         for entry in _fe[:12]:
                             if not isinstance(entry, dict):
                                 continue
@@ -4506,31 +4516,37 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
     # Extract latest values
     presence: bool | None = None
     lux: float | None = None
+    # Presence rows are per sensor and a sensor's last state holds, so take the
+    # newest row of *each* sensor: occupied if any of them says so.
+    _last_presence: dict[Any, bool] = {}
     for rdg in readings:
-        if presence is None and rdg.presence is not None:
-            presence = rdg.presence
+        if rdg.presence is not None and rdg.sensor_id not in _last_presence:
+            _last_presence[rdg.sensor_id] = bool(rdg.presence)
         if lux is None and rdg.lux is not None:
             lux = rdg.lux
-        if presence is not None and lux is not None:
-            break
+    if _last_presence:
+        presence = any(_last_presence.values())
     if presence is None and sensor_ids:
         # Presence rows are stored on state *change*, so someone sitting
         # still for >15 min has no recent row.  The last known state still
         # holds (bounded to a day so a dead sensor eventually stops counting).
-        last_p = (
+        last_rows = (
             await db.execute(  # type: ignore[attr-defined]
-                sa_select(SensorReading.presence)
+                sa_select(SensorReading.sensor_id, SensorReading.presence)
                 .where(
                     SensorReading.sensor_id.in_(sensor_ids),
                     SensorReading.presence.is_not(None),
                     SensorReading.recorded_at >= datetime.now(UTC) - _td(hours=24),
                 )
                 .order_by(SensorReading.recorded_at.desc())
-                .limit(1)
+                .limit(50)
             )
-        ).scalar_one_or_none()
-        if last_p is not None:
-            presence = bool(last_p)
+        ).all()
+        latest: dict[Any, bool] = {}
+        for sid, pval in last_rows:
+            latest.setdefault(sid, bool(pval))
+        if latest:
+            presence = any(latest.values())
 
     # -- Signal 1: Direct presence sensor (weight: 0.6) --
     presence_score: float | None = None
@@ -4609,6 +4625,7 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
                 )
                 any_on = False
                 any_off = False
+                light_off_seen = False
                 for eid, res in zip(ha_entities, results, strict=False):
                     if isinstance(res, BaseException):
                         continue
@@ -4632,9 +4649,22 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
                                 pass
                     # A light/switch being off says nothing about presence.
                     if eid.lower().startswith(("light.", "switch.")):
+                        light_off_seen = light_off_seen or st == "off"
                         continue
                     if st in ("off", "not_home", "clear", "closed", "idle", "paused"):
                         any_off = True
+                # ...unless it is the only signal in the zone: then off is
+                # all the evidence there is (a light-only room goes vacant).
+                if (
+                    light_off_seen
+                    and not any_on
+                    and not any_off
+                    and presence_score is None
+                    and not any(
+                        "motion" in e.lower() or "occupancy" in e.lower() for e in ha_entities
+                    )
+                ):
+                    any_off = True
                 if any_on:
                     ha_score = 1.0
                 elif any_off:
