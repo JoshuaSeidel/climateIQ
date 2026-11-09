@@ -470,8 +470,15 @@ class HAWebSocketClient:
                         setattr(change, field_name, val_f)
                         continue
 
-                # Then check attributes
-                for key in attr_keys:
+                # Then check attributes.  On climate entities only the
+                # *current_* readings are room values — `temperature` and
+                # `humidity` are the setpoint and target humidity.
+                keys = (
+                    [k for k in attr_keys if k.startswith("current_")]
+                    if domain == "climate"
+                    else attr_keys
+                )
+                for key in keys:
                     val = attrs.get(key)
                     if val is not None:
                         with suppress(ValueError, TypeError):

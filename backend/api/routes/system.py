@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -42,18 +42,72 @@ async def fetch_mode(db: Annotated[AsyncSession, Depends(get_db)]) -> dict[str, 
     return {"mode": config.current_mode}
 
 
+async def apply_system_mode(db: AsyncSession, new_mode: SystemMode) -> SystemConfig:
+    """Switch the system mode — the one implementation (API and chat).
+
+    Clears any manual override and preconditioning state, then manages the
+    Ecobee hand-over: automatic modes disable the Ecobee's own occupancy
+    features; Learn resumes its program, restores its occupancy features,
+    and — if ClimateIQ left the thermostat off — puts it back in its own
+    heat/cool auto mode so the program can actually run (spec §2).
+    """
+    import logging as _logging
+
+    import backend.api.dependencies as _deps
+    import backend.api.main as _main
+    from backend.core.manual_control import ManualControlError, climate_entity
+    from backend.core.manual_override import clear_override
+
+    _logger = _logging.getLogger(__name__)
+    config = await _get_or_create_system_config(db)
+    config.current_mode = new_mode
+    config.last_synced_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(config)
+    await clear_override(db, reason=f"mode changed to {new_mode.value}")
+    _main._preconditioning.clear()
+
+    ha_client = _deps._ha_client
+    if ha_client is None:
+        return config
+    try:
+        entity = await climate_entity(db)
+    except ManualControlError:
+        return config
+
+    if new_mode in (SystemMode.scheduled, SystemMode.active, SystemMode.follow_me):
+        try:
+            await ha_client.set_ecobee_occupancy_modes(entity, auto_away=False, follow_me=False)
+        except Exception as exc:
+            _logger.warning("Could not disable Ecobee occupancy features: %s", exc)
+    elif new_mode == SystemMode.learn:
+        try:
+            await ha_client.resume_ecobee_program(entity, resume_all=True)
+        except Exception as exc:
+            _logger.warning("Could not resume the Ecobee program: %s", exc)
+        try:
+            await ha_client.set_ecobee_occupancy_modes(entity, auto_away=True, follow_me=True)
+        except Exception as exc:
+            _logger.warning("Could not restore Ecobee occupancy features: %s", exc)
+        try:
+            state = await ha_client.get_state(entity)
+            modes = [str(m) for m in (state.attributes.get("hvac_modes") or [])]
+            if str(state.state or "").lower() == "off":
+                for native in ("heat_cool", "auto"):
+                    if native in modes:
+                        await ha_client.set_hvac_mode(entity, native)
+                        _logger.info("Learn: thermostat was off — set to '%s'", native)
+                        break
+        except Exception as exc:
+            _logger.warning("Could not restore thermostat mode for Learn: %s", exc)
+    return config
+
+
 @router.post("/mode", response_model=SystemConfigResponse)
 async def update_mode(
     payload: dict[str, Any],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> SystemConfigResponse:
-    import logging as _logging
-
-    from backend.config import SETTINGS
-    from backend.models.database import SystemSetting
-
-    _logger = _logging.getLogger(__name__)
-
     raw_mode = payload.get("mode")
     if not raw_mode:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="mode_required")
@@ -63,91 +117,7 @@ async def update_mode(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_mode"
         ) from exc
-    config = await _get_or_create_system_config(db)
-    config.current_mode = new_mode
-    config.last_synced_at = datetime.now(UTC)
-    await db.commit()
-    await db.refresh(config)
-
-    # ------------------------------------------------------------------
-    # Ecobee hold management: prevent/restore the Ecobee's internal
-    # schedule depending on the new mode.
-    # ------------------------------------------------------------------
-    try:
-        import backend.api.dependencies as _deps
-
-        ha_client = _deps._ha_client
-        if ha_client is not None:
-            # Resolve the climate entity
-            climate_entity: str | None = None
-            result = await db.execute(
-                select(SystemSetting).where(SystemSetting.key == "climate_entities")
-            )
-            row = result.scalar_one_or_none()
-            if row and row.value:
-                raw_val = row.value.get("value", "")
-                if raw_val:
-                    climate_entity = raw_val.split(",")[0].strip()
-
-            if not climate_entity and SETTINGS.climate_entities:
-                climate_entity = SETTINGS.climate_entities.split(",")[0].strip()
-
-            if climate_entity:
-                if new_mode in (
-                    SystemMode.scheduled,
-                    SystemMode.active,
-                    SystemMode.follow_me,
-                ):
-                    # Disable Ecobee's own occupancy features so
-                    # ClimateIQ has sole control.
-                    try:
-                        await ha_client.set_ecobee_occupancy_modes(
-                            climate_entity, auto_away=False, follow_me=False,
-                        )
-                        _logger.info(
-                            "Ecobee schedule override active: disabled Smart "
-                            "Home/Away and Follow Me for mode '%s'",
-                            new_mode,
-                        )
-                    except Exception as eco_err:
-                        _logger.debug(
-                            "Ecobee occupancy mode update (non-critical): %s",
-                            eco_err,
-                        )
-
-                elif new_mode == SystemMode.learn:
-                    # Restore Ecobee's own schedule and occupancy features.
-                    try:
-                        await ha_client.delete_ecobee_vacation(
-                            climate_entity, "ClimateIQ_Control",
-                        )
-                    except Exception:  # noqa: S110
-                        pass  # May not exist
-
-                    try:
-                        await ha_client.resume_ecobee_program(climate_entity)
-                    except Exception as resume_err:
-                        _logger.debug(
-                            "Ecobee resume program (non-critical): %s",
-                            resume_err,
-                        )
-
-                    try:
-                        await ha_client.set_ecobee_occupancy_modes(
-                            climate_entity, auto_away=True, follow_me=True,
-                        )
-                    except Exception as occ_err:
-                        _logger.debug(
-                            "Ecobee occupancy mode restore (non-critical): %s",
-                            occ_err,
-                        )
-
-                    _logger.info(
-                        "Ecobee schedule control restored for learn mode",
-                    )
-    except Exception as ecobee_err:
-        _logger.debug("Ecobee hold management (non-critical): %s", ecobee_err)
-
+    config = await apply_system_mode(db, new_mode)
     return SystemConfigResponse.model_validate(config)
 
 
@@ -225,12 +195,16 @@ async def emergency_shutoff(
     logger = logging.getLogger(__name__)
     settings = _get_settings()
 
-    # 1. Set system mode to learn (safe/passive)
-    result = await db.execute(select(SystemConfig).where(SystemConfig.id == 1))
+    # 1. Set system mode to learn (safe/passive) and drop any override
+    # .limit(1), like every other reader — the singleton's id isn't always 1.
+    result = await db.execute(select(SystemConfig).limit(1))
     config = result.scalar_one_or_none()
     if config:
         config.current_mode = SystemMode.learn
         await db.commit()
+    from backend.core.manual_override import clear_override
+
+    await clear_override(db, reason="emergency shutoff")
 
     # 2. Turn off all devices via HA
     devices_off = 0
@@ -366,266 +340,125 @@ async def execute_quick_action(
     payload: QuickActionRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> QuickActionResponse:
-    """Execute a quick action on the global (whole-house) thermostat."""
-    import logging as _logging
+    """Quick actions on the whole-house thermostat (spec §2).
 
+    * ``resume`` — clear any override and hand control back to its owner
+      (the Ecobee program in Learn; the schedule/AI loop otherwise).
+    * ``boost_heat`` / ``boost_cool`` — 2 °F past the current setpoint in that
+      direction (switching the thermostat to it), as a manual override.
+    * ``eco`` — the thermostat's eco preset if it has one, else 3 °F in the
+      energy-saving direction for the current mode, as a manual override.
+    * ``away`` — the thermostat's away preset, as a manual override.
+
+    Setpoint changes go through ``apply_manual_setpoint`` (validated, HA
+    unit, correct side of a dual setpoint, override recorded).
+    """
     from backend.api.dependencies import _ha_client
-    from backend.config import SETTINGS
+    from backend.core.manual_control import (
+        ManualControlError,
+        apply_manual_setpoint,
+        climate_entity,
+        display_unit,
+        resume_automatic_control,
+    )
+    from backend.core.manual_override import set_override
+    from backend.core.temp_compensation import get_current_setpoint_c
     from backend.integrations.ha_client import HAClientError
-    from backend.models.database import SystemSetting
 
-    _logger = _logging.getLogger(__name__)
-
+    action = (payload.action or "").strip().lower()
     if _ha_client is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Home Assistant client not connected",
         )
-
-    # Find the global climate entity
-    climate_entity: str | None = None
-    result = await db.execute(
-        select(SystemSetting).where(SystemSetting.key == "climate_entities")
-    )
-    row = result.scalar_one_or_none()
-    if row and row.value:
-        raw_val = row.value.get("value", "")
-        if raw_val:
-            climate_entity = raw_val.split(",")[0].strip()
-
-    if not climate_entity and SETTINGS.climate_entities:
-        climate_entity = SETTINGS.climate_entities.split(",")[0].strip()
-
-    if not climate_entity:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No climate entity configured. Set climate_entities in add-on settings.",
-        )
-
-    action = payload.action.lower().strip()
-
     try:
-        state = await _ha_client.get_state(climate_entity)
-        attrs = state.attributes
-        if action == "eco":
-            # Set to eco preset if available, otherwise lower temp
-            preset_modes = attrs.get("preset_modes", [])
-            if "Away and Eco" in preset_modes:
-                await _ha_client.call_service(
-                    "climate", "set_preset_mode",
-                    data={"preset_mode": "Away and Eco"},
-                    target={"entity_id": climate_entity},
-                )
-                return QuickActionResponse(
-                    success=True, message="Set to Eco mode", action=action,
-                    detail={"preset_mode": "Away and Eco"},
-                )
-            # Fallback: just lower target by 3°F (≈1.7°C)
-            current_target = attrs.get("temperature") or attrs.get("target_temp_low")
-            if current_target is not None:
-                _eco_cfg = await _ha_client.get_config()
-                _eco_f = _eco_cfg.get("unit_system", {}).get("temperature", "\u00b0C") == "\u00b0F"
-                # 3°F step, expressed in HA's own unit.
-                new_target = round(float(current_target) - (3 if _eco_f else 3 * 5 / 9), 1)
-                await _ha_client.set_temperature(climate_entity, new_target, intent_mode="heat")
-                return QuickActionResponse(
-                    success=True, message=f"Lowered target to {new_target:.0f}°",
-                    action=action, detail={"new_target": new_target},
-                )
+        if action == "resume":
+            message = await resume_automatic_control(db, source="quick-action resume")
+            return QuickActionResponse(success=True, message=message, action=action)
+
+        entity = await climate_entity(db)
+        state = await _ha_client.get_state(entity)
+        attrs = state.attributes or {}
+        mode = str(state.state or "").lower()
+        presets = [str(p) for p in (attrs.get("preset_modes") or [])]
+        unit = await display_unit(db)
+
+        def _disp(c: float) -> float:
+            return round(c * 9 / 5 + 32) if unit == "F" else round(c * 2) / 2
+
+        async def _preset(name: str, label: str) -> QuickActionResponse:
+            await _ha_client.call_service(
+                "climate", "set_preset_mode",
+                data={"preset_mode": name}, target={"entity_id": entity},
+            )
+            await set_override(db, None, source=f"quick-action:{action}")
             return QuickActionResponse(
-                success=False, message="Could not determine current target temp",
-                action=action,
+                success=True, message=f"Set to {label}", action=action,
+                detail={"preset_mode": name},
             )
 
-        elif action == "away":
-            preset_modes = attrs.get("preset_modes", [])
-            if "away" in [p.lower() for p in preset_modes]:
-                # Find the exact case-sensitive name
-                away_preset = next(p for p in preset_modes if p.lower() == "away")
-                await _ha_client.call_service(
-                    "climate", "set_preset_mode",
-                    data={"preset_mode": away_preset},
-                    target={"entity_id": climate_entity},
-                )
+        step_2f = 2 * 5 / 9
+        if action in ("boost_heat", "boost_cool"):
+            direction = "heat" if action == "boost_heat" else "cool"
+            base_c = await get_current_setpoint_c(_ha_client, entity, intent_mode=direction)
+            if base_c is None:
                 return QuickActionResponse(
-                    success=True, message="Set to Away mode", action=action,
-                    detail={"preset_mode": away_preset},
+                    success=False, message="Could not read the current setpoint", action=action
                 )
-            return QuickActionResponse(
-                success=False, message="Away preset not available on this thermostat",
-                action=action, detail={"available_presets": preset_modes},
+            new_c = base_c + step_2f if direction == "heat" else base_c - step_2f
+            result = await apply_manual_setpoint(
+                db, _disp(new_c), source=f"quick-action:{action}", force_mode=direction
             )
-
-        elif action == "boost_heat":
-            current_target = attrs.get("temperature") or attrs.get("target_temp_low")
-            if current_target is not None:
-                new_target = float(current_target) + 2
-                await _ha_client.set_temperature(climate_entity, new_target, intent_mode="heat")
-                return QuickActionResponse(
-                    success=True, message=f"Boosted heat to {new_target:.0f}°",
-                    action=action, detail={"new_target": new_target},
-                )
-            return QuickActionResponse(
-                success=False, message="Could not determine current target temp",
-                action=action,
-            )
-
-        elif action == "boost_cool":
-            current_target = attrs.get("temperature") or attrs.get("target_temp_high")
-            if current_target is not None:
-                new_target = float(current_target) - 2
-                await _ha_client.set_temperature(climate_entity, new_target, intent_mode="cool")
-                return QuickActionResponse(
-                    success=True, message=f"Boosted cooling to {new_target:.0f}°",
-                    action=action, detail={"new_target": new_target},
-                )
-            return QuickActionResponse(
-                success=False, message="Could not determine current target temp",
-                action=action,
-            )
-
-        elif action == "resume":
-            # "Resume" means: find the currently active ClimateIQ
-            # schedule and re-apply its target temperature.  All
-            # thermostat-specific hold management is handled
-            # internally by set_temperature / set_temperature_with_hold.
-            from backend.api.routes.schedule import (  # noqa: I001
-                _get_user_tz as _sched_get_user_tz,
-                parse_time as _sched_parse_time,
-            )
-            from backend.models.database import Schedule as _Schedule
-
-            user_tz = await _sched_get_user_tz(db)
-            now_local = datetime.now(user_tz)
-            current_weekday = now_local.weekday()
-            current_time = now_local.time()
-
-            # Find all enabled schedules active right now
-            sched_result = await db.execute(
-                select(_Schedule).where(_Schedule.is_enabled.is_(True))
-            )
-            all_schedules = list(sched_result.scalars().all())
-
-            active_schedule: _Schedule | None = None
-            best_priority = -1
-
-            for sched in all_schedules:
-                if current_weekday not in (sched.days_of_week or []):
-                    continue
-                start_t = _sched_parse_time(sched.start_time)
-                end_t = (
-                    _sched_parse_time(sched.end_time)
-                    if sched.end_time
-                    else time(23, 59)
-                )
-                if end_t < start_t:
-                    in_window = current_time >= start_t or current_time <= end_t
-                else:
-                    in_window = start_t <= current_time <= end_t
-
-                if in_window and sched.priority > best_priority:
-                    active_schedule = sched
-                    best_priority = sched.priority
-
-            if active_schedule is None:
-                return QuickActionResponse(
-                    success=False,
-                    message="No active schedule right now. Nothing to resume.",
-                    action=action,
-                )
-
-            # Apply offset compensation
-            from backend.core.temp_compensation import apply_offset_compensation
-
-            adjusted_temp_c = active_schedule.target_temp_c
-            offset_c = 0.0
-            priority_zone_name = None
-            resume_avg_c: float | None = None
-            resume_mode = str(state.state or "").lower()
-            try:
-                (
-                    adjusted_temp_c, offset_c, priority_zone_name, resume_avg_c, _
-                ) = await apply_offset_compensation(
-                    db, _ha_client, climate_entity,
-                    active_schedule.target_temp_c,
-                    zone_ids=active_schedule.zone_ids or None,
-                    hvac_mode=resume_mode or None,
-                )
-            except Exception as comp_err:
-                _logger.debug("Resume offset compensation (non-critical): %s", comp_err)
-            # Which side of a dual setpoint to move in heat_cool/auto.
-            if "heat" in resume_mode and "cool" not in resume_mode:
-                resume_intent = "heat"
-            elif "cool" in resume_mode and "heat" not in resume_mode:
-                resume_intent = "cool"
-            else:
-                resume_intent = (
-                    "cool"
-                    if resume_avg_c is not None and resume_avg_c > active_schedule.target_temp_c
-                    else "heat"
-                )
-
-            # Convert adjusted temp to HA unit
-            ha_config = await _ha_client.get_config()
-            ha_temp_unit = (
-                ha_config.get("unit_system", {}).get("temperature", "\u00b0C")
-            )
-            target_temp = adjusted_temp_c
-            if ha_temp_unit == "\u00b0F":
-                target_temp = round(adjusted_temp_c * 9 / 5 + 32, 1)
-
-            await _ha_client.set_temperature(
-                climate_entity, target_temp, intent_mode=resume_intent
-            )
-
-            # Display uses the original desired temp, not the adjusted one
-            display_temp_val = active_schedule.target_temp_c
-            if ha_temp_unit == "\u00b0F":
-                display_temp_val = round(active_schedule.target_temp_c * 9 / 5 + 32, 1)
-            temp_display = (
-                f"{display_temp_val:.0f}\u00b0F"
-                if ha_temp_unit == "\u00b0F"
-                else f"{display_temp_val:.1f}\u00b0C"
-            )
-            _logger.info(
-                "Resumed schedule '%s' — set %s to %s",
-                active_schedule.name,
-                climate_entity,
-                temp_display,
-            )
-
-            detail_dict: dict[str, Any] = {
-                "schedule_name": active_schedule.name,
-                "target_temp": display_temp_val,
-            }
-            if offset_c and abs(offset_c) > 0.1:
-                offset_f = round(offset_c * 9 / 5, 1)
-                detail_dict["offset_f"] = offset_f
-                detail_dict["adjusted_for_zone"] = priority_zone_name
-                _logger.info(
-                    "Resume offset compensation: +%.1f F for zone '%s'",
-                    offset_f, priority_zone_name or "unknown",
-                )
-
             return QuickActionResponse(
                 success=True,
-                message=f"Resumed '{active_schedule.name}' ({temp_display})",
+                message=f"Boosted {'heat' if direction == 'heat' else 'cooling'} to "
+                        f"{result['temperature']:g}°{unit}",
                 action=action,
-                detail=detail_dict,
+                detail={"new_target": result["temperature"], "unit": unit},
             )
 
-        else:
+        if action == "eco":
+            eco = next((p for p in presets if p.lower() in ("away and eco", "eco")), None)
+            if eco is not None:
+                return await _preset(eco, "Eco mode")
+            if mode not in ("heat", "cool"):
+                return QuickActionResponse(
+                    success=False,
+                    message="Eco needs the thermostat in heat or cool",
+                    action=action,
+                )
+            base_c = await get_current_setpoint_c(_ha_client, entity, intent_mode=mode)
+            if base_c is None:
+                return QuickActionResponse(
+                    success=False, message="Could not read the current setpoint", action=action
+                )
+            step_3f = 3 * 5 / 9
+            new_c = base_c - step_3f if mode == "heat" else base_c + step_3f
+            result = await apply_manual_setpoint(
+                db, _disp(new_c), source="quick-action:eco", force_mode=mode
+            )
             return QuickActionResponse(
-                success=False,
-                message=f"Unknown action: {action}. Use eco, away, boost_heat, boost_cool, or resume.",
+                success=True,
+                message=f"Eco: setpoint {result['temperature']:g}°{unit}",
                 action=action,
+                detail={"new_target": result["temperature"], "unit": unit},
             )
 
+        if action == "away":
+            away = next((p for p in presets if p.lower() == "away"), None)
+            if away is None:
+                return QuickActionResponse(
+                    success=False, message="Away preset not available on this thermostat",
+                    action=action, detail={"available_presets": presets},
+                )
+            return await _preset(away, "Away mode")
+
+        return QuickActionResponse(success=False, message=f"Unknown action: {action}", action=action)
+    except ManualControlError as exc:
+        return QuickActionResponse(success=False, message=str(exc), action=action)
     except HAClientError as exc:
-        _logger.error("Quick action failed: %s", exc)
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Failed to execute action: {exc}",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Quick action failed: {exc}"
         ) from exc
 
 
@@ -1200,161 +1033,44 @@ async def set_manual_override(
     payload: dict[str, Any],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
-    """Set a manual temperature override on the global thermostat."""
-    import logging as _logging
+    """Set a manual override (Dashboard, zone "Set", the dial).
 
-    from backend.api.dependencies import _ha_client
-    from backend.config import SETTINGS
+    ``temperature`` is in the user's display unit.  See
+    ``backend.core.manual_control.apply_manual_setpoint``: validated (outside
+    the safety range → 400), heat/cool chosen from the rooms, written in HA's
+    unit, and automatic control pauses until the next schedule boundary or
+    ``duration_hours``.
+    """
+    from backend.core.manual_control import ManualControlError, apply_manual_setpoint
     from backend.integrations.ha_client import HAClientError
-    from backend.models.database import Device, DeviceAction, SystemSetting
-    from backend.models.enums import ActionType, TriggerType
 
-    _logger = _logging.getLogger(__name__)
-
-    # 1. Validate required payload fields
-    temperature = payload.get("temperature")
-    if temperature is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="temperature is required",
-        )
+    if payload.get("temperature") is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="temperature is required")
+    duration = payload.get("duration_hours")
     try:
-        display_temp = float(temperature)
+        duration_h = float(duration) if duration is not None else None
     except (TypeError, ValueError) as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="temperature must be a number",
+            status_code=status.HTTP_400_BAD_REQUEST, detail="duration_hours must be a number"
         ) from exc
-
-    # Accept optional fields (not used yet, but accepted for future use)
-    _duration_hours = payload.get("duration_hours")
-    _zone_id = payload.get("zone_id")
-
-    if _ha_client is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Home Assistant client not connected",
-        )
-
-    # 2. Get the user's preferred temperature unit from system_settings
-    result = await db.execute(
-        select(SystemSetting).where(SystemSetting.key == "temperature_unit")
-    )
-    row = result.scalar_one_or_none()
-    # Default to the add-on's configured unit, not a hard-coded "C" — on a
-    # fresh °F install a dial sending 72 was read as 72°C.
-    user_unit: str = str(SETTINGS.temperature_unit or "C").upper()
-    if row and row.value:
-        raw_unit = row.value.get("value")
-        if raw_unit:
-            user_unit = str(raw_unit).upper()
-
-    # Reject setpoints outside the configured safety range.
-    requested_c = (display_temp - 32) * 5 / 9 if user_unit == "F" else display_temp
-    if not (SETTINGS.safety_min_temp_c <= requested_c <= SETTINGS.safety_max_temp_c):
-        lo, hi = SETTINGS.safety_min_temp_c, SETTINGS.safety_max_temp_c
-        if user_unit == "F":
-            lo, hi = lo * 9 / 5 + 32, hi * 9 / 5 + 32
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"temperature {display_temp:g}°{user_unit} is outside the safety range "
-                f"{lo:.0f}-{hi:.0f}°{user_unit}"
-            ),
-        )
-
-    # 3. Get the HA temperature unit from HA config
-    ha_config = await _ha_client.get_config()
-    ha_temp_unit = ha_config.get("unit_system", {}).get("temperature", "\u00b0C")
-
-    # 4. Convert display temp to HA unit
-    temp_for_ha = display_temp
-    if user_unit == "F" and ha_temp_unit == "\u00b0C":
-        # User sends Fahrenheit, HA expects Celsius
-        temp_for_ha = (display_temp - 32) * 5 / 9
-    elif user_unit == "C" and ha_temp_unit == "\u00b0F":
-        # User sends Celsius, HA expects Fahrenheit
-        temp_for_ha = display_temp * 9 / 5 + 32
-
-    # 5. Resolve the climate entity
-    climate_entity: str | None = None
-    result = await db.execute(
-        select(SystemSetting).where(SystemSetting.key == "climate_entities")
-    )
-    row = result.scalar_one_or_none()
-    if row and row.value:
-        raw_val = row.value.get("value", "")
-        if raw_val:
-            climate_entity = raw_val.split(",")[0].strip()
-
-    if not climate_entity and SETTINGS.climate_entities:
-        climate_entity = SETTINGS.climate_entities.split(",")[0].strip()
-
-    if not climate_entity:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No climate entity configured. Set climate_entities in add-on settings.",
-        )
-
-    # 6. Send the temperature command to HA.  In heat_cool/auto, move the
-    # side of the dual setpoint that matches the request: below the current
-    # reading means "cool to this", otherwise "heat to this".
-    override_intent: str | None = None
     try:
-        _ov_state = await _ha_client.get_state(climate_entity)
-        _ov_mode = str(_ov_state.state or "").lower() if _ov_state else ""
-        if ("heat" in _ov_mode and "cool" in _ov_mode) or _ov_mode == "auto":
-            _cur = _ov_state.attributes.get("current_temperature") if _ov_state else None
-            override_intent = (
-                "cool" if _cur is not None and temp_for_ha < float(_cur) else "heat"
-            )
-        elif _ov_mode in ("heat", "cool"):
-            override_intent = _ov_mode
-    except Exception:  # noqa: S110
-        pass
-    try:
-        try:
-            await _ha_client.set_temperature_with_hold(
-                climate_entity, temp_for_ha, intent_mode=override_intent
-            )
-        except Exception:
-            _logger.debug(
-                "set_temperature_with_hold failed, falling back to set_temperature"
-            )
-            await _ha_client.set_temperature(
-                climate_entity, temp_for_ha, intent_mode=override_intent
-            )
+        result = await apply_manual_setpoint(
+            db, payload["temperature"], source="manual", duration_hours=duration_h
+        )
+    except ManualControlError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except HAClientError as exc:
-        _logger.error("Manual override failed: %s", exc)
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Failed to set temperature: {exc}",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Failed to set temperature: {exc}"
         ) from exc
-
-    # 7. Record audit trail (best-effort, do not fail the request)
-    try:
-        dev_result = await db.execute(
-            select(Device).where(Device.ha_entity_id == climate_entity)
-        )
-        device = dev_result.scalar_one_or_none()
-        if device:
-            action = DeviceAction(
-                device_id=device.id,
-                triggered_by=TriggerType.user_override,
-                action_type=ActionType.set_temperature,
-                parameters={"temperature": display_temp, "unit": user_unit},
-            )
-            db.add(action)
-            await db.commit()
-    except Exception as audit_err:
-        _logger.debug("Audit trail recording (non-critical): %s", audit_err)
-
-    unit_symbol = "\u00b0F" if user_unit == "F" else "\u00b0C"
+    symbol = "\u00b0F" if result["unit"] == "F" else "\u00b0C"
     return {
         "success": True,
-        "message": f"Temperature set to {display_temp}{unit_symbol}",
-        "temperature": display_temp,
-        "unit": user_unit,
+        "message": f"Temperature set to {result['temperature']:g}{symbol}",
+        "temperature": result["temperature"],
+        "unit": result["unit"],
+        "mode": result["mode"],
+        "override_until": result["override_until"],
     }
 
 
@@ -1509,35 +1225,15 @@ async def debug_offset_calculation(
 
     # Find active schedule
     now_local = datetime.now(user_tz)
-    current_dow = now_local.weekday()
-    cur_t = now_local.time()
+    now_local.weekday()
+    now_local.time()
 
     sched_result = await db.execute(select(Schedule).where(Schedule.is_enabled == True))  # noqa: E712
     schedules = list(sched_result.scalars().all())
 
-    active_schedule: Schedule | None = None
-    for schedule in schedules:
-        if current_dow not in (schedule.days_of_week or []):
-            continue
-        try:
-            s_hour, s_min = map(int, schedule.start_time.split(":"))
-            start_t = time(s_hour, s_min)
-        except (ValueError, AttributeError):
-            continue
-        end_t = time(23, 59)
-        if schedule.end_time:
-            try:
-                e_hour, e_min = map(int, schedule.end_time.split(":"))
-                end_t = time(e_hour, e_min)
-            except (ValueError, AttributeError):
-                pass
-        if end_t < start_t:
-            is_in_window = cur_t >= start_t or cur_t <= end_t
-        else:
-            is_in_window = start_t <= cur_t <= end_t
-        if is_in_window:
-            if active_schedule is None or schedule.priority > active_schedule.priority:
-                active_schedule = schedule
+    from backend.core.schedule_guard import find_active_schedule
+
+    active_schedule: Schedule | None = find_active_schedule(schedules, now_local)
 
     if not active_schedule:
         return {"error": "No active schedule found"}
@@ -1709,16 +1405,11 @@ async def get_override_status(
             if ha_temp_unit == "\u00b0F":
                 target_temp_c = (target_temp_c - 32) * 5 / 9
 
-        # Get the user's preferred display unit
-        result = await db.execute(
-            select(SystemSetting).where(SystemSetting.key == "temperature_unit")
-        )
-        row = result.scalar_one_or_none()
-        user_unit: str = "C"
-        if row and row.value:
-            raw_unit = row.value.get("value", "C")
-            if raw_unit:
-                user_unit = str(raw_unit).upper()
+        # The user's display unit — same rule as POST /override, so a value
+        # read here can be sent straight back.
+        from backend.core.manual_control import display_unit
+
+        user_unit: str = await display_unit(db)
 
         # Convert from Celsius to user's display unit
         display_current_temp: float | None = None
@@ -1747,6 +1438,21 @@ async def get_override_status(
             and preset_mode.lower() not in _NORMAL_PRESETS
             and preset_mode.strip()
         )
+        # A ClimateIQ manual override (dashboard / dial / chat / quick action)
+        # is the main kind — surface it and when it ends.
+        override_until: str | None = None
+        override_temp_c: float | None = None
+        try:
+            from backend.core.manual_override import get_active_override
+
+            _mo = await get_active_override(db)
+            if _mo is not None:
+                is_override = True
+                override_until = str(_mo.get("expires_at") or "") or None
+                if _mo.get("setpoint_c") is not None:
+                    override_temp_c = float(_mo["setpoint_c"])
+        except Exception as _mo_err:
+            _logger.debug("Manual override lookup failed: %s", _mo_err)
 
         # Compute offset compensation info for display.
         # Scope to the active schedule's zones so we don't show offset
@@ -1761,7 +1467,6 @@ async def get_override_status(
             from backend.api.routes.schedule import (
                 _get_user_tz,
                 _parse_zone_ids,
-                parse_time,
             )
             from backend.core.temp_compensation import (
                 get_avg_zone_temp_c,
@@ -1784,21 +1489,9 @@ async def get_override_status(
                 _sched_r = await db.execute(
                     select(Schedule).where(Schedule.is_enabled.is_(True))
                 )
-                for _s in _sched_r.scalars().all():
-                    if _cur_dow not in (_s.days_of_week or []):
-                        continue
-                    try:
-                        _st = parse_time(_s.start_time)
-                        _et = parse_time(_s.end_time) if _s.end_time else time(23, 59)
-                    except (ValueError, AttributeError):
-                        continue
-                    if _et < _st:
-                        _in_window = _cur_t >= _st or _cur_t <= _et
-                    else:
-                        _in_window = _st <= _cur_t <= _et
-                    if _in_window:
-                        if _best is None or _s.priority > _best.priority:
-                            _best = _s
+                from backend.core.schedule_guard import find_active_schedule
+
+                _best = find_active_schedule(list(_sched_r.scalars().all()), _now_local)
 
                 if _best and _best.zone_ids:
                     active_zone_ids = _best.zone_ids
@@ -1876,6 +1569,14 @@ async def get_override_status(
             "fan_mode": fan_mode,
             "fan_modes": fan_modes,
             "is_override_active": is_override,
+            "override_until": override_until,
+            # The user's override temperature, in the display unit (None for
+            # preset overrides / no override).
+            "override_temp": (
+                None if override_temp_c is None
+                else round(override_temp_c * 9 / 5 + 32, 1) if user_unit == "F"
+                else round(override_temp_c, 1)
+            ),
             "offset_info": offset_info,
             "schedule_avg_temp": schedule_avg_temp,
             "all_zones_avg_temp": all_zones_avg_temp,

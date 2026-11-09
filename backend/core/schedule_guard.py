@@ -138,11 +138,63 @@ def precondition_allowed(
         return False
     mode = (thermostat_mode or "").lower()
     gap_c = upcoming_target_c - zone_temp_c
+    # Exact modes only: heat_cool contains both words and must not count.
     if gap_c > deadband_c:
-        return "heat" in mode
+        return mode == "heat"
     if gap_c < -deadband_c:
-        return "cool" in mode
+        return mode == "cool"
     return False
+
+
+def _parse_hhmm(value: Any) -> time | None:
+    try:
+        h, m = map(int, str(value).split(":")[:2])
+        return time(h, m)
+    except (ValueError, TypeError):
+        return None
+
+
+def active_occurrence(
+    days_of_week: list[int] | None,
+    start_time: str,
+    end_time: str | None,
+    now_local: datetime,
+) -> tuple[datetime, datetime] | None:
+    """The (start, end) of the occurrence containing ``now_local``, or None.
+
+    Spec §3.1: the window is ``[start, end)``.  ``days_of_week`` (0=Mon)
+    names the day an occurrence *starts*; an end at or before the start
+    wraps past midnight and the after-midnight part belongs to the start day
+    (a Friday 20:00-06:30 schedule is active Saturday 03:00 even if Saturday
+    isn't ticked).  end == start means a full 24 h; no end time means until
+    midnight.  End-exclusive, so back-to-back schedules (06:30 end / 06:30
+    start) never overlap.
+    """
+    from datetime import timedelta
+
+    start_t = _parse_hhmm(start_time)
+    if start_t is None:
+        return None
+    end_t = _parse_hhmm(end_time) if end_time else None
+    days = set(days_of_week or [])
+    now = now_local.replace(second=0, microsecond=0)
+    for day_offset in (0, -1):
+        start_day = (now + timedelta(days=day_offset)).date()
+        if start_day.weekday() not in days:
+            continue
+        start_dt = now.replace(
+            year=start_day.year, month=start_day.month, day=start_day.day,
+            hour=start_t.hour, minute=start_t.minute,
+        )
+        if end_t is None:
+            end_dt = start_dt.replace(hour=0, minute=0) + timedelta(days=1)
+        else:
+            end_dt = start_dt.replace(hour=end_t.hour, minute=end_t.minute)
+            if end_t <= start_t:
+                end_dt += timedelta(days=1)
+        if start_dt <= now < end_dt:
+            return start_dt, end_dt
+    return None
 
 
 def schedule_active_at(
@@ -151,29 +203,34 @@ def schedule_active_at(
     end_time: str | None,
     now_local: datetime,
 ) -> bool:
-    """Whether a schedule's window contains ``now_local`` (local wall time).
+    """Whether a schedule's window contains ``now_local`` (spec §3.1)."""
+    return active_occurrence(days_of_week, start_time, end_time, now_local) is not None
 
-    Same rules as the scheduler: ``days_of_week`` 0=Mon, no end = until
-    23:59, and an end before the start wraps past midnight.
+
+def find_active_schedule(schedules: list[Any], now_local: datetime) -> Any | None:
+    """The schedule in effect at ``now_local`` (spec §3).
+
+    Enabled schedules whose window contains now; highest ``priority`` wins,
+    ties go to the most recently started occurrence.  This is the single
+    implementation used by every control loop and the API.
     """
-    if now_local.weekday() not in (days_of_week or []):
-        return False
-    try:
-        s_h, s_m = map(int, str(start_time).split(":")[:2])
-        start_t = time(s_h, s_m)
-    except (ValueError, TypeError):
-        return False
-    end_t = time(23, 59)
-    if end_time:
-        try:
-            e_h, e_m = map(int, str(end_time).split(":")[:2])
-            end_t = time(e_h, e_m)
-        except (ValueError, TypeError):
-            pass
-    cur = now_local.time().replace(second=0, microsecond=0)
-    if end_t < start_t:
-        return cur >= start_t or cur <= end_t
-    return start_t <= cur <= end_t
+    best: Any | None = None
+    best_key: tuple[int, datetime] | None = None
+    for sched in schedules:
+        if getattr(sched, "is_enabled", True) is False:
+            continue
+        occ = active_occurrence(
+            getattr(sched, "days_of_week", None),
+            getattr(sched, "start_time", ""),
+            getattr(sched, "end_time", None),
+            now_local,
+        )
+        if occ is None:
+            continue
+        key = (int(getattr(sched, "priority", 0) or 0), occ[0])
+        if best_key is None or key > best_key:
+            best, best_key = sched, key
+    return best
 
 
 def other_schedule_active(
@@ -200,3 +257,134 @@ def other_schedule_active(
         ):
             return sched
     return None
+
+
+def next_schedule_boundary(schedules: list[Any], now_local: datetime) -> datetime | None:
+    """The next moment any enabled schedule starts or ends, after ``now_local``.
+
+    Used to expire manual overrides "until the next schedule change"
+    (spec §2).  Looks up to 8 days ahead; None when there are no schedules.
+    """
+    from datetime import timedelta
+
+    best: datetime | None = None
+    now = now_local.replace(second=0, microsecond=0)
+    for sched in schedules:
+        if getattr(sched, "is_enabled", True) is False:
+            continue
+        start_t = _parse_hhmm(getattr(sched, "start_time", ""))
+        if start_t is None:
+            continue
+        end_raw = getattr(sched, "end_time", None)
+        end_t = _parse_hhmm(end_raw) if end_raw else None
+        days = set(getattr(sched, "days_of_week", None) or [])
+        for offset in range(-1, 8):
+            day = (now + timedelta(days=offset)).date()
+            if day.weekday() not in days:
+                continue
+            start_dt = now.replace(
+                year=day.year, month=day.month, day=day.day,
+                hour=start_t.hour, minute=start_t.minute,
+            )
+            if end_t is None:
+                end_dt = start_dt.replace(hour=0, minute=0) + timedelta(days=1)
+            else:
+                end_dt = start_dt.replace(hour=end_t.hour, minute=end_t.minute)
+                if end_t <= start_t:
+                    end_dt += timedelta(days=1)
+            for cand in (start_dt, end_dt):
+                if cand > now and (best is None or cand < best):
+                    best = cand
+    return best
+
+
+# Maximum preconditioning lead (spec §7.3).
+MAX_PRECONDITION_LEAD_S = 3 * 3600
+
+
+def next_start(sched: Any, now_local: datetime) -> datetime | None:
+    """The schedule's next occurrence start strictly after ``now_local``.
+
+    Looks at today and the next 7 days, so a 00:30 start is found from
+    23:30 the evening before (previously only "today" was searched).
+    """
+    from datetime import timedelta
+
+    if getattr(sched, "is_enabled", True) is False:
+        return None
+    start_t = _parse_hhmm(getattr(sched, "start_time", ""))
+    if start_t is None:
+        return None
+    days = set(getattr(sched, "days_of_week", None) or [])
+    now = now_local.replace(second=0, microsecond=0)
+    for offset in range(0, 8):
+        day = (now + timedelta(days=offset)).date()
+        if day.weekday() not in days:
+            continue
+        cand = now.replace(
+            year=day.year, month=day.month, day=day.day,
+            hour=start_t.hour, minute=start_t.minute,
+        )
+        if cand > now_local:
+            return cand
+    return None
+
+
+def seconds_until(later: datetime, now_local: datetime) -> float:
+    """Real elapsed seconds (DST-safe: compares instants, not wall clocks)."""
+    from datetime import UTC
+
+    return (later.astimezone(UTC) - now_local.astimezone(UTC)).total_seconds()
+
+
+def upcoming_schedules(
+    schedules: list[Any], now_local: datetime, within_s: float = MAX_PRECONDITION_LEAD_S
+) -> list[tuple[Any, datetime]]:
+    """(schedule, next start) pairs starting within ``within_s``, soonest first."""
+    out: list[tuple[Any, datetime]] = []
+    for sched in schedules:
+        start = next_start(sched, now_local)
+        if start is not None and 0 < seconds_until(start, now_local) <= within_s:
+            out.append((sched, start))
+    out.sort(key=lambda p: (p[1], -int(getattr(p[0], "priority", 0) or 0)))
+    return out
+
+
+def governing_schedule(
+    schedules: list[Any],
+    now_local: datetime,
+    preconditioning: dict[str, datetime],
+) -> tuple[Any | None, str | None]:
+    """The schedule that governs control right now, and why (spec §3, §7).
+
+    1. The active schedule (``find_active_schedule``), if any — always wins.
+    2. Otherwise, in a gap, an upcoming schedule whose preconditioning was
+       started (``preconditioning``: schedule id → the occurrence start it
+       was started for) and is still valid: that occurrence is still the
+       schedule's next start, it is ≤ 3 h away, and the schedule isn't an
+       "off" schedule.  The soonest such schedule wins.
+    3. Otherwise none.
+
+    The single implementation used by maintenance, Active mode, Follow-Me
+    and the schedule runner, so they always agree.
+    """
+    active = find_active_schedule(schedules, now_local)
+    if active is not None:
+        return active, "active"
+    best: tuple[Any, datetime] | None = None
+    for sched in schedules:
+        started_for = preconditioning.get(str(getattr(sched, "id", "")))
+        if started_for is None:
+            continue
+        if str(getattr(sched, "hvac_mode", "") or "").lower() == "off":
+            continue
+        start = next_start(sched, now_local)
+        if start is None or start != started_for:
+            continue
+        if not 0 < seconds_until(start, now_local) <= MAX_PRECONDITION_LEAD_S:
+            continue
+        if best is None or start < best[1]:
+            best = (sched, start)
+    if best is not None:
+        return best[0], "preconditioning"
+    return None, None

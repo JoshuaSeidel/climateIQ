@@ -443,6 +443,10 @@ export type OverrideStatus = {
   hvac_action: string | null
   preset_mode: string | null
   is_override_active: boolean
+  /** ISO time the manual override expires (next schedule change), or null */
+  override_until?: string | null
+  /** Manual override temperature, already in the display unit */
+  override_temp?: number | null
   offset_info?: OffsetInfo
   schedule_avg_temp: number | null
   all_zones_avg_temp: number | null

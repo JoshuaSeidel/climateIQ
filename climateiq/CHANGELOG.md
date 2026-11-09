@@ -1,5 +1,64 @@
 # Changelog
 
+## [1.0.91] - 2026-11-09
+
+Heating/cooling correctness overhaul, round 1. There is now a written spec (`docs/CONTROL_SPEC.md`) and a scenario test harness (`backend/tests/scenario/`) that runs the real control loops against a simulated thermostat and rooms on a real database. Four independent reviews were run against the spec and about 60 findings were fixed.
+
+### Architecture
+- **One governing-schedule decision** (`schedule_guard.find_active_schedule` / `governing_schedule`) is used by maintenance, AI mode, Follow-Me, the schedule runner and the API (dashboard "Set:", `/schedules/active`, Resume). Previously there were five copies with different rules.
+- **The schedule runner no longer writes to the thermostat.** It sends "Schedule Activated" once per occurrence and decides preconditioning. Maintenance or AI mode is the single writer. This fixes lower-priority schedules firing over higher ones, DST-skipped start times, and the two-minute fire window.
+- **One final guard on every automatic setpoint** (`core/write_guard.py` + `_final_control_write`):
+  - It re-reads the actual mode, reading and setpoint, then applies, in a fixed order: never drive into rooms past target (with a 1°F margin), must actually run when rooms are off target, park a blocked direction, safety range last.
+  - It writes only when the current setpoint is outside the allowed band.
+  - Writes use HA's unit system and the correct side of a dual setpoint.
+  - It re-checks the system mode and override right before writing, so emergency shutoff, Learn or a new override issued during a long tick takes effect.
+- **One manual-control path** (`core/manual_control.py`) for the dashboard, zone "Set", the dial, chat override and commands, and the boost/eco/away quick actions:
+  - Values outside the safety range are rejected, not clamped.
+  - Heat or cool is chosen from the rooms (respecting locks and windows).
+  - The override is recorded.
+  - Resume is mode-aware: in Learn it resumes the Ecobee program, otherwise the owning loop runs immediately.
+
+### Fixed
+- **Manual overrides were reverted within a minute.** Overrides now pause all automatic control until the next schedule boundary (or `duration_hours`, or Resume), survive restarts, and are re-asserted if the Ecobee drops the hold. The dashboard and dial show the override and when it ends.
+- **Overnight schedules** are active after midnight even when the next day isn't ticked (the occurrence belongs to its start day). Windows are end-exclusive, so back-to-back schedules don't overlap, and end == start means 24 h.
+- **Follow-Me** now defers to any governing schedule, including one that is preconditioning, so there is a single owner. Missing occupancy data no longer counts as "away". "Nobody home" is a 2°C setback in the energy-saving direction instead of a fixed 18°C (which used to cool the house to 64°F in summer).
+- **AI mode:**
+  - The schedule guard, window park and drift correction now run every tick, including when the LLM is skipped or down (formula fallback).
+  - With no schedule, the rooms' comfort midpoints are the target, so it can't heat rooms above them.
+  - The prompt no longer pulls toward the next schedule's target.
+- **Preconditioning:**
+  - It never starts an "off" schedule early.
+  - It works for all-zones schedules and for starts just after midnight.
+  - Lead time is measured in real elapsed time (DST-safe).
+  - It is capped at 3 h, and invalidated if the schedule is edited.
+- **Heat/cool selection:**
+  - The thermostat no longer flips on tiny errors inside the dead-band.
+  - The cooldown applies only to heat↔cool reversals (switching to or from "off" isn't delayed), and is bypassed only when the thermostat is actually running in the wrong direction.
+  - A seasonal lock the thermostat can't support no longer falls through to sensor-based selection.
+- **Advisor "hold"/"wait"** no longer re-write a stale formula value; the live setpoint is held, through the final guard. The advisor's max-offset cap can no longer undo the "rooms past target" park.
+- **heat_cool thermostats** that couldn't be moved off heat_cool now have the blocked or unneeded side parked.
+- **Escape valves** (time windows and the seasonal outdoor override) have hysteresis, so a reading hovering at the threshold no longer short-cycles the HVAC.
+- **Timezone:** a failed HA lookup reuses the last known timezone instead of UTC.
+- **Units:** all thermostat reads and writes, including the drift handler, AI mode and the rule engine, use HA's unit system. GET and POST `/system/override` agree on the display unit.
+- **Drift handler:** compares the setpoint side that matches the current mode, and only checks the database for the configured thermostat's events.
+- **Quick actions:**
+  - Eco no longer makes the AC work harder.
+  - Boost is unit-aware and switches direction.
+  - All quick actions are validated, and action names are case-insensitive.
+- **Chat:**
+  - `set_override`, `set_zone_temperature`, `create_schedule` and the set/adjust commands reject out-of-range values and use HA units.
+  - Chat mode switches do the full Ecobee hand-back and clear the override.
+  - `set_device_state` and the device-action API refuse raw writes to the managed thermostat.
+  - "Adjust" no longer invents a 21°C starting point.
+- **Learn:** if ClimateIQ left the thermostat off, it is set to the Ecobee's own heat_cool/auto mode so its program can run. Hand-back failures are logged as warnings.
+- **Emergency shutoff** finds the config row regardless of its id.
+- **Schedule API:** `next_occurrence` uses the user's timezone. Conflict detection uses the same weekly timeline as control, including overnight spill into the next day.
+- **Fans:** raised fans are released when leaving AI mode or when a zone loses fan control. Stepped-fan readback tolerance is now 20%.
+- **Occupancy inference:** daytime light alone and open doors or windows no longer count as presence.
+- **WebSocket:** climate entities only contribute their `current_*` readings, never the setpoint.
+- **Notifications:** one per heat/cool/off switch. Follow-Me only notifies on meaningful setpoint changes.
+- **Dial:** shows the backend's override (expires correctly, clears on Resume from anywhere). With no target it shows "SET --". The knob seeds from the hold, the schedule or the room, never the compensated setpoint. (Requires reflashing.)
+
 ## [1.0.90] - 2026-11-09
 
 ### Fixed

@@ -46,6 +46,12 @@ logger = logging.getLogger(__name__)
 # 1°F in Celsius — the smallest step a thermostat actually acts on.
 _ONE_DEGREE_F_C = 5.0 / 9.0
 
+# Escape-valve hysteresis.  Once an escape opens (zones ≤ escape_below),
+# it stays open until the zones recover 1 °F past the threshold — otherwise
+# a reading flickering 59.9 ↔ 60.1 toggles heat every tick and short-cycles
+# the furnace.  Keyed by "<window label>:heat|cool".
+_escape_latched: set[str] = set()
+
 
 class TimeWindow(BaseModel):
     """A time-of-day range and the HVAC directions permitted inside it."""
@@ -256,10 +262,21 @@ async def compute_window_state(
             avg_c = await _read_zone_avg_c(db, ha_client, zone_ids)
         state.zone_avg_c = avg_c
         if avg_c is not None:
+            heat_key, cool_key = f"{label}:heat", f"{label}:cool"
+            if window.escape_below_c is not None:
+                if avg_c <= window.escape_below_c:
+                    _escape_latched.add(heat_key)
+                elif avg_c > window.escape_below_c + _ONE_DEGREE_F_C:
+                    _escape_latched.discard(heat_key)
+            if window.escape_above_c is not None:
+                if avg_c >= window.escape_above_c:
+                    _escape_latched.add(cool_key)
+                elif avg_c < window.escape_above_c - _ONE_DEGREE_F_C:
+                    _escape_latched.discard(cool_key)
             if (
                 not window.allow_heat
                 and window.escape_below_c is not None
-                and avg_c <= window.escape_below_c
+                and heat_key in _escape_latched
             ):
                 state.allow_heat = True
                 state.escape_active = True
@@ -272,7 +289,7 @@ async def compute_window_state(
             if (
                 not window.allow_cool
                 and window.escape_above_c is not None
-                and avg_c >= window.escape_above_c
+                and cool_key in _escape_latched
             ):
                 state.allow_cool = True
                 state.escape_active = True

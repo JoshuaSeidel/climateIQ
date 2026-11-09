@@ -119,6 +119,8 @@ class TestOtherScheduleActive:
     def test_schedule_active_at_wraps_midnight(self) -> None:
         days = list(_ALL_DAYS)
         assert schedule_active_at(days, "20:00", "06:30", datetime(2026, 11, 9, 23, 0))
-        assert schedule_active_at(days, "20:00", "06:30", datetime(2026, 11, 9, 6, 30))
+        assert schedule_active_at(days, "20:00", "06:30", datetime(2026, 11, 9, 6, 29))
+        # End-exclusive: Sleeping has ended at 06:30, when Daytime starts.
+        assert not schedule_active_at(days, "20:00", "06:30", datetime(2026, 11, 9, 6, 30))
         assert not schedule_active_at(days, "20:00", "06:30", datetime(2026, 11, 9, 12, 0))
         assert not schedule_active_at([5, 6], "20:00", "06:30", datetime(2026, 11, 9, 23, 0))

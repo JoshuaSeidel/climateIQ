@@ -207,14 +207,21 @@ def _build_schedule_response(
     schedule: Schedule,
     zone_map: dict[uuid.UUID, str],
     include_next: bool = True,
+    tz: ZoneInfo | None = None,
 ) -> ScheduleResponse:
-    """Build a ScheduleResponse from an ORM Schedule + zone name map."""
+    """Build a ScheduleResponse from an ORM Schedule + zone name map.
+
+    ``next_occurrence`` is computed in the user's timezone (``tz``) —
+    previously UTC, which put it hours off and on the wrong weekday.
+    """
     zone_uuids = _parse_zone_ids(schedule)
     zone_names = [zone_map[zid] for zid in zone_uuids if zid in zone_map]
 
     next_occurrence = None
     if include_next and schedule.is_enabled:
-        next_occurrence = get_next_occurrence(schedule.days_of_week, schedule.start_time)
+        next_occurrence = get_next_occurrence(
+            schedule.days_of_week, schedule.start_time, tz=tz
+        )
 
     return ScheduleResponse(
         id=schedule.id,
@@ -304,12 +311,7 @@ def check_schedule_overlap(
     schedule2: dict[str, Any],
 ) -> bool:
     """Check if two schedules overlap in time and zones."""
-    # Check if they share any days
-    days1 = set(schedule1.get("days_of_week", []))
-    days2 = set(schedule2.get("days_of_week", []))
 
-    if not days1 & days2:
-        return False
 
     # Check if they share zones (empty/None = all zones, always overlaps)
     # Support both new `zone_ids` (list) and legacy `zone_id` (single value)
@@ -328,33 +330,36 @@ def check_schedule_overlap(
         if not set(zone_ids1) & set(zone_ids2):
             return False
 
-    # Check time overlap
-    start1 = parse_time(schedule1.get("start_time", "00:00"))
-    end1 = (
-        parse_time(schedule1.get("end_time", "23:59"))
-        if schedule1.get("end_time")
-        else time(23, 59)
-    )
-    start2 = parse_time(schedule2.get("start_time", "00:00"))
-    end2 = (
-        parse_time(schedule2.get("end_time", "23:59"))
-        if schedule2.get("end_time")
-        else time(23, 59)
-    )
-
-    # Check for overlap.  A schedule whose end is before its start wraps
-    # past midnight, so split it into [start, 24:00) and [00:00, end).
-    def _segments(start: time, end: time) -> list[tuple[int, int]]:
-        s_min = start.hour * 60 + start.minute
-        e_min = end.hour * 60 + end.minute
-        if e_min < s_min:
-            return [(s_min, 24 * 60), (0, e_min)]
-        return [(s_min, e_min)]
+    # Time overlap on the real weekly timeline, with the same rules the
+    # control loops use (spec §3.1): each occurrence belongs to the day it
+    # starts, the window is [start, end), end ≤ start wraps past midnight
+    # (end == start = 24 h), no end = until midnight.  This also catches an
+    # overnight part overlapping the *next* day's schedules.
+    def _week_intervals(sched: dict[str, Any]) -> list[tuple[int, int]]:
+        start_t = parse_time(sched.get("start_time", "00:00"))
+        end_raw = sched.get("end_time")
+        end_t = parse_time(end_raw) if end_raw else None
+        out: list[tuple[int, int]] = []
+        week = 7 * 1440
+        for day in sched.get("days_of_week", []) or []:
+            s_min = int(day) * 1440 + start_t.hour * 60 + start_t.minute
+            if end_t is None:
+                e_min = (int(day) + 1) * 1440
+            else:
+                e_min = int(day) * 1440 + end_t.hour * 60 + end_t.minute
+                if end_t <= start_t:
+                    e_min += 1440
+            if e_min <= week:
+                out.append((s_min, e_min))
+            else:  # Sunday night wrapping into Monday
+                out.append((s_min, week))
+                out.append((0, e_min - week))
+        return out
 
     return any(
         a0 < b1 and b0 < a1
-        for a0, a1 in _segments(start1, end1)
-        for b0, b1 in _segments(start2, end2)
+        for a0, a1 in _week_intervals(schedule1)
+        for b0, b1 in _week_intervals(schedule2)
     )
 
 
@@ -389,7 +394,8 @@ async def list_schedules(
     all_zone_uuids = await _collect_all_zone_uuids(schedules)
     zone_map = await _build_zone_map(db, all_zone_uuids)
 
-    return [_build_schedule_response(s, zone_map) for s in schedules]
+    _tz = await _get_user_tz(db)
+    return [_build_schedule_response(s, zone_map, tz=_tz) for s in schedules]
 
 
 @router.get("/upcoming", response_model=list[UpcomingSchedule])
@@ -553,60 +559,31 @@ async def get_active_schedule(
     """
     user_tz = await _get_user_tz(db)
     now_local = datetime.now(user_tz)
-    current_weekday = now_local.weekday()  # 0=Mon .. 6=Sun
-    current_time = now_local.time()
+    now_local.weekday()  # 0=Mon .. 6=Sun
+    now_local.time()
 
     # Fetch all enabled schedules
     stmt = select(Schedule).where(Schedule.is_enabled.is_(True))
     result = await db.execute(stmt)
     schedules = list(result.scalars().all())
 
-    candidates: list[Schedule] = []
+    from backend.core.schedule_guard import active_occurrence, find_active_schedule
 
-    for schedule in schedules:
-        # Must include today's weekday
-        if current_weekday not in (schedule.days_of_week or []):
-            continue
-
-        start_t = parse_time(schedule.start_time)
-        end_t = parse_time(schedule.end_time) if schedule.end_time else time(23, 59)
-
-        if end_t < start_t:
-            # Wraps past midnight: active if current >= start OR current <= end
-            is_in_window = current_time >= start_t or current_time <= end_t
-        else:
-            # Normal window: active if start <= current <= end
-            is_in_window = start_t <= current_time <= end_t
-
-        if is_in_window:
-            candidates.append(schedule)
-
-    if not candidates:
+    best = find_active_schedule(schedules, now_local)
+    if best is None:
         return ActiveScheduleResponse(active=False, schedule=None)
-
-    # Highest priority wins
-    best = max(candidates, key=lambda s: s.priority)
+    occurrence = active_occurrence(best.days_of_week, best.start_time, best.end_time, now_local)
 
     zone_uuids = _parse_zone_ids(best)
     zone_map = await _build_zone_map(db, zone_uuids)
     zone_names = [zone_map[zid] for zid in zone_uuids if zid in zone_map]
 
-    # Build start/end as full datetimes in UTC for the UpcomingSchedule model
-    start_t = parse_time(best.start_time)
-    start_dt = now_local.replace(
-        hour=start_t.hour, minute=start_t.minute, second=0, microsecond=0
-    ).astimezone(UTC)
-
-    end_dt = None
-    if best.end_time:
-        end_t = parse_time(best.end_time)
-        end_dt = now_local.replace(
-            hour=end_t.hour, minute=end_t.minute, second=0, microsecond=0
-        )
-        # If end < start, the end is on the next day
-        if end_t < start_t:
-            end_dt += timedelta(days=1)
-        end_dt = end_dt.astimezone(UTC)
+    # Start/end of the occurrence actually in progress (an overnight window
+    # seen after midnight started *yesterday*), in UTC.
+    if occurrence is None:  # pragma: no cover — find_active_schedule guarantees one
+        return ActiveScheduleResponse(active=False, schedule=None)
+    start_dt = occurrence[0].astimezone(UTC)
+    end_dt = occurrence[1].astimezone(UTC) if best.end_time else None
 
     return ActiveScheduleResponse(
         active=True,
@@ -641,7 +618,7 @@ async def get_schedule(
     zone_uuids = _parse_zone_ids(schedule)
     zone_map = await _build_zone_map(db, zone_uuids)
 
-    return _build_schedule_response(schedule, zone_map)
+    return _build_schedule_response(schedule, zone_map, tz=await _get_user_tz(db))
 
 
 @router.post("", response_model=ScheduleResponse, status_code=status.HTTP_201_CREATED)
@@ -686,7 +663,7 @@ async def create_schedule(
     zone_uuids = _parse_zone_ids(schedule)
     zone_map = await _build_zone_map(db, zone_uuids)
 
-    return _build_schedule_response(schedule, zone_map)
+    return _build_schedule_response(schedule, zone_map, tz=await _get_user_tz(db))
 
 
 @router.put("/{schedule_id}", response_model=ScheduleResponse)
@@ -748,7 +725,7 @@ async def update_schedule(
     zone_uuids = _parse_zone_ids(schedule)
     zone_map = await _build_zone_map(db, zone_uuids)
 
-    return _build_schedule_response(schedule, zone_map)
+    return _build_schedule_response(schedule, zone_map, tz=await _get_user_tz(db))
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -797,7 +774,7 @@ async def enable_schedule(
     zone_uuids = _parse_zone_ids(schedule)
     zone_map = await _build_zone_map(db, zone_uuids)
 
-    return _build_schedule_response(schedule, zone_map)
+    return _build_schedule_response(schedule, zone_map, tz=await _get_user_tz(db))
 
 
 @router.post("/{schedule_id}/disable", response_model=ScheduleResponse)

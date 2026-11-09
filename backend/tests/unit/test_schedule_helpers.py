@@ -331,8 +331,12 @@ class TestAuditValidation:
     def test_overnight_overlap_detected(self) -> None:
         night = {"days_of_week": [0], "zone_ids": [], "start_time": "22:00", "end_time": "06:00"}
         late = {"days_of_week": [0], "zone_ids": [], "start_time": "23:00", "end_time": "23:30"}
-        early = {"days_of_week": [0], "zone_ids": [], "start_time": "05:00", "end_time": "05:30"}
+        # Monday's 22:00-06:00 occurrence runs into Tuesday morning.
+        early = {"days_of_week": [1], "zone_ids": [], "start_time": "05:00", "end_time": "05:30"}
         day = {"days_of_week": [0], "zone_ids": [], "start_time": "09:00", "end_time": "17:00"}
         assert check_schedule_overlap(night, late)
         assert check_schedule_overlap(night, early)
         assert not check_schedule_overlap(night, day)
+        # Back-to-back (end-exclusive) schedules don't conflict.
+        morning = {"days_of_week": [1], "zone_ids": [], "start_time": "06:00", "end_time": "09:00"}
+        assert not check_schedule_overlap(night, morning)

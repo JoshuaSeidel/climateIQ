@@ -23,6 +23,9 @@ from backend.core.mode_windows import TimeWindow
 
 logger = logging.getLogger(__name__)
 
+# Outdoor-override hysteresis latch ("<season>:below|above").
+_override_latched: set[str] = set()
+
 
 ModePref = Literal["auto", "heat", "cool"]
 
@@ -266,10 +269,24 @@ async def compute_lock_state(
     state.outdoor_temp_c = outdoor_c
 
     if outdoor_c is not None:
+        # Hysteresis: once tripped, the override holds until the outdoor
+        # temperature recovers 1 °C past the threshold (no flapping on a
+        # reading that hovers at the boundary).
+        key = season.name
+        if season.override_outdoor_below_c is not None:
+            if outdoor_c <= season.override_outdoor_below_c:
+                _override_latched.add(f"{key}:below")
+            elif outdoor_c > season.override_outdoor_below_c + 1.0:
+                _override_latched.discard(f"{key}:below")
+        if season.override_outdoor_above_c is not None:
+            if outdoor_c >= season.override_outdoor_above_c:
+                _override_latched.add(f"{key}:above")
+            elif outdoor_c < season.override_outdoor_above_c - 1.0:
+                _override_latched.discard(f"{key}:above")
         if (
             season.preferred_mode == "cool"
             and season.override_outdoor_below_c is not None
-            and outdoor_c <= season.override_outdoor_below_c
+            and f"{key}:below" in _override_latched
         ):
             state.override_active = True
             state.reason = (
@@ -280,7 +297,7 @@ async def compute_lock_state(
         if (
             season.preferred_mode == "heat"
             and season.override_outdoor_above_c is not None
-            and outdoor_c >= season.override_outdoor_above_c
+            and f"{key}:above" in _override_latched
         ):
             state.override_active = True
             state.reason = (

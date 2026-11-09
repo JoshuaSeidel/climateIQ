@@ -88,10 +88,7 @@ globals:
   - id: g_schedule_target
     type: float
     initial_value: "0"
-  - id: g_hold_target        # hold set from this dial (0 = none) — shown as SET until resumed
-    type: float
-    initial_value: "0"
-  - id: g_hold_sched         # schedule target when the hold was set; a change means a new period
+  - id: g_hold_target        # active manual override temp from the backend (0 = none)
     type: float
     initial_value: "0"
   - id: g_edit_temp          # value being dialed in
@@ -251,7 +248,7 @@ interval:
       - lambda: |-
           float tgt = id(g_editing) ? id(g_edit_temp)
                     : id(g_hold_target) > 0 ? id(g_hold_target)
-                    : (id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp));
+                    : id(g_schedule_target);
           float room = id(g_room_avg) > 0 ? id(g_room_avg) : id(g_all_zones_avg);
           bool active = id(g_editing) || id(g_hvac_action) == "heating" || id(g_hvac_action) == "cooling";
           bool moving = false;
@@ -288,8 +285,12 @@ script:
       - lambda: |-
           if (!id(g_editing)) {
             // seed the edit value from what the schedule wants (fall back to setpoint)
+            // Seed from what the user sees: the hold, else the schedule
+            // target, else the room — never the offset-compensated
+            // thermostat setpoint.
+            float room_now = id(g_room_avg) > 0 ? id(g_room_avg) : id(g_all_zones_avg);
             float seed = id(g_hold_target) > 0 ? id(g_hold_target)
-                       : id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp);
+                       : id(g_schedule_target) > 0 ? id(g_schedule_target) : roundf(room_now);
             if (seed <= 0) seed = (${temp_min} + ${temp_max}) / 2.0f;
             id(g_edit_temp) = seed;
             id(g_editing) = true;
@@ -323,8 +324,7 @@ script:
                   if (response->status_code == 200) {
                     ESP_LOGI("dial", "Override set to %.1f", id(g_edit_temp));
                     id(g_target_temp) = id(g_edit_temp);
-                    id(g_hold_target) = id(g_edit_temp);
-                    id(g_hold_sched) = id(g_schedule_target);
+                    id(g_hold_target) = id(g_edit_temp);  // until the next poll confirms
                     id(g_override_active) = true;
                   } else {
                     ESP_LOGW("dial", "Override failed: HTTP %d", response->status_code);
@@ -434,9 +434,10 @@ script:
                         ? 0.0f : root["target_temp"].as<float>();
                     id(g_schedule_target) = root["schedule_target_temp"].isNull()
                         ? 0.0f : root["schedule_target_temp"].as<float>();
-                    // A new schedule period replaces the dial's hold.
-                    if (id(g_hold_target) > 0 && fabsf(id(g_schedule_target) - id(g_hold_sched)) > 0.05f)
-                      id(g_hold_target) = 0;
+                    // The backend owns the override (it expires at the next
+                    // schedule change, on Resume from any client, …).
+                    id(g_hold_target) = root["override_temp"].isNull()
+                        ? 0.0f : root["override_temp"].as<float>();
                     id(g_fan_mode)    = root["fan_mode"].isNull() ? "" : std::string(root["fan_mode"].as<const char*>());
                     id(g_hvac_mode)   = root["hvac_mode"].isNull()   ? "" : std::string(root["hvac_mode"].as<const char*>());
                     id(g_hvac_action) = root["hvac_action"].isNull() ? "" : std::string(root["hvac_action"].as<const char*>());
@@ -475,7 +476,7 @@ script:
 
           float shown_target = id(g_editing) ? id(g_edit_temp)
                              : id(g_hold_target) > 0 ? id(g_hold_target)
-                             : (id(g_schedule_target) > 0 ? id(g_schedule_target) : id(g_target_temp));
+                             : id(g_schedule_target);
           float room = id(g_room_avg) > 0 ? id(g_room_avg) : id(g_all_zones_avg);
 
           if (id(g_online)) {
@@ -493,7 +494,8 @@ script:
             else                             status = "IDLE";
             lv_label_set_text(id(status_label), status.c_str());
             lv_obj_set_style_text_color(id(status_label), accent, 0);
-            lv_label_set_text_fmt(id(room_label), "SET %.0f\xC2\xB0", shown_target);
+            if (shown_target > 0) lv_label_set_text_fmt(id(room_label), "SET %.0f\xC2\xB0", shown_target);
+            else                  lv_label_set_text(id(room_label), "SET --");
             lv_obj_set_style_text_color(id(room_label), accent, 0);
             std::string fan = id(g_fan_mode);
             if (fan.empty()) {

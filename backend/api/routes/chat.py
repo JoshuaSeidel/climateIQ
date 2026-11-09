@@ -1309,8 +1309,22 @@ async def _execute_tool_call(
         if zone_id is None or target_c is None:
             return {"success": False, "error": "Missing zone_id or target_c"}
 
-        # Safety clamp
-        target_c = max(settings.safety_min_temp_c, min(settings.safety_max_temp_c, float(target_c)))
+        from backend.core.manual_control import (
+            ManualControlError,
+            apply_manual_setpoint,
+            display_unit,
+            in_safety_range,
+            is_managed_thermostat,
+        )
+
+        try:
+            target_c = float(target_c)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "target_c must be a number"}
+        # Reject — never clamp — implausible values (spec §5.6): a model
+        # sending 72 meaning °F must not become a 100 °F setpoint.
+        if not in_safety_range(target_c):
+            return {"success": False, "error": f"target_c {target_c:g} is outside the safety range"}
 
         if settings.home_assistant_token:
             device_result = await db.execute(
@@ -1321,6 +1335,17 @@ async def _execute_tool_call(
                 (d for d in devices if d.ha_entity_id and d.type.value == "thermostat"),
                 None,
             )
+            if climate_device and await is_managed_thermostat(db, climate_device.ha_entity_id):
+                # The whole-house thermostat: a manual override (direction,
+                # HA unit, override recorded) — not a raw write that the
+                # control loop would revert seconds later.
+                unit_zt = await display_unit(db)
+                shown = target_c * 9 / 5 + 32 if unit_zt == "F" else target_c
+                try:
+                    res_zt = await apply_manual_setpoint(db, round(shown, 1), source="chat zone")
+                except ManualControlError as exc:
+                    return {"success": False, "error": str(exc)}
+                return {"success": True, "temperature_set": target_c, "mode": res_zt["mode"]}
             if climate_device and climate_device.ha_entity_id:
                 async with HAClient(
                     str(settings.home_assistant_url), settings.home_assistant_token
@@ -1344,10 +1369,23 @@ async def _execute_tool_call(
             )
             device = device_result.scalar_one_or_none()
             if device and device.ha_entity_id:
+                from backend.core.manual_control import is_managed_thermostat
+
+                if await is_managed_thermostat(db, device.ha_entity_id):
+                    # The control loops own the whole-house thermostat; a raw
+                    # on/off here would be reverted (or switch the house off).
+                    return {
+                        "success": False,
+                        "error": "The main thermostat is controlled by ClimateIQ — use "
+                                 "set_override for a temperature or set_system_mode.",
+                    }
+                domain = device.ha_entity_id.split(".", 1)[0]
                 async with HAClient(
                     str(settings.home_assistant_url), settings.home_assistant_token
                 ) as ha:
-                    if state in ("on", "heat", "cool", "auto", "fan"):
+                    if domain == "climate" and state in ("heat", "cool"):
+                        await ha.set_hvac_mode(device.ha_entity_id, state)
+                    elif state in ("on", "heat", "cool", "auto", "fan"):
                         await ha.turn_on(device.ha_entity_id)
                     elif state == "off":
                         await ha.turn_off(device.ha_entity_id)
@@ -1901,10 +1939,13 @@ async def _execute_tool_call(
             except (TypeError, ValueError):
                 continue
 
-            target_c_value = max(
-                settings.safety_min_temp_c,
-                min(settings.safety_max_temp_c, target_c_value),
-            )
+            # Reject (never clamp) — "72" meant as °F must not become a
+            # recurring 100 °F schedule.
+            if not (settings.safety_min_temp_c <= target_c_value <= settings.safety_max_temp_c):
+                return {
+                    "success": False,
+                    "error": f"target_c {target_c_value:g} is outside the safety range",
+                }
 
             hvac_mode = entry.get("mode") or "auto"
             schedule = Schedule(
@@ -2297,13 +2338,11 @@ async def _execute_tool_call(
         result_sc = await db.execute(select(SystemConfig).limit(1))
         config_sc = result_sc.scalar_one_or_none()
         old_mode: str | None = config_sc.current_mode.value if config_sc else None
-        if config_sc is None:
-            config_sc = SystemConfig(current_mode=new_mode)
-            db.add(config_sc)
-        else:
-            config_sc.current_mode = new_mode
+        # Same path as POST /system/mode: clears the override and hands the
+        # Ecobee over correctly (previously chat only flipped the DB value).
+        from backend.api.routes.system import apply_system_mode
 
-        await db.commit()
+        await apply_system_mode(db, new_mode)
         return {
             "success": True,
             "previous_mode": old_mode,
@@ -2311,96 +2350,33 @@ async def _execute_tool_call(
         }
 
     elif func_name == "set_override":
-        from backend.models.database import SystemSetting
+        # Same path as the dashboard/dial override: display unit, rejected
+        # (not clamped) outside the safety range, heat/cool chosen from the
+        # rooms, HA unit, override recorded.
+        from backend.core.manual_control import ManualControlError, apply_manual_setpoint
 
         temperature = func_args.get("temperature")
         if temperature is None:
             return {"success": False, "error": "Missing temperature"}
-
         try:
-            temp_display = float(temperature)
-        except (TypeError, ValueError):
-            return {"success": False, "error": "Invalid temperature value"}
-
-        # Convert display unit → Celsius → HA unit
-        temp_c_ov = temp_display if settings.temperature_unit != "F" else (temp_display - 32) * 5 / 9
-        temp_c_ov = max(settings.safety_min_temp_c, min(settings.safety_max_temp_c, temp_c_ov))
-
-        if not settings.home_assistant_token:
-            return {"success": False, "error": "Home Assistant not configured"}
-
-        # Get climate entity
-        ov_result = await db.execute(
-            select(SystemSetting).where(SystemSetting.key == "climate_entities")
-        )
-        ov_setting = ov_result.scalar_one_or_none()
-        climate_entity_ov = (
-            ov_setting.value.get("value", "") if ov_setting and ov_setting.value else ""
-        ) or settings.climate_entities or ""
-        if isinstance(climate_entity_ov, str):
-            climate_entity_ov = climate_entity_ov.strip().split(",")[0].strip()
-        if not climate_entity_ov:
-            return {"success": False, "error": "No climate entity configured"}
-
-        async with HAClient(str(settings.home_assistant_url), settings.home_assistant_token) as ha:
-            try:
-                # Ask HA for its unit — the "ha_temperature_unit" setting this
-                # used to read is never written, so it always sent Celsius.
-                ha_cfg_ov = await ha.get_config()
-                ha_is_f = ha_cfg_ov.get("unit_system", {}).get("temperature") == "°F"
-                temp_ha_ov = round(temp_c_ov * 9 / 5 + 32, 1) if ha_is_f else temp_c_ov
-                ov_state = await ha.get_state(climate_entity_ov)
-                ov_mode = str(ov_state.state or "").lower() if ov_state else ""
-                ov_cur = ov_state.attributes.get("current_temperature") if ov_state else None
-                if ov_mode in ("heat", "cool"):
-                    ov_intent: str | None = ov_mode
-                elif ov_cur is not None:
-                    ov_intent = "cool" if temp_ha_ov < float(ov_cur) else "heat"
-                else:
-                    ov_intent = None
-                await ha.set_temperature_with_hold(
-                    climate_entity_ov, temp_ha_ov, intent_mode=ov_intent
-                )
-            except Exception as ha_err:
-                return {"success": False, "error": f"HA call failed: {ha_err}"}
-
+            result_ov = await apply_manual_setpoint(db, temperature, source="chat")
+        except ManualControlError as exc:
+            return {"success": False, "error": str(exc)}
+        except Exception as ha_err:
+            return {"success": False, "error": f"HA call failed: {ha_err}"}
         return {
             "success": True,
-            f"temperature_set_{settings.temperature_unit}": round(temp_display, 1),
-            "temperature_c": round(temp_c_ov, 2),
-            "climate_entity": climate_entity_ov,
+            f"temperature_set_{result_ov['unit']}": result_ov["temperature"],
+            "temperature_c": round(result_ov["temperature_c"], 2),
+            "mode": result_ov["mode"],
+            "override_until": result_ov["override_until"],
         }
 
     elif func_name == "cancel_override":
-        from backend.models.database import SystemSetting
+        from backend.core.manual_control import resume_automatic_control
 
-        if not settings.home_assistant_token:
-            return {"success": False, "error": "Home Assistant not configured"}
-
-        # Get climate entity
-        co_result = await db.execute(
-            select(SystemSetting).where(SystemSetting.key == "climate_entities")
-        )
-        co_setting = co_result.scalar_one_or_none()
-        climate_entity_co = (
-            co_setting.value.get("value", "") if co_setting and co_setting.value else ""
-        ) or settings.climate_entities or ""
-        if isinstance(climate_entity_co, str):
-            climate_entity_co = climate_entity_co.strip().split(",")[0].strip()
-        if not climate_entity_co:
-            return {"success": False, "error": "No climate entity configured"}
-
-        async with HAClient(str(settings.home_assistant_url), settings.home_assistant_token) as ha:
-            try:
-                await ha.resume_ecobee_program(climate_entity_co, resume_all=True)
-            except Exception:
-                # Fallback for non-Ecobee thermostats
-                try:
-                    await ha.set_preset_mode(climate_entity_co, "none")
-                except Exception as preset_err:
-                    return {"success": False, "error": f"Could not cancel override: {preset_err}"}
-
-        return {"success": True, "message": "Override canceled — thermostat returned to schedule."}
+        message = await resume_automatic_control(db, source="chat cancel_override")
+        return {"success": True, "message": message}
 
     elif func_name == "delete_schedule":
         from backend.models.database import Schedule
@@ -2724,6 +2700,51 @@ async def clear_chat_history(
     await db.commit()
 
 
+async def _command_set_zone_temp(
+    db: AsyncSession, zone_id: Any, temp_c: float, source: str
+) -> str | None:
+    """Set a zone's temperature from a chat command.  Returns an error or None.
+
+    Rejected (not clamped) outside the safety range.  With one whole-house
+    thermostat — the zone has no thermostat device of its own, or its device
+    *is* the managed thermostat — this is a manual override.  A separate
+    zone thermostat (e.g. a mini-split) is written directly in HA's unit.
+    """
+    from backend.core.manual_control import (
+        ManualControlError,
+        apply_manual_setpoint,
+        display_unit,
+        in_safety_range,
+        is_managed_thermostat,
+    )
+    from backend.models.database import Device
+
+    if not in_safety_range(temp_c):
+        return "That temperature is outside the safety range."
+    devices = (await db.execute(select(Device).where(Device.zone_id == zone_id))).scalars().all()
+    zone_tstat = next(
+        (d for d in devices if d.ha_entity_id and d.type.value == "thermostat"), None
+    )
+    if zone_tstat is None or await is_managed_thermostat(db, zone_tstat.ha_entity_id):
+        unit = await display_unit(db)
+        shown = temp_c * 9 / 5 + 32 if unit == "F" else temp_c
+        try:
+            await apply_manual_setpoint(db, round(shown, 1), source=source)
+        except ManualControlError as exc:
+            return str(exc)
+        return None
+    import backend.api.dependencies as _deps
+    import backend.api.main as _main
+
+    ha = _deps._ha_client
+    if ha is None:
+        return "Home Assistant is not connected."
+    is_f = await _main._ha_unit_is_f(ha)
+    value = round(temp_c * 9 / 5 + 32, 1) if is_f else round(temp_c, 1)
+    await ha.set_temperature(str(zone_tstat.ha_entity_id), value)
+    return None
+
+
 @router.post("/command", response_model=CommandResponse)
 async def execute_command(
     payload: CommandRequest,
@@ -2805,32 +2826,15 @@ async def execute_command(
                 action="set_temperature",
             )
 
-        # Actually execute the temperature change via HA
+        # Actually execute the temperature change
         try:
-            from backend.integrations.ha_client import HAClient
-
-            # Safety clamp temperature to absolute bounds
             if temp_c is not None:
-                temp_c = max(
-                    settings.safety_min_temp_c,
-                    min(settings.safety_max_temp_c, float(temp_c)),
-                )
-
-            if settings.home_assistant_token and temp_c is not None:
-                # Find devices in this zone
-                from backend.models.database import Device
-
-                device_result = await db.execute(select(Device).where(Device.zone_id == zone_id))
-                devices = device_result.scalars().all()
-                climate_device = next(
-                    (d for d in devices if d.ha_entity_id and d.type.value == "thermostat"),
-                    None,
-                )
-                if climate_device and climate_device.ha_entity_id:
-                    async with HAClient(
-                        str(settings.home_assistant_url), settings.home_assistant_token
-                    ) as ha:
-                        await ha.set_temperature(climate_device.ha_entity_id, float(temp_c))
+                err = await _command_set_zone_temp(db, zone_id, float(temp_c), "chat command")
+                if err:
+                    return CommandResponse(
+                        success=False, message=err, action="set_temperature",
+                        zone_affected=zone_name,
+                    )
         except Exception as exc:
             logger.exception("Failed to set temperature via HA")
             return CommandResponse(
@@ -2885,9 +2889,15 @@ async def execute_command(
             )
             reading_result = await db.execute(reading_stmt)
             reading = reading_result.scalar_one_or_none()
-            current_temp_c = (
-                reading.temperature_c if reading and reading.temperature_c is not None else 21.0
-            )
+            if reading is None or reading.temperature_c is None:
+                # Don't invent a starting point (spec §9.2).
+                return CommandResponse(
+                    success=False,
+                    message=f"No current temperature for {zone_name}; set an exact temperature instead.",
+                    action="adjust_temperature",
+                    zone_affected=zone_name,
+                )
+            current_temp_c = float(reading.temperature_c)
 
             if direction == "warmer":
                 new_temp = current_temp_c + float(amount_c)
@@ -2895,21 +2905,12 @@ async def execute_command(
                 new_temp = current_temp_c - float(amount_c)
 
             settings = _get_settings()
-
-            # Safety clamp to absolute bounds
-            new_temp = max(settings.safety_min_temp_c, min(settings.safety_max_temp_c, new_temp))
-            if settings.home_assistant_token and zone_id:
-                device_result = await db.execute(select(Device).where(Device.zone_id == zone_id))
-                devices = device_result.scalars().all()
-                climate_device = next(
-                    (d for d in devices if d.ha_entity_id and d.type.value == "thermostat"),
-                    None,
+            err = await _command_set_zone_temp(db, zone_id, new_temp, "chat command")
+            if err:
+                return CommandResponse(
+                    success=False, message=err, action="adjust_temperature",
+                    zone_affected=zone_name,
                 )
-                if climate_device and climate_device.ha_entity_id:
-                    async with HAClient(
-                        str(settings.home_assistant_url), settings.home_assistant_token
-                    ) as ha:
-                        await ha.set_temperature(climate_device.ha_entity_id, new_temp)
         except Exception as exc:
             logger.exception("Failed to adjust temperature via HA")
             return CommandResponse(

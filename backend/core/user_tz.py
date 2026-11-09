@@ -25,6 +25,10 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 
 _UTC = ZoneInfo("UTC")
+# Last timezone successfully read from Home Assistant.  A single failed or
+# slow /api/config call must not silently switch a tick to UTC (≈5 h off in
+# US-Eastern — enough to fire the wrong schedule).
+_last_ha_tz: ZoneInfo | None = None
 
 
 def parse_tz(value: Any) -> ZoneInfo | None:
@@ -59,14 +63,18 @@ async def resolve_user_tz(db: Any, ha_client: Any) -> ZoneInfo:
                     return tz
         except Exception as exc:
             logger.debug("user_tz: settings lookup failed (%s)", exc)
+    global _last_ha_tz
     if ha_client is not None:
         try:
             ha_config = await ha_client.get_config()
             tz = parse_tz(ha_config.get("time_zone", ""))
             if tz is not None:
+                _last_ha_tz = tz
                 return tz
         except Exception as exc:
             logger.debug("user_tz: HA config lookup failed (%s)", exc)
+    if _last_ha_tz is not None:
+        return _last_ha_tz
     return _UTC
 
 

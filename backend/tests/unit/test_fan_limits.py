@@ -101,9 +101,9 @@ async def test_sweep_restores_baseline_when_cap_below_it() -> None:
 async def test_sweep_leaves_hand_adjusted_fan_alone() -> None:
     ha = FakeHA({"fan.nursery": 0})
     await main_mod._apply_fan_target(ha, "fan.nursery", 100, True)
-    ha.pct["fan.nursery"] = 80  # user changed it by hand
+    ha.pct["fan.nursery"] = 70  # user changed it by hand (beyond the 20% step tolerance)
     await main_mod._enforce_fan_night_cap(ha, 50)
-    assert ha.pct["fan.nursery"] == 80
+    assert ha.pct["fan.nursery"] == 70
 
 
 async def test_sweep_ignores_fans_we_never_touched() -> None:
