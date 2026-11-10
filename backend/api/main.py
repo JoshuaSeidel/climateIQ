@@ -1303,10 +1303,13 @@ async def _auto_select_hvac_mode(
         lock: str | None = control_mode if control_mode in ("heat", "cool") else None
         from backend.core.seasonal_lock import compute_lock_state
 
-        season_state = await compute_lock_state(db, ha_client)
-        season_lock: str | None = (
-            season_state.locked_mode if season_state.locked_mode in ("heat", "cool") else None
-        )
+        season_lock: str | None = None
+        try:
+            season_state = await compute_lock_state(db, ha_client)
+            if season_state.locked_mode in ("heat", "cool"):
+                season_lock = season_state.locked_mode
+        except Exception as lock_exc:  # the user's control mode alone must still decide
+            logger.debug("Seasonal lock unavailable in mode selection: %s", lock_exc)
         if lock is None:
             lock = season_lock
         if lock is not None and lock not in supported:
@@ -1478,8 +1481,12 @@ async def _final_control_write_locked(
     key: str,
     trigger: Any = None,
     owner_modes: set[str] | None = None,
+    restore_off: bool = True,
 ) -> dict[str, Any]:
     """Guard and (only if needed) write the setpoint.  Spec §5.3-§5.7.
+
+    ``restore_off=False`` is for a schedule that is itself set to ``off``: with
+    no sensor data it must not undo the off it just applied.
 
     ``desired_c`` is the loop's own choice (formula, advisor, AI); None means
     "use the offset-compensation formula".  The thermostat's *actual* mode,
@@ -1500,9 +1507,17 @@ async def _final_control_write_locked(
         return {"written": False, "reason": "no longer permitted"}
     state = await ha_client.get_state(climate_entity)
     mode = str(state.state or "").lower() if state else ""
+    # A "ClimateIQ turned it off" record is only meaningful while the thermostat
+    # is still off: seeing any other mode means someone (the user, the Ecobee)
+    # changed it since, so a later off is theirs, not ours.
+    if mode and mode != "off":
+        await _ensure_mode_switch_loaded()
+        _rec = _last_mode_switch.get(climate_entity)
+        if _rec is not None and _rec[0] == "off":
+            await _restore_mode_switch(climate_entity, None)
     zone_avg_c, _names = await get_avg_zone_temp_c(db, zone_ids or None, ha_client)
     if zone_avg_c is None:
-        if mode == "off":
+        if mode == "off" and restore_off:
             # No sensors and no off schedule governs (those never reach here):
             # an "off" that ClimateIQ set must not stay in place with nothing
             # able to restore it — the Ecobee's own program (its own sensors)
@@ -2417,6 +2432,7 @@ async def maintain_climate_offset() -> None:
                 context=f"Climate maintenance (schedule '{active_schedule.name}')",
                 key=sched_key,
                 owner_modes={"scheduled", "follow_me"},
+                restore_off=sched_hvac_mode != "off",
             )
 
     except Exception as e:

@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.104] - 2026-11-09
+
+Round 12: fixes for three regressions introduced by 1.0.103. Regression tests: `backend/tests/scenario/test_r12_*.py`.
+
+### Fixed
+- **Zone endpoints returned 500 for zones already stored with older data** (1.0.103 regression): the new input validators also ran when building responses, so a zone with e.g. a Fahrenheit-era `temp_min` of 68, string-typed numbers or months outside 1-12 broke `GET /zones`, `GET /zones/{id}` and the PUT used to fix it. Validators now apply to input only.
+- **Thermostat flapped off/heat_cool every minute during an "off" schedule when a sensor dropped** (1.0.103 regression), sending a notification each time. An off schedule no longer hands its own "off" back.
+- **A stale "ClimateIQ turned it off" record** could make ClimateIQ override an off you set yourself later. The record is dropped as soon as a tick sees the thermostat in any other mode, and when switching to Learn.
+- **A seasonal-lock error** could disable direction selection even when your heat/cool control mode alone should decide; it is now isolated.
+
 ## [1.0.103] - 2026-11-09
 
 Round 11: write-time validation, emergency shutoff, lock consistency, and a day-simulation finding. Regression tests: `backend/tests/scenario/test_r11_*.py`.

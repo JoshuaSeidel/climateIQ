@@ -128,6 +128,11 @@ class ZoneBase(BaseModel):
         ),
     )
 
+
+class ZoneCreate(ZoneBase):
+    model_config = ConfigDict(extra="forbid")
+
+    # Input-only: ZoneResponse (also a ZoneBase) must never re-validate stored rows.
     @field_validator("comfort_preferences")
     @classmethod
     def _v_prefs(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -142,10 +147,6 @@ class ZoneBase(BaseModel):
     @classmethod
     def _v_profile(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
         return _check_thermal_profile(v)
-
-
-class ZoneCreate(ZoneBase):
-    model_config = ConfigDict(extra="forbid")
 
 
 class ZoneUpdate(BaseModel):

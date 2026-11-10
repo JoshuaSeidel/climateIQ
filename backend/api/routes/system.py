@@ -107,6 +107,9 @@ async def _ecobee_handover(db: AsyncSession, new_mode: SystemMode, _logger: Any)
         except Exception as exc:
             _logger.warning("Could not restore Ecobee occupancy features: %s", exc)
         await _main._undo_our_off(ha_client, entity, "Learn")
+        # Whatever is left is the user's: forget any ClimateIQ "off" record so a
+        # later off (Ecobee app) is never mistaken for ours.
+        await _main._restore_mode_switch(entity, None)
 
 
 @router.post("/mode", response_model=SystemConfigResponse)
