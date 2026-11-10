@@ -1481,12 +1481,13 @@ async def _final_control_write_locked(
     key: str,
     trigger: Any = None,
     owner_modes: set[str] | None = None,
-    restore_off: bool = True,
+    restore_off: bool = False,
 ) -> dict[str, Any]:
     """Guard and (only if needed) write the setpoint.  Spec §5.3-§5.7.
 
-    ``restore_off=False`` is for a schedule that is itself set to ``off``: with
-    no sensor data it must not undo the off it just applied.
+    ``restore_off=True`` lets a tick with no sensor data hand ClimateIQ's own
+    ``off`` back to the Ecobee.  It is opt-in: a caller must pass True only when
+    no ``off`` schedule governs (otherwise it would undo the off it just applied).
 
     ``desired_c`` is the loop's own choice (formula, advisor, AI); None means
     "use the offset-compensation formula".  The thermostat's *actual* mode,
@@ -1510,10 +1511,17 @@ async def _final_control_write_locked(
     # A "ClimateIQ turned it off" record is only meaningful while the thermostat
     # is still off: seeing any other mode means someone (the user, the Ecobee)
     # changed it since, so a later off is theirs, not ours.
-    if mode and mode != "off":
+    if mode in ("heat", "cool", "heat_cool", "auto", "dry", "fan_only"):
         await _ensure_mode_switch_loaded()
         _rec = _last_mode_switch.get(climate_entity)
-        if _rec is not None and _rec[0] == "off":
+        # Settle window: HA reports state asynchronously, so a read in the same
+        # tick as our own set_hvac_mode(off) can still show the old mode.  Kept
+        # well under the 60 s tick so a real user change is never ignored.
+        if (
+            _rec is not None
+            and _rec[0] == "off"
+            and (datetime.now(UTC) - _rec[1]).total_seconds() > 15
+        ):
             await _restore_mode_switch(climate_entity, None)
     zone_avg_c, _names = await get_avg_zone_temp_c(db, zone_ids or None, ha_client)
     if zone_avg_c is None:
@@ -2651,6 +2659,7 @@ async def execute_follow_me_mode() -> None:
                 key="follow_me",
                 trigger=TriggerType.follow_me,
                 owner_modes={"follow_me"},
+                restore_off=True,  # Follow-Me only runs when no schedule governs
             )
 
             # ── Notification (spec §8): only on a meaningful change ─────
@@ -3885,6 +3894,7 @@ async def execute_active_mode() -> None:
                 key=f"active:{governing_schedule.id if governing_schedule else 'freeform'}",
                 trigger=TriggerType.llm_decision,
                 owner_modes={"active"},
+                restore_off=sched_dir_mode != "off",
             )
 
             # ── Notification (spec §8 throttle) ─────────────────────────

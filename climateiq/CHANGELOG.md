@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.105] - 2026-11-09
+
+Round 13: fixes for two regressions from 1.0.103/1.0.104, each verified by an independent reviewer before release. Regression tests: `backend/tests/scenario/test_r13_*.py`.
+
+### Fixed
+- **Active mode flapped the thermostat during an "off" schedule when the schedule's sensors were down** (every 5 minutes, with a duplicate notification each time). Handing ClimateIQ's own "off" back to the Ecobee is now opt-in per caller and is skipped while an off schedule governs.
+- **The "ClimateIQ turned it off" record could be erased by a stale Home Assistant state read** in the same tick as ClimateIQ's own off, so the thermostat stayed off after the off schedule ended. The record is now only cleared when it is more than 15 s old and the thermostat reports a real mode (a real user change is still detected on the next tick).
+
 ## [1.0.104] - 2026-11-09
 
 Round 12: fixes for three regressions introduced by 1.0.103. Regression tests: `backend/tests/scenario/test_r12_*.py`.
