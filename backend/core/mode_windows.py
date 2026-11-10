@@ -243,6 +243,9 @@ async def compute_window_state(
     if window is None:
         state.source = source
         state.reason = f"no {source} window covers {local_now.strftime('%H:%M')}"
+        # A valve latch only means something inside its window: don't carry it
+        # into the next day's occurrence.
+        _escape_latched.clear()
         return state
 
     label = window.name or f"{window.start_time}-{window.end_time}"

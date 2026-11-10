@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .enums import (
     ActionType,
@@ -20,6 +20,69 @@ from .enums import (
     TriggerType,
     ZoneType,
 )
+
+_NUMERIC_PREF_KEYS = ("temp_min", "temp_max", "lux_max", "lux_open", "target_humidity")
+
+
+def _check_comfort_preferences(v: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Numeric preference fields must be finite numbers and temp_min <= temp_max."""
+    import math
+
+    if v is None:
+        return v
+    nums: dict[str, float] = {}
+    for key in _NUMERIC_PREF_KEYS:
+        if v.get(key) is None:
+            continue
+        try:
+            x = float(v[key])
+        except (TypeError, ValueError):
+            raise ValueError(f"comfort_preferences.{key} must be a number") from None
+        if not math.isfinite(x):
+            raise ValueError(f"comfort_preferences.{key} must be finite")
+        nums[key] = x
+    for key in ("temp_min", "temp_max"):
+        # Stored in °C: catches °F values (68/75) sent as °C.
+        if key in nums and not -10.0 <= nums[key] <= 50.0:
+            raise ValueError(f"comfort_preferences.{key} must be a Celsius value (-10..50)")
+    if "temp_min" in nums and "temp_max" in nums and nums["temp_min"] > nums["temp_max"]:
+        raise ValueError("comfort_preferences.temp_min must not exceed temp_max")
+    return v
+
+
+_PROFILE_NUMERIC = (
+    "heating_rate_c_per_hour", "cooling_rate_c_per_hour", "response_lag_minutes",
+    "typical_overshoot_c", "data_days",
+)
+
+
+def _check_thermal_profile(v: dict[str, Any] | None) -> dict[str, Any] | None:
+    import math
+
+    if v is None:
+        return v
+    for key in _PROFILE_NUMERIC:
+        x = v.get(key)
+        if x is None:
+            continue
+        if isinstance(x, bool) or not isinstance(x, int | float) or not math.isfinite(x):
+            raise ValueError(f"thermal_profile.{key} must be a finite number")
+    occ = v.get("occupancy_score_by_hour")
+    if occ is not None and (
+        not isinstance(occ, dict)
+        or any(isinstance(x, bool) or not isinstance(x, int | float) for x in occ.values())
+    ):
+        raise ValueError("thermal_profile.occupancy_score_by_hour must map hour -> number")
+    nap = v.get("typical_nap_hours")
+    if nap is not None and not isinstance(nap, list):
+        raise ValueError("thermal_profile.typical_nap_hours must be a list")
+    return v
+
+
+def _check_exclude_months(v: list[int] | None) -> list[int] | None:
+    if v is not None and any(not 1 <= m <= 12 for m in v):
+        raise ValueError("exclude_months entries must be 1-12")
+    return v
 
 
 class ZoneBase(BaseModel):
@@ -65,6 +128,21 @@ class ZoneBase(BaseModel):
         ),
     )
 
+    @field_validator("comfort_preferences")
+    @classmethod
+    def _v_prefs(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _check_comfort_preferences(v)
+
+    @field_validator("exclude_months")
+    @classmethod
+    def _v_months(cls, v: list[int] | None) -> list[int] | None:
+        return _check_exclude_months(v)
+
+    @field_validator("thermal_profile")
+    @classmethod
+    def _v_profile(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _check_thermal_profile(v)
+
 
 class ZoneCreate(ZoneBase):
     model_config = ConfigDict(extra="forbid")
@@ -84,6 +162,21 @@ class ZoneUpdate(BaseModel):
     ha_entities: list[str] | None = None
     fan_entities: list[str] | None = None
     allow_fan_control: bool | None = None
+
+    @field_validator("comfort_preferences")
+    @classmethod
+    def _v_prefs(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _check_comfort_preferences(v)
+
+    @field_validator("exclude_months")
+    @classmethod
+    def _v_months(cls, v: list[int] | None) -> list[int] | None:
+        return _check_exclude_months(v)
+
+    @field_validator("thermal_profile")
+    @classmethod
+    def _v_profile(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _check_thermal_profile(v)
 
 
 class SensorBase(BaseModel):

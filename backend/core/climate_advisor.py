@@ -551,34 +551,41 @@ def _build_prompt(
 
     # Thermal profile section
     profile_lines = ""
-    if thermal_profile:
-        hr = thermal_profile.get("heating_rate_c_per_hour")
-        cr = thermal_profile.get("cooling_rate_c_per_hour")
-        lag = thermal_profile.get("response_lag_minutes")
-        overshoot = thermal_profile.get("typical_overshoot_c")
-        days = thermal_profile.get("data_days", 0)
-        nap = thermal_profile.get("nap_detected", False)
-        occ_by_hour: dict[str, float] = thermal_profile.get("occupancy_score_by_hour", {})
-        current_hour = datetime.now(UTC).hour
-        occ_score = occ_by_hour.get(str(current_hour), 0.0)
-        occ_status = "likely occupied" if occ_score >= 0.5 else "likely unoccupied"
-        if hr is not None:
-            profile_lines += f"Heating rate:       {hr * 9/5:+.1f}°F/hour\n"
-        if cr is not None:
-            profile_lines += f"Cooling rate:       {cr * 9/5:+.1f}°F/hour\n"
-        if lag is not None:
-            profile_lines += f"Response lag:       ~{lag:.0f} min (setpoint change → zone response)\n"
-        if overshoot is not None:
-            profile_lines += f"Typical overshoot:  +{overshoot * 9/5:.1f}°F after heating cycles\n"
-        profile_lines += f"Occupancy now:      {occ_status} (score {occ_score:.0%} for this hour)\n"
-        if nap:
-            nap_hours = thermal_profile.get("typical_nap_hours", [])
-            profile_lines += f"Nap pattern:        detected ({', '.join(f'{h}:00' for h in nap_hours)})\n"
-        label = f"learned from {days} days" if days else "building profile"
-        profile_header = f"─── ZONE THERMAL PROFILE ({label}) ──────────────────────────"
-    else:
+    profile_header = "─── ZONE THERMAL PROFILE (not yet available) ─────────────"
+    try:
+        if thermal_profile:
+            hr = thermal_profile.get("heating_rate_c_per_hour")
+            cr = thermal_profile.get("cooling_rate_c_per_hour")
+            lag = thermal_profile.get("response_lag_minutes")
+            overshoot = thermal_profile.get("typical_overshoot_c")
+            days = thermal_profile.get("data_days", 0)
+            nap = thermal_profile.get("nap_detected", False)
+            occ_by_hour: dict[str, float] = thermal_profile.get("occupancy_score_by_hour", {})
+            current_hour = datetime.now(UTC).hour
+            occ_score = occ_by_hour.get(str(current_hour), 0.0)
+            occ_status = "likely occupied" if occ_score >= 0.5 else "likely unoccupied"
+            if hr is not None:
+                profile_lines += f"Heating rate:       {hr * 9/5:+.1f}°F/hour\n"
+            if cr is not None:
+                profile_lines += f"Cooling rate:       {cr * 9/5:+.1f}°F/hour\n"
+            if lag is not None:
+                profile_lines += f"Response lag:       ~{lag:.0f} min (setpoint change → zone response)\n"
+            if overshoot is not None:
+                profile_lines += f"Typical overshoot:  +{overshoot * 9/5:.1f}°F after heating cycles\n"
+            profile_lines += f"Occupancy now:      {occ_status} (score {occ_score:.0%} for this hour)\n"
+            if nap:
+                nap_hours = thermal_profile.get("typical_nap_hours", [])
+                profile_lines += f"Nap pattern:        detected ({', '.join(f'{h}:00' for h in nap_hours)})\n"
+            label = f"learned from {days} days" if days else "building profile"
+            profile_header = f"─── ZONE THERMAL PROFILE ({label}) ──────────────────────────"
+        else:
+            profile_lines = (
+                "  Profile will populate after the first analytics run (every 4 hours).\n"
+            )
+    except (TypeError, ValueError, AttributeError):
+        # A malformed free-form profile must not break the whole tick.
+        profile_lines = ""
         profile_header = "─── ZONE THERMAL PROFILE (not yet available) ─────────────"
-        profile_lines = "  Profile will populate after the first analytics run (every 4 hours).\n"
 
     # Outdoor conditions
     if outdoor_temp_c is not None:

@@ -210,6 +210,18 @@ class SystemSettingsUpdate(BaseModel):
             raise ValueError("temperature_unit must be 'C' or 'F'")
         return normalized
 
+    @field_validator("climate_entities")
+    @classmethod
+    def _validate_climate_entities(cls, v: str | None) -> str | None:
+        import re
+
+        if v is None or not v.strip():
+            return v
+        items = [x.strip() for x in v.split(",")]
+        if any(not re.fullmatch(r"climate\.[a-z0-9_]+", x) for x in items):
+            raise ValueError("climate_entities must be comma-separated climate.* entity ids")
+        return v
+
     @field_validator("max_temp_offset_f")
     @classmethod
     def _validate_max_offset(cls, v: float | None) -> float | None:

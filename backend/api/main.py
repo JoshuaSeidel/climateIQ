@@ -691,16 +691,20 @@ async def poll_zone_status() -> None:
                     state = app_state.zone_manager.get_state(zone.id)
                     if state:
                         prefs = zone.comfort_preferences or {}
-                        temp_min = prefs.get("temp_min")
-                        temp_max = prefs.get("temp_max")
-                        if temp_min is not None and temp_max is not None:
-                            target = (float(temp_min) + float(temp_max)) / 2.0
-                            state.set_metric("target_temperature_c", target)
-                            state.set_metric("comfort_min_c", float(temp_min))
-                            state.set_metric("comfort_max_c", float(temp_max))
-                        humidity_target = prefs.get("target_humidity")
-                        if humidity_target is not None:
-                            state.set_metric("target_humidity", float(humidity_target))
+                        try:
+                            temp_min = prefs.get("temp_min")
+                            temp_max = prefs.get("temp_max")
+                            if temp_min is not None and temp_max is not None:
+                                target = (float(temp_min) + float(temp_max)) / 2.0
+                                state.set_metric("target_temperature_c", target)
+                                state.set_metric("comfort_min_c", float(temp_min))
+                                state.set_metric("comfort_max_c", float(temp_max))
+                            humidity_target = prefs.get("target_humidity")
+                            if humidity_target is not None:
+                                state.set_metric("target_humidity", float(humidity_target))
+                        except (TypeError, ValueError, AttributeError):
+                            # One zone's bad preferences must not skip the others.
+                            logger.warning("Zone %s has invalid comfort_preferences", zone.name)
     except Exception as e:
         logger.error(f"Error polling zone status: {e}")
 
@@ -1297,12 +1301,14 @@ async def _auto_select_hvac_mode(
         # Locks: what the user / season allows.
         control_mode, _cd = await _get_hvac_control_settings(db)
         lock: str | None = control_mode if control_mode in ("heat", "cool") else None
-        if lock is None:
-            from backend.core.seasonal_lock import compute_lock_state
+        from backend.core.seasonal_lock import compute_lock_state
 
-            season_state = await compute_lock_state(db, ha_client)
-            if season_state.locked_mode in ("heat", "cool"):
-                lock = season_state.locked_mode
+        season_state = await compute_lock_state(db, ha_client)
+        season_lock: str | None = (
+            season_state.locked_mode if season_state.locked_mode in ("heat", "cool") else None
+        )
+        if lock is None:
+            lock = season_lock
         if lock is not None and lock not in supported:
             return None, False  # a lock the thermostat can't honour: leave it
 
@@ -1320,12 +1326,15 @@ async def _auto_select_hvac_mode(
         else:
             return None, False  # inside the dead-band: keep the current mode
 
-        if lock is not None and picked != lock:
-            logger.info(
-                "Auto-select: zones need %s but the %s lock forbids it — leaving mode",
-                picked, lock,
-            )
-            return None, False
+        # Both restrictions veto (same rule as _direction_allowed): the user's
+        # control mode AND the seasonal lock.
+        for _forbid in (lock, season_lock):
+            if _forbid is not None and picked != _forbid:
+                logger.info(
+                    "Auto-select: zones need %s but the %s lock forbids it — leaving mode",
+                    picked, _forbid,
+                )
+                return None, False
         if picked is None or picked not in supported:
             logger.warning(
                 "Auto-select wants %s but thermostat doesn't support it (supported=%s)",
@@ -1493,6 +1502,12 @@ async def _final_control_write_locked(
     mode = str(state.state or "").lower() if state else ""
     zone_avg_c, _names = await get_avg_zone_temp_c(db, zone_ids or None, ha_client)
     if zone_avg_c is None:
+        if mode == "off":
+            # No sensors and no off schedule governs (those never reach here):
+            # an "off" that ClimateIQ set must not stay in place with nothing
+            # able to restore it — the Ecobee's own program (its own sensors)
+            # takes over.  A user's off is left alone.
+            await _undo_our_off(ha_client, climate_entity, context)
         logger.info("%s: no zone readings — leaving the thermostat alone", context)
         return {"written": False, "reason": "no zone readings"}
     reading_c = await get_thermostat_reading_c(ha_client, climate_entity, db=db)
@@ -3981,8 +3996,11 @@ async def execute_cover_automation() -> None:
                 current_lux = lux_reading.lux
 
                 prefs = zone.comfort_preferences or {}
-                lux_close = float(prefs.get("lux_max", _DEFAULT_LUX_CLOSE))
-                lux_open_thresh = float(prefs.get("lux_open", _DEFAULT_LUX_OPEN))
+                try:
+                    lux_close = float(prefs.get("lux_max", _DEFAULT_LUX_CLOSE))
+                    lux_open_thresh = float(prefs.get("lux_open", _DEFAULT_LUX_OPEN))
+                except (TypeError, ValueError, AttributeError):
+                    continue  # invalid preferences: leave this zone's covers alone
 
                 for cover in covers:
                     device_key = str(cover.id)

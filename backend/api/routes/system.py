@@ -257,6 +257,22 @@ async def emergency_shutoff(
                         except Exception as e:
                             errors.append(f"{entity}: {e}")
                             logger.error("Failed to shut off %s: %s", entity, e)
+                            continue
+                        # Learn semantics: the Ecobee's own program owns the
+                        # thermostat from here — drop our hold and re-enable its
+                        # Smart Home/Away + Follow Me.  The off stays off: it
+                        # is the user's emergency, not ClimateIQ's, so forget any
+                        # earlier "ClimateIQ turned it off" record.
+                        try:
+                            await ha.resume_ecobee_program(entity, resume_all=True)
+                            await ha.set_ecobee_occupancy_modes(
+                                entity, auto_away=True, follow_me=True
+                            )
+                        except Exception as e:
+                            logger.warning("Shutoff handover for %s incomplete: %s", entity, e)
+                        import backend.api.main as _main_mod
+
+                        await _main_mod._restore_mode_switch(entity, None)
 
                     for device in devices:
                         if device.ha_entity_id and device.ha_entity_id not in handled:
@@ -275,6 +291,10 @@ async def emergency_shutoff(
                 logger.error("Emergency shutoff HA connection failed: %s", e)
         else:
             errors.append("No HA token configured — cannot send device commands")
+        import backend.api.main as _main_state
+
+        _main_state._preconditioning.clear()
+        _main_state._gap_handed_back = False
 
     logger.warning(
         "EMERGENCY SHUTOFF executed: %d devices turned off, %d errors",

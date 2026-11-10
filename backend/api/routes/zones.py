@@ -152,7 +152,22 @@ async def update_zone(
             detail="No fields provided for update",
         )
 
+    # An explicit null must not be persisted into fields every reader (and the
+    # response model) expects to be a dict/list; non-nullable fields reject it.
+    _empty: dict[str, Any] = {
+        "comfort_preferences": {}, "thermal_profile": {},
+        "exclude_months": [], "ha_entities": [], "fan_entities": [],
+    }
     for key, value in update_data.items():
+        if value is None:
+            if key in _empty:
+                value = _empty[key]
+            elif key in ("name", "type", "is_active", "priority", "exclude_from_metrics",
+                         "allow_fan_control"):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{key} cannot be null",
+                )
         setattr(zone, key, value)
 
     zone.updated_at = datetime.now(UTC)
@@ -174,6 +189,22 @@ async def delete_zone(
 
     zone = await _fetch_zone(db, zone_id)
     try:
+        # schedules.zone_ids is a JSON list with no FK: drop this zone from it.
+        # An empty list would mean "all zones", so a schedule that only covered
+        # this zone is disabled instead.
+        from sqlalchemy import select as _select
+
+        from backend.models.database import Schedule as _Schedule
+
+        zid = str(zone_id)
+        for sched in (await db.execute(_select(_Schedule))).scalars().all():
+            ids = [str(x) for x in (sched.zone_ids or [])]
+            if zid not in ids:
+                continue
+            remaining = [x for x in ids if x != zid]
+            sched.zone_ids = remaining
+            if not remaining:
+                sched.is_enabled = False
         await db.delete(zone)
         await db.commit()
     except IntegrityError as exc:

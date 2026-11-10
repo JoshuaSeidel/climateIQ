@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.103] - 2026-11-09
+
+Round 11: write-time validation, emergency shutoff, lock consistency, and a day-simulation finding. Regression tests: `backend/tests/scenario/test_r11_*.py`.
+
+### Fixed
+- **A zone's free-form `thermal_profile` could crash the offset-compensation tick every minute** (heat never ran). It is now validated on write, and the advisor treats a malformed stored profile as absent.
+- **Zone `comfort_preferences` / `exclude_months`** are validated on write (numeric, finite, `temp_min <= temp_max`, Celsius range, months 1-12), and the shared loops tolerate a bad zone instead of skipping all later zones.
+- **Explicit nulls on zone fields** no longer break every zone list with a 500 (empty values stored; required fields return 422).
+- **Deleting a zone** removes it from schedules; a schedule that only covered that zone is disabled instead of silently meaning "all zones".
+- **`climate_entities`** only accepts comma-separated `climate.*` ids.
+- **Emergency shutoff** now follows Learn semantics: it resumes the Ecobee program, re-enables Smart Home/Away and Follow Me, clears preconditioning, and forgets any earlier "ClimateIQ turned it off" record so Learn does not turn heating back on.
+- **Heat/cool control mode and the seasonal lock** are both applied when choosing a direction (they previously disagreed, causing a pointless mode switch followed by a park).
+- **A window escape-valve latch** no longer carries over to the next day.
+- **Thermostat left off after an off schedule** while the governing sensors are unavailable: ClimateIQ's own "off" is now handed back to the Ecobee's program.
+
 ## [1.0.102] - 2026-11-09
 
 ### Fixed
