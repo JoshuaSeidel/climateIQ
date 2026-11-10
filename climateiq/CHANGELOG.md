@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.101] - 2026-11-09
+
+Round 10 (spec-conformance audit). Regression tests: `backend/tests/scenario/test_r10_a_*.py`.
+
+### Fixed
+- **A genuine second heat↔cool switch within 30 minutes sent no notification** (the notification service throttled it); mode-switch notices now bypass that throttle (they are already deduped per actual switch).
+- **`max_temp_offset_f` was unvalidated:** a negative, NaN or absurd value could stop the thermostat from ever running heat or cool. The settings API now requires 1–20 °F, and the control loops ignore a stored invalid value (falling back to 8 °F).
+- Removed a stray scratch test file that was accidentally committed in 1.0.100.
+
 ## [1.0.100] - 2026-11-09
 
 Round 10 (partial). Fixes a regression introduced by 1.0.99 plus two findings. Regression tests: `backend/tests/**/test_r10*.py`.

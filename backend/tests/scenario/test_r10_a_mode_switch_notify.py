@@ -1,5 +1,6 @@
 """§8: every heat<->cool switch notifies; service throttle swallows a real switch."""
 from __future__ import annotations
+
 import backend.api.main as main_mod
 from backend.services.notification_service import NotificationService
 from backend.tests.scenario.harness import House
@@ -21,6 +22,6 @@ async def test_urgent_reversal_notification_swallowed(house: House) -> None:
     house.at(*MON, 12, 5)
     await house.tick_scheduled()           # heat -> cool (urgent)
     assert house.ha.mode == "cool"
-    notes = [c for c in house.ha.calls if c[0] == "notify"]
+    notes = [c for c in house.ha.calls if c[0] == "notify" and c[2].get("title") == "Thermostat mode"]
     print([c[2].get("message") for c in notes])
     assert len(notes) == 2, f"2 heat<->cool switches, {len(notes)} notifications"

@@ -1388,8 +1388,10 @@ async def _notify(title: str, message: str) -> None:
                 await ndb.execute(_sel(_NS).where(_NS.key == "notification_target"))
             ).scalar_one_or_none()
         target = (row.value or {}).get("value") or None if row is not None and row.value else None
+        # Mode-switch notices are deduped upstream (one per actual switch);
+        # the service throttle would drop a genuine second switch.
         await _notification_service.send_ha_notification(
-            title=title, message=message, target=target
+            title=title, message=message, target=target, bypass_throttle=True
         )
     except Exception as exc:
         logger.debug("Notification failed: %s", exc)

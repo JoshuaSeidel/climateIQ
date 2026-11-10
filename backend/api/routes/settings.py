@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Annotated, Any
 
@@ -208,6 +209,15 @@ class SystemSettingsUpdate(BaseModel):
         if normalized not in {"C", "F"}:
             raise ValueError("temperature_unit must be 'C' or 'F'")
         return normalized
+
+    @field_validator("max_temp_offset_f")
+    @classmethod
+    def _validate_max_offset(cls, v: float | None) -> float | None:
+        if v is None:
+            return v
+        if not math.isfinite(v) or not 1.0 <= v <= 20.0:
+            raise ValueError("max_temp_offset_f must be between 1 and 20")
+        return v
 
     @field_validator("fan_night_cap_start", "fan_night_cap_end")
     @classmethod

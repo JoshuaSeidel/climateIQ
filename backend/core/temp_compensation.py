@@ -10,6 +10,7 @@ long enough to bring the priority zone to the desired temperature.
 """
 
 import logging
+import math
 import uuid
 from typing import Any
 
@@ -595,8 +596,11 @@ async def get_max_offset_setting(db: Any) -> float:
         )
         row = result.scalar_one_or_none()
         if row and row.value:
-            val = row.value.get("value", 8.0)
-            return float(val)
+            val = float(row.value.get("value", 8.0))
+            # Garbage (NaN, negative, absurd) must not disable heating/cooling.
+            if math.isfinite(val) and 1.0 <= val <= 20.0:
+                return val
+            logger.warning("Ignoring invalid max_temp_offset_f=%r; using 8.0", val)
     except Exception as exc:
         logger.debug("Could not read max_temp_offset_f setting: %s", exc)
     return 8.0
