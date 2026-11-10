@@ -106,10 +106,16 @@ async def _ecobee_handover(db: AsyncSession, new_mode: SystemMode, _logger: Any)
             await ha_client.set_ecobee_occupancy_modes(entity, auto_away=True, follow_me=True)
         except Exception as exc:
             _logger.warning("Could not restore Ecobee occupancy features: %s", exc)
-        await _main._undo_our_off(ha_client, entity, "Learn")
-        # Whatever is left is the user's: forget any ClimateIQ "off" record so a
-        # later off (Ecobee app) is never mistaken for ours.
-        await _main._restore_mode_switch(entity, None)
+        if await _main._undo_our_off(ha_client, entity, "Learn"):
+            # Whatever is left is the user's: forget any ClimateIQ "off" record
+            # so a later off (Ecobee app) is never mistaken for ours.
+            await _main._restore_mode_switch(entity, None)
+        else:
+            # The restore failed: keep the record and let the Learn retry in the
+            # maintenance tick finish the job.
+            from backend.core.manual_override import mark_learn_undo_pending
+
+            await mark_learn_undo_pending(db, 1)
 
 
 @router.post("/mode", response_model=SystemConfigResponse)

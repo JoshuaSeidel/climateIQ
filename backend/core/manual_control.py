@@ -198,8 +198,17 @@ async def _write_manual(
         cur = await ha.get_state(entity)
         if str(cur.state or "").lower() not in ("heat", "cool"):
             avg_c, _ = await get_avg_zone_temp_c(db, None, ha)
-            if avg_c is not None:
-                mode = "heat" if requested_c >= avg_c else "cool"
+            if avg_c is None:
+                # No zone sensors: the thermostat's own reading still tells which way.
+                from backend.core.temp_compensation import get_thermostat_reading_c
+
+                avg_c = await get_thermostat_reading_c(ha, entity, db=db)
+            if avg_c is None:
+                raise ManualControlError(
+                    "No temperature reading is available to choose heat or cool — "
+                    "set the mode on the thermostat first"
+                )
+            mode = "heat" if requested_c >= avg_c else "cool"
     if mode in ("heat", "cool"):
         allowed = await main_mod._direction_allowed(db, ha, mode, None, None)
         if not allowed:

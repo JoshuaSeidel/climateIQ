@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.106] - 2026-11-09
+
+Round 14: a model-based review (about 24,500 event sequences) plus line-by-line audits of the control loops. Every fix was attacked by an independent reviewer before release, which caught and redirected two retry designs. Regression tests: `backend/tests/scenario/test_r14_*.py`.
+
+### Fixed
+- **A single failed Home Assistant call while handing back ClimateIQ's own "off" left the thermostat off** for the whole gap (Scheduled) or indefinitely (Learn). The restore is now retried (at most 5 times, never re-sending the Ecobee resume, so a hold you place in the meantime is never wiped); in Learn the retry survives via a stored marker that is consumed on the next tick in any mode.
+- **A manual override with every sensor down on an "off" thermostat was accepted but did nothing** while pausing all loops. The direction is now chosen from the thermostat's own reading, and a clear error is returned if there is none.
+- **An unavailable/unknown thermostat** is no longer retried and re-notified every tick.
+- **Unknown occupancy in Active mode** keeps the last stable state (as Follow-Me does) instead of being shown to the LLM as "vacant".
+
+### Known limitation
+- If the add-on restarts during the bounded off-restore retry in a Scheduled gap, the retry counter (in memory) is lost.
+
 ## [1.0.105] - 2026-11-09
 
 Round 13: fixes for two regressions from 1.0.103/1.0.104, each verified by an independent reviewer before release. Regression tests: `backend/tests/scenario/test_r13_*.py`.

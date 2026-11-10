@@ -101,6 +101,10 @@ _last_offset_temp: dict[str, float] = {}
 # governs or an override pauses control, so the handback happens once when
 # the last schedule ends, after Resume, or when an override expires in a gap.
 _gap_handed_back = False
+# Remaining attempts to restore ClimateIQ's own 'off' after a gap handback whose
+# restore failed.  The resume_program step is one-shot and never repeats.
+_gap_undo_tries = 0
+_GAP_UNDO_MAX = 5
 # Active-mode LLM optimization state.  Keyed on climate_entity so a multi-
 # thermostat future doesn't cross the streams.  Holds the last change-gate
 # hash and the timestamp of the last real LLM call, so we can enforce both a
@@ -1179,6 +1183,11 @@ async def _switch_hvac_mode_if_needed(
         current = (state.state or "").lower() if state else ""
         if current == target_mode:
             return
+        if current in ("unavailable", "unknown"):
+            # Nothing can be written to it (HA skips unavailable entities): don't
+            # retry and re-notify every tick.  The next tick after it is back acts.
+            logger.info("%s: thermostat is %s — not switching mode", context, current)
+            return
 
         # Time-of-day direction windows — never switch INTO a blocked direction.
         if db is not None:
@@ -1977,29 +1986,51 @@ async def apply_schedule_now(schedule: _Schedule) -> None:
 # ============================================================================
 
 
-async def _undo_our_off(ha_client: Any, entity: str, context: str) -> None:
+async def _undo_our_off(ha_client: Any, entity: str, context: str) -> bool:
     """Handing back to the Ecobee: undo an ``off`` that *ClimateIQ* set.
 
     Its program can't run while the thermostat is off.  An ``off`` the user
     chose stays off.  Caller holds THERMOSTAT_LOCK.
+
+    Returns True when done or nothing needed doing; False when the restore
+    FAILED (an HA error) — the caller must keep its retry armed.
     """
     try:
         state = await ha_client.get_state(entity)
         if state is None or str(state.state or "").lower() != "off":
-            return
+            return True
         await _ensure_mode_switch_loaded()
         last = _last_mode_switch.get(entity)
         if last is None or last[0] != "off":
-            return
+            return True
         modes = [str(m) for m in (state.attributes.get("hvac_modes") or [])]
         for native in ("heat_cool", "auto"):
             if native in modes:
                 await ha_client.set_hvac_mode(entity, native)
                 await _record_mode_switch(entity, native)
                 logger.info("%s: ClimateIQ had turned it off — set to '%s'", context, native)
-                return
+                return True
+        return True  # no native mode to restore to: nothing retryable
     except Exception as exc:
         logger.warning("%s: could not restore the thermostat mode: %s", context, exc)
+        return False
+
+
+async def _learn_undo_off_only(db: Any, ha_client: Any) -> bool:
+    """Retry restoring ClimateIQ's own off in Learn.  True when done or not needed."""
+    from backend.core.manual_control import climate_entity as _entity
+
+    async with THERMOSTAT_LOCK:
+        try:
+            entity = await _entity(db)
+            if not await _undo_our_off(ha_client, entity, "Learn retry"):
+                return False
+            # Whatever is left is the user's (same rule as the Learn handover).
+            await _restore_mode_switch(entity, None)
+            return True
+        except Exception as exc:
+            logger.warning("Learn retry could not restore the thermostat mode: %s", exc)
+            return False
 
 
 async def _learn_expiry_handback(db: Any, ha_client: Any) -> bool:
@@ -2032,7 +2063,7 @@ async def maintain_climate_offset() -> None:
     already handle offset in their own loops, so this task skips those
     modes to avoid conflicts.
     """
-    global _gap_handed_back
+    global _gap_handed_back, _gap_undo_tries
 
     from sqlalchemy import select as sa_select
 
@@ -2073,6 +2104,30 @@ async def maintain_climate_offset() -> None:
                     from backend.core.manual_override import mark_expired_handback
 
                     await mark_expired_handback(db)
+            # A failed restore of ClimateIQ's own off at the Learn handover is
+            # retried here — bounded, and WITHOUT re-sending resume_program (that
+            # would wipe holds the user places in Learn).  Consumed in any mode;
+            # acted on only in Learn, so it can never fire at a later Learn entry.
+            from backend.core.manual_override import (
+                LEARN_UNDO_MAX,
+                mark_learn_undo_pending,
+                pop_learn_undo_pending,
+            )
+
+            _undo_tries = await pop_learn_undo_pending(db)
+            if (
+                _undo_tries is not None
+                and config is not None
+                and config.current_mode == SystemMode.learn
+            ):
+                if not await _learn_undo_off_only(db, ha_client):
+                    if _undo_tries < LEARN_UNDO_MAX:
+                        await mark_learn_undo_pending(db, _undo_tries + 1)
+                    else:
+                        logger.error(
+                            "Learn: could not restore the thermostat from off after %d "
+                            "attempts — giving up", LEARN_UNDO_MAX,
+                        )
             if config is not None and config.current_mode in (
                 SystemMode.active,
                 SystemMode.learn,
@@ -2131,8 +2186,7 @@ async def maintain_climate_offset() -> None:
                 _last_offset_temp.clear()
                 logger.info("Climate maintenance: no active schedule found")
                 if (
-                    not _gap_handed_back
-                    and config is not None
+                    config is not None
                     and (
                         config.current_mode == SystemMode.scheduled
                         # Follow-Me with no occupancy data does nothing in a
@@ -2148,21 +2202,48 @@ async def maintain_climate_offset() -> None:
                     # program owns the thermostat.  Hand back once, so an
                     # offset-compensated hold (or a cleared override's
                     # setpoint) doesn't keep heating/cooling indefinitely.
-                    async with THERMOSTAT_LOCK:
-                        if await _writes_still_permitted({"scheduled", "follow_me"}):
-                            try:
-                                await ha_client.resume_ecobee_program(
-                                    climate_entity, resume_all=False
-                                )
-                                await _undo_our_off(ha_client, climate_entity, "Gap handback")
-                                _gap_handed_back = True
-                                await _save_runtime_state(db)
-                                logger.info(
-                                    "Climate maintenance: no schedule governs — "
-                                    "handed back to the Ecobee program"
-                                )
-                            except Exception as exc:
-                                logger.warning("Could not resume the Ecobee program: %s", exc)
+                    if not _gap_handed_back:
+                        async with THERMOSTAT_LOCK:
+                            if await _writes_still_permitted({"scheduled", "follow_me"}):
+                                try:
+                                    await ha_client.resume_ecobee_program(
+                                        climate_entity, resume_all=False
+                                    )
+                                except Exception as exc:
+                                    # Nothing was handed back: retry next tick.
+                                    logger.warning(
+                                        "Could not resume the Ecobee program: %s", exc
+                                    )
+                                else:
+                                    # The resume is one-shot: mark it done NOW so a
+                                    # later retry can never wipe a hold the user
+                                    # places after this point.
+                                    _gap_handed_back = True
+                                    _gap_undo_tries = 0
+                                    await _save_runtime_state(db)
+                                    logger.info(
+                                        "Climate maintenance: no schedule governs — "
+                                        "handed back to the Ecobee program"
+                                    )
+                                    if not await _undo_our_off(
+                                        ha_client, climate_entity, "Gap handback"
+                                    ):
+                                        _gap_undo_tries = _GAP_UNDO_MAX
+                    elif _gap_undo_tries > 0:
+                        # Only the off-restore is retried (bounded) — never the resume.
+                        async with THERMOSTAT_LOCK:
+                            if await _writes_still_permitted({"scheduled", "follow_me"}):
+                                _gap_undo_tries -= 1
+                                if await _undo_our_off(
+                                    ha_client, climate_entity, "Gap handback retry"
+                                ):
+                                    _gap_undo_tries = 0
+                                elif _gap_undo_tries == 0:
+                                    logger.error(
+                                        "Climate maintenance: could not restore the "
+                                        "thermostat from off after %d attempts — giving up",
+                                        _GAP_UNDO_MAX,
+                                    )
                 return
             if _gap_handed_back:
                 _gap_handed_back = False
@@ -2928,11 +3009,13 @@ async def execute_active_mode() -> None:
                     inferred_occ = occ_val
                 # Unknown stays out of the shared dwell state (Follow-Me reads
                 # it): an Active-mode "no data" must not become a stable vacant.
-                stable_occ = (
-                    False
-                    if inferred_occ is None
-                    else _stable_occupancy(str(zone.id), bool(inferred_occ))
-                )
+                # It keeps the last stable state instead (spec §6b.1, as Follow-Me
+                # does) — read-only, the dwell is not advanced.
+                if inferred_occ is None:
+                    _prev_occ = _zone_occupancy_stable.get(str(zone.id))
+                    stable_occ = bool(_prev_occ.get("stable")) if _prev_occ else False
+                else:
+                    stable_occ = _stable_occupancy(str(zone.id), bool(inferred_occ))
 
                 # Trend from learned OccupancyPattern — probability that the
                 # zone is occupied in the CURRENT and NEXT-30-min slot.  Used

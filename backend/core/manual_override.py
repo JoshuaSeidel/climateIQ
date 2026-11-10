@@ -75,6 +75,46 @@ def _reset_gap_handback() -> None:
         pass
 
 
+_LEARN_UNDO_KEY = "learn_undo_off_pending"
+LEARN_UNDO_MAX = 5
+
+
+async def mark_learn_undo_pending(db: Any, tries: int) -> None:
+    """Arm (or update) the bounded retry that restores ClimateIQ's own off in Learn."""
+    from sqlalchemy import select
+
+    from backend.models.database import SystemSetting
+
+    row = (
+        await db.execute(select(SystemSetting).where(SystemSetting.key == _LEARN_UNDO_KEY))
+    ).scalar_one_or_none()
+    if row is None:
+        db.add(SystemSetting(key=_LEARN_UNDO_KEY, value={"value": int(tries)}))
+    else:
+        row.value = {"value": int(tries)}
+    await db.commit()
+
+
+async def pop_learn_undo_pending(db: Any) -> int | None:
+    """Attempts made so far if the retry is armed (and disarm it), else None."""
+    from sqlalchemy import select
+
+    from backend.models.database import SystemSetting
+
+    row = (
+        await db.execute(select(SystemSetting).where(SystemSetting.key == _LEARN_UNDO_KEY))
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    try:
+        tries = int((row.value or {}).get("value", 1))
+    except (TypeError, ValueError):
+        tries = 1
+    await db.delete(row)
+    await db.commit()
+    return tries
+
+
 async def mark_expired_handback(db: Any) -> None:
     """Re-arm the Learn expiry handback (a resume attempt failed)."""
     from sqlalchemy import select
