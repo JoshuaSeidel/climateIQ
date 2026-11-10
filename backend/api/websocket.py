@@ -18,6 +18,8 @@ from backend.api.dependencies import get_redis
 
 logger = logging.getLogger(__name__)
 
+_SEND_TIMEOUT_S = 2.0
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -288,12 +290,16 @@ class ConnectionManager:
             return
         payload = json.dumps(message, default=str)
         disconnected: list[WebSocket] = []
-        for websocket in clients:
+
+        async def _send(ws: WebSocket) -> None:
+            # One stalled client must not delay the others (or the caller).
             try:
-                await websocket.send_text(payload)
+                await asyncio.wait_for(ws.send_text(payload), timeout=_SEND_TIMEOUT_S)
             except Exception:
                 logger.debug("WebSocket send failed; scheduling removal", exc_info=True)
-                disconnected.append(websocket)
+                disconnected.append(ws)
+
+        await asyncio.gather(*(_send(ws) for ws in clients))
         for websocket in disconnected:
             await self._safe_close(websocket)
             async with self._lock:

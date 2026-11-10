@@ -12,6 +12,7 @@ requests through the ingress system. This middleware ensures:
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -318,8 +319,19 @@ class APIKeyMiddleware:
 
         headers = dict(scope.get("headers", []))
         auth_header = headers.get(b"authorization", b"").decode("utf-8")
-        if auth_header == f"Bearer {self._api_key}":
+        if hmac.compare_digest(auth_header, f"Bearer {self._api_key}"):
             await self.app(scope, receive, send)
+            return
+
+        if scope["type"] == "websocket":
+            # Browsers cannot set headers on a WebSocket: accept ?api_key=.
+            from urllib.parse import parse_qs
+
+            qs = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"))
+            if hmac.compare_digest(qs.get("api_key", [""])[0], self._api_key):
+                await self.app(scope, receive, send)
+                return
+            await send({"type": "websocket.close", "code": 4001})
             return
 
         response = JSONResponse(

@@ -1532,7 +1532,7 @@ async def _final_control_write_locked(
                 target={"entity_id": climate_entity},
             )
             logger.info("%s: parked heat_cool sides low=%s high=%s", context, new_low, new_high)
-            return {"written": True, "reason": "heat_cool park"}
+            return {"written": True, "parked": True, "reason": "heat_cool park"}
         return {"written": False, "reason": "heat_cool ok"}
 
     if desired_c is None:
@@ -2621,7 +2621,7 @@ async def execute_follow_me_mode() -> None:
             )
 
             # ── Notification (spec §8): only on a meaningful change ─────
-            if outcome.get("written") and _notification_service:
+            if outcome.get("written") and not outcome.get("parked") and _notification_service:
                 fm_key = f"follow_me:{climate_entity}"
                 written_c = float(outcome.get("setpoint_c") or target_temp_c)
                 fm_last = _active_mode_last_notify.get(fm_key)
@@ -3305,6 +3305,10 @@ async def execute_active_mode() -> None:
             # an early return here (or a failed LLM call) skipped the schedule
             # guard, the time-window park and drift correction entirely.
             call_llm = True
+            if governing_schedule is not None and not focus_zones:
+                # The schedule's zones are all excluded: nothing is governed
+                # this tick (spec §2b) — no LLM call, no fan changes.
+                call_llm = False
 
             # ── Gate 1: steady-state skip ───────────────────────────────
             focus_on_target = True
@@ -3848,7 +3852,7 @@ async def execute_active_mode() -> None:
             )
 
             # ── Notification (spec §8 throttle) ─────────────────────────
-            if outcome.get("written") and _notification_service:
+            if outcome.get("written") and not outcome.get("parked") and _notification_service:
                 written_c = float(outcome.get("setpoint_c") or ai_target_c)
                 cur_mode = (await ha_client.get_state(climate_entity)).state or ""
                 last_notif = _active_mode_last_notify.get(climate_entity)
@@ -5062,6 +5066,7 @@ async def _connect_redis() -> redis.Redis:
         str(settings.redis_url),
         decode_responses=True,
         socket_connect_timeout=5,
+        socket_timeout=3,  # a Redis that accepts but never answers must not hang a tick
         socket_keepalive=True,
         health_check_interval=30,
     )
@@ -5703,12 +5708,8 @@ app.include_router(api_router)
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """General WebSocket endpoint for real-time updates."""
-    if settings.api_key:
-        ws_key = websocket.query_params.get("api_key", "")
-        if ws_key != settings.api_key:
-            await websocket.close(code=4001, reason="Unauthorized")
-            return
-
+    # Add-on mode: HAAuthMiddleware already authenticated this scope (ingress
+    # users carry no ?api_key=); standalone mode: APIKeyMiddleware did.
     channel = websocket.query_params.get("channel", "general")
 
     await app_state.ws_manager.connect(websocket, channel)
@@ -5757,12 +5758,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 @app.websocket("/ws/zones")
 async def websocket_zones(websocket: WebSocket) -> None:
     """Dedicated WebSocket for zone updates."""
-    if settings.api_key:
-        ws_key = websocket.query_params.get("api_key", "")
-        if ws_key != settings.api_key:
-            await websocket.close(code=4001, reason="Unauthorized")
-            return
-
     await app_state.ws_manager.connect(websocket, "zones")
 
     try:
@@ -5972,10 +5967,12 @@ if _FRONTEND_DIR.is_dir():
     async def serve_spa(full_path: str) -> FileResponse:
         """Serve the frontend SPA. All non-API routes fall through here
         and return index.html so client-side routing works."""
-        file_path = _FRONTEND_DIR / full_path
-        if file_path.is_file():
+        root = _FRONTEND_DIR.resolve()
+        file_path = (root / full_path).resolve()
+        # Never serve anything outside the frontend dir ("/../../etc/passwd").
+        if file_path.is_relative_to(root) and file_path.is_file():
             return FileResponse(file_path)
-        return FileResponse(_FRONTEND_DIR / "index.html")
+        return FileResponse(root / "index.html")
 
 else:
     logger.warning(

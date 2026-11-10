@@ -1060,7 +1060,9 @@ def _match_zone(zone_name: str, zone: Zone) -> bool:
 
 def _parse_temp_unit(unit_raw: str | None, default_unit: str) -> str:
     if unit_raw:
-        return unit_raw.strip().upper()
+        u = unit_raw.strip().lstrip("°").strip().upper()
+        # "fahrenheit" / "celsius" / "°F" / "F" / "C"
+        return "F" if "F" in u else "C" if "C" in u else u
     return default_unit.strip().upper() if default_unit else "C"
 
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.0.99] - 2026-11-09
+
+Heating/cooling correctness and hardening, round 9. Each fix has a regression test (`backend/tests/scenario/test_r9*.py`).
+
+### Security
+- **The frontend file route could read any file on the host** (`/../../etc/hosts`, `/proc/self/environ` → the Supervisor token). It now serves only files inside the frontend folder.
+- **Dashboard WebSocket** is no longer rejected for trusted ingress users when the add-on `api_key` option is set; standalone mode accepts `?api_key=` for WebSockets (browsers cannot send headers there).
+
+### Fixed
+- **A Redis that accepts connections but never answers** hung the Active-mode loop forever (and every later tick, via single-flight). Redis clients now have a 3 s socket timeout.
+- **One stalled dashboard tab** no longer delays WebSocket updates to every other client (2 s per-send limit).
+- **Attribute-based presence** (`occupancy: "unknown"`) is stored as unknown, not vacant; `detected`/`home` read as occupied.
+- **Switching to Learn** retries if the first attempt to resume the Ecobee program fails.
+- **LLM unit words** ("fahrenheit", "°F", "degF") are read as Fahrenheit.
+- **Active mode** makes no LLM call and changes no fans when every zone of the governing schedule is excluded.
+- **A heat_cool park** no longer sends a misleading "Setting to X" notification.
+- **Two schedules with equal priority and start time** now resolve the same way everywhere (larger id wins) instead of depending on database row order.
+
 ## [1.0.98] - 2026-11-09
 
 Heating/cooling correctness, round 8 (partial: the scheduled-control and manual/mode reviewers were stopped before reporting). Fixes have regression tests (`backend/tests/scenario/test_r8*.py`).

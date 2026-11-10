@@ -97,7 +97,11 @@ async def _ecobee_handover(db: AsyncSession, new_mode: SystemMode, _logger: Any)
         try:
             await ha_client.resume_ecobee_program(entity, resume_all=True)
         except Exception as exc:
-            _logger.warning("Could not resume the Ecobee program: %s", exc)
+            # Retried by the maintenance tick while in Learn (same marker as expiry).
+            from backend.core.manual_override import mark_expired_handback
+
+            _logger.warning("Could not resume the Ecobee program, will retry: %s", exc)
+            await mark_expired_handback(db)
         try:
             await ha_client.set_ecobee_occupancy_modes(entity, auto_away=True, follow_me=True)
         except Exception as exc:

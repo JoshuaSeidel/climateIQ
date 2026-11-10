@@ -537,7 +537,7 @@ class HAWebSocketClient:
                         if isinstance(val, bool):
                             setattr(change, field_name, val)
                         elif isinstance(val, str):
-                            setattr(change, field_name, val.lower() in ("on", "true", "1"))
+                            setattr(change, field_name, _presence_from_state(val))
                         break
 
         return change

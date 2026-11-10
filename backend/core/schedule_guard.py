@@ -244,11 +244,11 @@ def find_active_schedule(schedules: list[Any], now_local: datetime) -> Any | Non
     """The schedule in effect at ``now_local`` (spec §3).
 
     Enabled schedules whose window contains now; highest ``priority`` wins,
-    ties go to the most recently started occurrence.  This is the single
+    ties go to the most recently started occurrence, then the larger id.  This is the single
     implementation used by every control loop and the API.
     """
     best: Any | None = None
-    best_key: tuple[int, datetime] | None = None
+    best_key: tuple[int, datetime, str] | None = None
     for sched in schedules:
         if getattr(sched, "is_enabled", True) is False:
             continue
@@ -260,7 +260,13 @@ def find_active_schedule(schedules: list[Any], now_local: datetime) -> Any | Non
         )
         if occ is None:
             continue
-        key = (int(getattr(sched, "priority", 0) or 0), _utc(occ[0]))
+        # Final id tie-break: equal priority and start must not depend on the
+        # order the DB returned the rows in.
+        key = (
+            int(getattr(sched, "priority", 0) or 0),
+            _utc(occ[0]),
+            str(getattr(sched, "id", "")),
+        )
         if best_key is None or key > best_key:
             best, best_key = sched, key
     return best

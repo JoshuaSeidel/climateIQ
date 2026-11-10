@@ -62,6 +62,8 @@ async def get_redis() -> AsyncGenerator[redis.Redis]:
             encoding="utf-8",
             decode_responses=True,
             health_check_interval=30,
+            socket_connect_timeout=5,
+            socket_timeout=3,
         )
         try:
             yield client
