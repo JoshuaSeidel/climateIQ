@@ -1585,7 +1585,10 @@ async def get_override_status(
             # ── Schedule target temp (what we want the rooms to be) ─────
             schedule_target_c: float | None = None
             if _best is not None:
-                schedule_target_c = _best.target_temp_c
+                # An "off" schedule has no target to show: the system is meant to
+                # be off, so "Set: 72" would be misleading.
+                if str(getattr(_best, "hvac_mode", "") or "").strip().lower() != "off":
+                    schedule_target_c = _best.target_temp_c
                 # Resolve zone names from zone_ids
                 try:
                     _zone_uuids = _parse_zone_ids(_best)

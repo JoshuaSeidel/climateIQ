@@ -340,6 +340,10 @@ async def _read_all_kv(session: AsyncSession) -> dict[str, Any]:
     rows = result.scalars().all()
 
     values: dict[str, Any] = dict(_KV_DEFAULTS)
+    # With no saved row the unit is the add-on option — the same fallback every
+    # other reader uses (core.manual_control.display_unit).  A hard-coded "C"
+    # here made the UI label Fahrenheit numbers as Celsius on a fresh install.
+    values["temperature_unit"] = "F" if str(SETTINGS.temperature_unit).upper() == "F" else "C"
     for row in rows:
         if row.key in _KV_DEFAULTS:
             stored = (row.value or {}).get("value")

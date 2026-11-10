@@ -308,6 +308,9 @@ script:
 
   # ---- API calls -------------------------------------------------------------
   - id: send_override
+    # queued: a knob turn made while a slow POST is still in flight must be sent
+    # afterwards, not dropped (the default `single` mode ignores it).
+    mode: queued
     then:
       - http_request.post:
           url: ${climateiq_base_url}/api/v1/system/override
@@ -390,6 +393,7 @@ script:
           id(g_editing) = false;
           id(g_hold_target) = 0;
       - script.stop: send_override_debounced
+      - script.stop: send_override  # drop any queued stale override POST
       - http_request.post:
           url: ${climateiq_base_url}/api/v1/system/quick-action
           request_headers:

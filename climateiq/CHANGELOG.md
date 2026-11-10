@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.108] - 2026-11-10
+
+Round 16: dashboard display correctness and the physical dial. Independently reviewed before release. Regression test: `backend/tests/scenario/test_r16_display_consistency.py`.
+
+### Fixed
+- **Fresh installs labelled Fahrenheit numbers as Celsius:** with no saved temperature-unit row, `/settings` said "C" while every other reader used the add-on option (default "F"), so the dashboard showed e.g. "Set: 71°C" and a manual override sent 70 as °F while the UI said °C. `/settings` now defaults to the add-on option. (It also stops the Settings page from flipping the whole app to Celsius on the first save of an install with no saved row.)
+- **The dashboard showed "Set: 72°F" during an "off" schedule**: an off schedule now has no target to show.
+- **Dial (needs a reflash):** a knob turn made while a slow override POST was in flight is now sent afterwards instead of dropped (`mode: queued`), and a long-press Resume cancels any queued stale override POST.
+
+### Known / not changed
+- The dashboard rounds half-degree targets to whole degrees (the project's `Math.round` display rule), so a 70.5°F schedule shows "71" and the override default re-sends the rounded value.
+- During the preconditioning window before a schedule starts, the "Set:" card shows the upcoming target but the zone cards and Active Schedule card show none (`/schedules/active` uses a different selector than the control loops).
+- Dial: no on-screen feedback when an override is rejected; half-degree setpoints round oddly; the dial's temperature range is hard-coded in °F (a °C user's first turn is clamped to 55, which the backend rejects).
+
 ## [1.0.107] - 2026-11-10
 
 Round 15: extended state-machine exploration plus an independent review of the 1.0.106 retry code. Every change below was attacked by a separate reviewer before release. Regression tests: `backend/tests/scenario/test_r15_*.py`.
