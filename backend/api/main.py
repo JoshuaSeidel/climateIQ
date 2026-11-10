@@ -4516,20 +4516,15 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
     # Extract latest values
     presence: bool | None = None
     lux: float | None = None
-    # Presence rows are per sensor and a sensor's last state holds, so take the
-    # newest row of *each* sensor: occupied if any of them says so.
-    _last_presence: dict[Any, bool] = {}
     for rdg in readings:
-        if rdg.presence is not None and rdg.sensor_id not in _last_presence:
-            _last_presence[rdg.sensor_id] = bool(rdg.presence)
         if lux is None and rdg.lux is not None:
             lux = rdg.lux
-    if _last_presence:
-        presence = any(_last_presence.values())
-    if presence is None and sensor_ids:
-        # Presence rows are stored on state *change*, so someone sitting
-        # still for >15 min has no recent row.  The last known state still
-        # holds (bounded to a day so a dead sensor eventually stops counting).
+            break
+    if sensor_ids:
+        # Presence rows are stored on state *change*, so a sensor's last known
+        # state holds (bounded to a day so a dead sensor eventually stops
+        # counting).  Take the newest row of *each* sensor: occupied if any
+        # of them says so.
         last_rows = (
             await db.execute(  # type: ignore[attr-defined]
                 sa_select(SensorReading.sensor_id, SensorReading.presence)
@@ -4538,15 +4533,12 @@ async def infer_zone_occupancy(zone_id: str | uuid.UUID, db: object) -> bool | N
                     SensorReading.presence.is_not(None),
                     SensorReading.recorded_at >= datetime.now(UTC) - _td(hours=24),
                 )
-                .order_by(SensorReading.recorded_at.desc())
-                .limit(50)
+                .distinct(SensorReading.sensor_id)
+                .order_by(SensorReading.sensor_id, SensorReading.recorded_at.desc())
             )
         ).all()
-        latest: dict[Any, bool] = {}
-        for sid, pval in last_rows:
-            latest.setdefault(sid, bool(pval))
-        if latest:
-            presence = any(latest.values())
+        if last_rows:
+            presence = any(bool(pval) for _sid, pval in last_rows)
 
     # -- Signal 1: Direct presence sensor (weight: 0.6) --
     presence_score: float | None = None
@@ -4706,7 +4698,6 @@ async def _handle_ha_state_change(change: object) -> None:
     """Ingest a state change from HA WebSocket into sensor_readings and broadcast."""
     from backend.integrations.ha_websocket import HAStateChange
     from backend.models.database import Sensor
-    from backend.models.database import SensorReading as SRModel
 
     if not isinstance(change, HAStateChange):
         return
@@ -4714,14 +4705,18 @@ async def _handle_ha_state_change(change: object) -> None:
     # Validate sensor values are within physically plausible ranges.
     # Null out bad fields instead of discarding the entire reading so that
     # other valid values (e.g. humidity, presence) are still persisted.
-    if change.temperature is not None and (change.temperature < -40 or change.temperature > 60):
+    if change.temperature is not None and (
+        not math.isfinite(change.temperature) or change.temperature < -40 or change.temperature > 60
+    ):
         logger.warning(
             "Dropping impossible temperature %.1f°C from %s (keeping other fields)",
             change.temperature,
             change.entity_id,
         )
         change.temperature = None
-    if change.humidity is not None and (change.humidity < 0 or change.humidity > 100):
+    if change.humidity is not None and (
+        not math.isfinite(change.humidity) or change.humidity < 0 or change.humidity > 100
+    ):
         logger.warning(
             "Dropping impossible humidity %.1f%% from %s (keeping other fields)",
             change.humidity,
@@ -4737,14 +4732,41 @@ async def _handle_ha_state_change(change: object) -> None:
     )
 
     try:
+        async with get_session_maker()() as _lookup_db:
+            from sqlalchemy import select as _select
+
+            # One entity may back several sensors (e.g. the same multisensor
+            # assigned to two zones): ingest for every one of them.
+            sensor_ids = list(
+                (
+                    await _lookup_db.execute(
+                        _select(Sensor.id).where(Sensor.ha_entity_id == change.entity_id)
+                    )
+                ).scalars().all()
+            )
+    except Exception as e:
+        logger.error(f"Error looking up sensors for {change.entity_id}: {e}")
+        return
+    # Entity not mapped to a sensor — skip (user hasn't registered it).
+    for sid in sensor_ids:
+        await _ingest_change_for_sensor(change, sid, has_useful_value)
+
+
+async def _ingest_change_for_sensor(
+    change: Any, sensor_id: Any, has_useful_value: bool
+) -> None:
+    """Store one HA state change for one sensor row and feed the ZoneManager."""
+    from backend.models.database import Sensor
+    from backend.models.database import SensorReading as SRModel
+
+    try:
         session_maker = get_session_maker()
         async with session_maker() as db:
             from sqlalchemy import select
 
-            # Look up sensor by ha_entity_id
-            stmt = select(Sensor).where(Sensor.ha_entity_id == change.entity_id)
-            result = await db.execute(stmt)
-            sensor = result.scalar_one_or_none()
+            sensor = (
+                await db.execute(select(Sensor).where(Sensor.id == sensor_id))
+            ).scalar_one_or_none()
 
             if sensor is None:
                 # Entity not mapped to a sensor — skip (user hasn't registered it)
@@ -4819,6 +4841,8 @@ async def _handle_ha_state_change(change: object) -> None:
                 )
     except Exception as e:
         logger.error(f"Error ingesting HA state change for {change.entity_id}: {e}")
+
+
 
 
 # ============================================================================
@@ -5032,25 +5056,68 @@ async def _handle_climate_state_change(change: object) -> None:
 # ============================================================================
 
 
-async def init_redis() -> redis.Redis | None:
-    """Initialize Redis connection pool."""
+async def _connect_redis() -> redis.Redis:
     settings = settings_instance
+    redis_client = redis.from_url(
+        str(settings.redis_url),
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_keepalive=True,
+        health_check_interval=30,
+    )
+    ping_result = redis_client.ping()
+    if asyncio.iscoroutine(ping_result):
+        await ping_result
+    return redis_client
+
+
+_REDIS_RETRY_S = 30.0
+_redis_retry_task: asyncio.Task[None] | None = None
+
+
+async def _redis_reacquire_loop() -> None:
+    """Redis can start after the add-on (host reboot): keep trying in the background."""
+    while app_state.redis_client is None:
+        await asyncio.sleep(_REDIS_RETRY_S)
+        try:
+            client = await _connect_redis()
+        except Exception as exc:
+            logger.debug("Redis still unavailable: %s", exc)
+            continue
+        app_state.redis_client = client
+        from backend.api.dependencies import set_shared_redis
+
+        set_shared_redis(client)
+        await app_state.ws_manager.subscribe_redis()
+        logger.info("Redis connection established (after retry)")
+
+
+async def init_redis() -> redis.Redis | None:
+    """Initialize Redis connection pool; keeps retrying in the background if it is down."""
+    global _redis_retry_task
     try:
-        redis_client = redis.from_url(
-            str(settings.redis_url),
-            decode_responses=True,
-            socket_connect_timeout=5,
-            socket_keepalive=True,
-            health_check_interval=30,
-        )
-        ping_result = redis_client.ping()
-        if asyncio.iscoroutine(ping_result):
-            await ping_result
+        client = await _connect_redis()
         logger.info("Redis connection established")
-        return redis_client
+        return client
     except Exception as e:
-        logger.warning(f"Redis connection failed (caching disabled): {e}")
+        logger.warning(f"Redis connection failed (will keep retrying): {e}")
+        if _redis_retry_task is None or _redis_retry_task.done():
+            _redis_retry_task = asyncio.create_task(_redis_reacquire_loop())
         return None
+
+
+async def _init_db_with_retry() -> None:
+    """The DB can come up after the add-on: retry for ~1 min before giving up."""
+    delays = (2, 4, 8, 16, 32)
+    for attempt, delay in enumerate((*delays, None), start=1):
+        try:
+            await init_db()
+            return
+        except Exception as exc:
+            if delay is None:
+                raise
+            logger.warning("Database not ready (attempt %d): %s — retrying in %ds", attempt, exc, delay)
+            await asyncio.sleep(delay)
 
 
 def init_scheduler() -> AsyncIOScheduler:
@@ -5242,7 +5309,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if settings_instance.db_password:
             masked = db_url.replace(settings_instance.db_password, "***")
         logger.info("Connecting to database: %s", masked)
-        await init_db()
+        await _init_db_with_retry()
         # The display unit chosen in Settings (system_settings) overrides the
         # add-on option for everything that reads settings.temperature_unit.
         try:
@@ -5492,6 +5559,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         }
     )
     await app_state.ws_manager.shutdown()
+
+    if _redis_retry_task is not None and not _redis_retry_task.done():
+        _redis_retry_task.cancel()
 
     # Close Redis
     if app_state.redis_client:

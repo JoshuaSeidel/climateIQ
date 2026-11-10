@@ -61,6 +61,16 @@ class HAStateChange:
 StateChangeCallback = Callable[[HAStateChange], Awaitable[None] | None]
 
 
+def _presence_from_state(state_val: str) -> bool | None:
+    """on/off → bool; unavailable/unknown/empty → None (never guess "vacant")."""
+    v = str(state_val).strip().lower()
+    if v in ("on", "true", "1", "detected", "home"):
+        return True
+    if v in ("off", "false", "0", "clear", "not_home"):
+        return False
+    return None
+
+
 class HAWebSocketError(Exception):
     """Base exception for HA WebSocket errors."""
 
@@ -472,7 +482,7 @@ class HAWebSocketClient:
                     _dc_matched = True
 
         if domain == "binary_sensor" and device_class in ("occupancy", "motion", "presence"):
-            change.presence = state_val.lower() in ("on", "true", "1")
+            change.presence = _presence_from_state(state_val)
             _dc_matched = True
 
         # ----- Fallback: keyword-in-entity-id extraction -----
@@ -517,7 +527,7 @@ class HAWebSocketClient:
                 if domain == "binary_sensor":
                     for keyword in attr_keys:
                         if keyword in entity_id.lower():
-                            change.presence = state_val.lower() in ("on", "true", "1")
+                            change.presence = _presence_from_state(state_val)
                             break
 
                 # Also check attributes

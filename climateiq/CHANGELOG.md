@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.98] - 2026-11-09
+
+Heating/cooling correctness, round 8 (partial: the scheduled-control and manual/mode reviewers were stopped before reporting). Fixes have regression tests (`backend/tests/scenario/test_r8*.py`).
+
+### Fixed
+- **A zone with two presence sensors** read as vacant when one sensor had a recent "clear" and the other held an older "on"; each sensor's latest state over 24 h is now considered, and the zone is occupied if any is on.
+- **One HA entity backing several sensors** (e.g. the same multisensor in two zones) dropped every reading; it is now ingested for each sensor.
+- **An unavailable/unknown presence sensor** (Zigbee dropout, HA restart) was stored as "vacant"; it is now stored as unknown.
+- **NaN temperature/humidity** readings are rejected instead of persisted.
+- **Redis down at boot** is now retried in the background instead of staying disabled until restart.
+- **Database down at boot** is retried with backoff for about a minute before the add-on gives up.
+
 ## [1.0.97] - 2026-11-09
 
 Heating/cooling correctness, round 7. Four more reviews confirmed bugs; each is fixed with a regression test (`backend/tests/scenario/test_r7_*.py`).
