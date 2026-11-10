@@ -61,7 +61,14 @@ Overrides on top of any automatic mode:
   before writing, under the single thermostat lock that manual writes, mode
   changes and emergency shutoff also take, so an emergency shutoff / Learn /
   override issued during a long tick (LLM call) always wins.
-- **Emergency shutoff** turns the thermostat off and switches to Learn.
+- **Emergency shutoff** turns the thermostat off and switches to Learn (and
+  hands the Ecobee its program and occupancy features, but leaves it `off`).
+  The off is the *user's*: every "ClimateIQ turned it off" record and any
+  pending Learn restore (§9.1d) is forgotten whether or not the HA off
+  command succeeds.  A database problem in the switch-to-Learn / clear-override
+  steps is reported but never stops the off command, and the record cleanup
+  runs after the HA commands and is fully guarded — nothing can prevent the
+  shutoff itself.
 - The **rule engine** never writes to the managed thermostat or sends
   setpoints to non-climate devices.
 - Changes made directly on the physical thermostat in an automatic mode are
@@ -84,8 +91,14 @@ Overrides on top of any automatic mode:
 3. Local time comes from `backend/core/user_tz.py` everywhere.
 4. One implementation (`schedule_guard.find_active_schedule`, and
    `governing_schedule` which adds §7 preconditioning) is used by every loop
-   **and** the API (dashboard "Set:", `/schedules/active`, Resume), so they
-   always agree.
+   **and** the API (dashboard "Set:", `/schedules/active`, Resume).  Known
+   drift: `/schedules/active` and the offset-debug endpoint use
+   `find_active_schedule` and so ignore preconditioning, while the status
+   endpoint's "Set:" (`schedule_target_temp`) uses `governing_schedule`; during
+   the warm-up window before a schedule the zone cards and Active Schedule
+   card show no target while "Set:" shows the upcoming one.  The status
+   endpoint's `schedule_target_temp` is empty (null) while an `off` schedule
+   governs — there is no target to show.
 5. Local time falls back to the last timezone read from Home Assistant if a
    lookup fails, never silently to UTC.
 6. DST: a start/end inside the spring-forward gap (e.g. 02:30) happens at the
@@ -230,6 +243,33 @@ threshold.
    Learn's "did ClimateIQ turn it off" check).
 1c. The rule engine's humidity actions only ever turn on a humidifier or
    dehumidifier — never a fallback device.
+1d. **Handing back an `off` ClimateIQ set** (Scheduled gap handback, Learn
+   handover) is *one-shot for the Ecobee resume* and *bounded for the
+   restore*: `resume_program` is sent once and never repeated by a retry
+   (a repeat would wipe a hold the user placed meanwhile).  If restoring the
+   Ecobee's own `heat_cool`/`auto` fails (HA error, or the thermostat is
+   `unavailable`/`unknown`), only that restore is retried, at most 5 ticks
+   (gap: in-memory counter; Learn: a stored one-shot marker consumed by the
+   next tick in any mode and acted on only in Learn), then an error is
+   logged and the "ClimateIQ turned it off" record is cleared (Learn,
+   gap) so a later off the user chooses is never mistaken for ClimateIQ's.
+   Known limitations: the retry can set the Ecobee's own mode over an off the
+   user chose within those few ticks; a restart during it loses the
+   counter.
+1e. The "ClimateIQ turned it off" record is dropped when a tick sees the
+   thermostat in a real mode other than `off` more than 15 s after the record
+   was written (HA reports state asynchronously, so a read in the same tick
+   as ClimateIQ's own off can still show the old mode).  The final guarded
+   write may hand ClimateIQ's own `off` back to the Ecobee's program when no
+   sensor data exists and no `off` schedule governs (`restore_off`, opt-in
+   per caller — an off schedule must never undo its own off).
+1f. A thermostat reporting `unavailable`/`unknown` is not mode-switched and
+   not notified about every tick (nothing can be written to it).
+1g. Input validation: stored data is never re-validated on read (zone
+   responses use validator-free models); settings such as
+   `max_temp_offset_f` accept 0 (offset compensation disabled) up to 20 °F,
+   zone `comfort_preferences` temps are Celsius (-10..50, min ≤ max),
+   `climate_entities` are `climate.*` ids.
 2. Missing data → do nothing rather than guess (no zone readings → no
    direction change; no thermostat reading → no compensation).
 3. Every loop is idempotent: running it twice in a row with unchanged inputs
