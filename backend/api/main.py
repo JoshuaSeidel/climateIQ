@@ -1997,6 +1997,9 @@ async def _undo_our_off(ha_client: Any, entity: str, context: str) -> bool:
     """
     try:
         state = await ha_client.get_state(entity)
+        if state is not None and str(state.state or "").lower() in ("unavailable", "unknown"):
+            # Can't tell whether it is off: not "done" — the bounded retry applies.
+            return False
         if state is None or str(state.state or "").lower() != "off":
             return True
         await _ensure_mode_switch_loaded()
@@ -2115,19 +2118,27 @@ async def maintain_climate_offset() -> None:
             )
 
             _undo_tries = await pop_learn_undo_pending(db)
-            if (
-                _undo_tries is not None
-                and config is not None
-                and config.current_mode == SystemMode.learn
-            ):
-                if not await _learn_undo_off_only(db, ha_client):
-                    if _undo_tries < LEARN_UNDO_MAX:
-                        await mark_learn_undo_pending(db, _undo_tries + 1)
-                    else:
-                        logger.error(
-                            "Learn: could not restore the thermostat from off after %d "
-                            "attempts — giving up", LEARN_UNDO_MAX,
-                        )
+            if _undo_tries is not None:
+                _in_learn = config is not None and config.current_mode == SystemMode.learn
+                _retry_failed = _in_learn and not await _learn_undo_off_only(db, ha_client)
+                if _retry_failed and _undo_tries < LEARN_UNDO_MAX:
+                    await mark_learn_undo_pending(db, _undo_tries + 1)
+                elif _retry_failed:
+                    logger.error(
+                        "Learn: could not restore the thermostat from off after %d "
+                        "attempts — giving up", LEARN_UNDO_MAX,
+                    )
+                    # Not retrying any more: the "ClimateIQ turned it off" record
+                    # must not outlive that, or a later off the user chooses would
+                    # be taken for ours.  (Only here, in Learn: if the user left
+                    # Learn with the retry pending, the record may belong to an off
+                    # schedule that is now governing, so it is left alone.)
+                    try:
+                        from backend.core.manual_control import climate_entity as _ce
+
+                        await _restore_mode_switch(await _ce(db), None)
+                    except Exception as exc:
+                        logger.debug("Could not clear the stale off record: %s", exc)
             if config is not None and config.current_mode in (
                 SystemMode.active,
                 SystemMode.learn,
@@ -2244,6 +2255,9 @@ async def maintain_climate_offset() -> None:
                                         "thermostat from off after %d attempts — giving up",
                                         _GAP_UNDO_MAX,
                                     )
+                                    # Gap ownership has ended: don't let the record
+                                    # outlive it and be mistaken for a later user off.
+                                    await _restore_mode_switch(climate_entity, None)
                 return
             if _gap_handed_back:
                 _gap_handed_back = False

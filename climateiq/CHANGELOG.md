@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.107] - 2026-11-10
+
+Round 15: extended state-machine exploration plus an independent review of the 1.0.106 retry code. Every change below was attacked by a separate reviewer before release. Regression tests: `backend/tests/scenario/test_r15_*.py`.
+
+### Fixed
+- **Emergency shutoff could fail to turn the thermostat off** if a database step ran into an error (switching to Learn, clearing the override): those steps are now guarded, the error is reported in the response, and the Home Assistant off command still runs.
+- **A failed emergency-shutoff off command left a stale "ClimateIQ turned it off" record**, so a later handback or Learn retry could turn heating back on over your off. The shutoff now forgets every such record and any pending Learn restore whether or not the command succeeds (done after the Home Assistant commands, fully guarded so it can never prevent the shutoff).
+- **Giving up on a failed restore of ClimateIQ's own off** (Scheduled gap or Learn) now clears the record, so a later off you set yourself is never mistaken for ours.
+- **A thermostat momentarily `unavailable` at a handback** now counts as "retry later" (bounded, 5 attempts) instead of "done".
+
+### Known limitations
+- After a failed first restore, the gap retry (at most 5 ticks) can set the Ecobee's own mode over an off you set within those minutes.
+- If Home Assistant is unavailable for the first 5 retry minutes at a handover and then returns with the thermostat off, it stays off until you act.
+- A restart during the bounded retry loses the in-memory counter.
+
 ## [1.0.106] - 2026-11-09
 
 Round 14: a model-based review (about 24,500 event sequences) plus line-by-line audits of the control loops. Every fix was attacked by an independent reviewer before release, which caught and redirected two retry designs. Regression tests: `backend/tests/scenario/test_r14_*.py`.

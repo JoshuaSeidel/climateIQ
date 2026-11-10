@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -220,18 +221,24 @@ async def emergency_shutoff(
     async with THERMOSTAT_LOCK:
         # 1. Set system mode to learn (safe/passive) and drop any override
         # .limit(1), like every other reader — the singleton's id isn't always 1.
-        result = await db.execute(select(SystemConfig).limit(1))
-        config = result.scalar_one_or_none()
-        if config:
-            config.current_mode = SystemMode.learn
-            await db.commit()
-        from backend.core.manual_override import clear_override
+        # A database problem here must never stop the thermostat being turned off
+        # below: record it and carry on.
+        try:
+            result = await db.execute(select(SystemConfig).limit(1))
+            config = result.scalar_one_or_none()
+            if config:
+                config.current_mode = SystemMode.learn
+                await db.commit()
+            from backend.core.manual_override import clear_override
 
-        await clear_override(db, reason="emergency shutoff")
+            await clear_override(db, reason="emergency shutoff")
+        except Exception as e:
+            errors.append(f"Could not switch to Learn / clear the override: {e}")
+            logger.error("Emergency shutoff: database step failed: %s", e)
+            with suppress(Exception):
+                await db.rollback()
 
         # 2. Turn off all devices via HA
-        devices_off = 0
-        errors = []
         if settings.home_assistant_token:
             try:
                 async with HAClient(
@@ -300,10 +307,28 @@ async def emergency_shutoff(
                 logger.error("Emergency shutoff HA connection failed: %s", e)
         else:
             errors.append("No HA token configured — cannot send device commands")
-        import backend.api.main as _main_state
+        # The user's explicit emergency: forget every "ClimateIQ turned it off"
+        # record and any pending Learn restore, whether or not the HA off command
+        # succeeded — otherwise a later handback or Learn retry would turn heating
+        # back on over the shutoff.  After the HA commands and fully guarded, so
+        # nothing here can ever prevent the shutoff itself.
+        try:
+            import backend.api.main as _main_state
+            from backend.core.manual_override import pop_learn_undo_pending
 
-        _main_state._preconditioning.clear()
-        _main_state._gap_handed_back = False
+            await _main_state._ensure_mode_switch_loaded()
+            for _ent in [
+                e for e, (m, _t) in list(_main_state._last_mode_switch.items()) if m == "off"
+            ]:
+                await _main_state._restore_mode_switch(_ent, None)
+            await pop_learn_undo_pending(db)
+            _main_state._preconditioning.clear()
+            _main_state._gap_handed_back = False
+        except Exception as e:
+            errors.append(f"Could not clear internal state: {e}")
+            logger.error("Emergency shutoff: state cleanup failed: %s", e)
+            with suppress(Exception):
+                await db.rollback()
 
     logger.warning(
         "EMERGENCY SHUTOFF executed: %d devices turned off, %d errors",
