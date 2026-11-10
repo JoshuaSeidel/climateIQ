@@ -598,7 +598,7 @@ async def get_max_offset_setting(db: Any) -> float:
         if row and row.value:
             val = float(row.value.get("value", 8.0))
             # Garbage (NaN, negative, absurd) must not disable heating/cooling.
-            if math.isfinite(val) and 1.0 <= val <= 20.0:
+            if math.isfinite(val) and 0.0 <= val <= 20.0:
                 return val
             logger.warning("Ignoring invalid max_temp_offset_f=%r; using 8.0", val)
     except Exception as exc:

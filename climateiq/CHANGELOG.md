@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.102] - 2026-11-09
+
+### Fixed
+- **Settings could not be saved** (1.0.101 regression): the new `max_temp_offset_f` range check rejected 0 (and sub-1 °F values from the °C input), which the Settings page offers and sends on every save. 0 is valid again and means "offset compensation disabled" (a stored 0 was also being read as 8 °F). NaN, negative and values above 20 °F are still rejected.
+
 ## [1.0.101] - 2026-11-09
 
 Round 10 (spec-conformance audit). Regression tests: `backend/tests/scenario/test_r10_a_*.py`.

@@ -215,8 +215,9 @@ class SystemSettingsUpdate(BaseModel):
     def _validate_max_offset(cls, v: float | None) -> float | None:
         if v is None:
             return v
-        if not math.isfinite(v) or not 1.0 <= v <= 20.0:
-            raise ValueError("max_temp_offset_f must be between 1 and 20")
+        # 0 is valid: the Settings page documents it as "disable offset compensation".
+        if not math.isfinite(v) or not 0.0 <= v <= 20.0:
+            raise ValueError("max_temp_offset_f must be between 0 and 20")
         return v
 
     @field_validator("fan_night_cap_start", "fan_night_cap_end")
