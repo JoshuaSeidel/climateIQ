@@ -73,9 +73,12 @@ async def is_managed_thermostat(db: Any, entity_id: str | None) -> bool:
     if not entity_id:
         return False
     try:
-        return entity_id.strip() == await climate_entity(db)
+        managed = (await climate_entity(db)).strip().lower()
     except ManualControlError:
         return False
+    # HA lower-cases entity ids and accepts comma lists: "CLIMATE.Thermostat" and
+    # "fan.x,climate.thermostat" both reach the thermostat, so both must match.
+    return managed in {part.strip().lower() for part in str(entity_id).split(",") if part.strip()}
 
 
 def in_safety_range(temp_c: float) -> bool:

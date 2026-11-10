@@ -184,33 +184,37 @@ class ZoneAnalytics:
             # between two sensors reads as a temperature *change* and teaches fake
             # heating/cooling rates (and so too-short preconditioning).  Use one
             # zone-average series instead: each sensor's latest value carried
-            # forward, ignoring a sensor silent for over 6 hours.  The horizon is
-            # long on purpose: a sensor that reports every 45 minutes must not drop
-            # in and out of the average (each flip would be a fake step), and a
-            # sensor added late costs one step instead of the earlier history.
+            # forward, a sensor silent for over 6 hours leaving the average.
+            #
+            # Whenever the set of contributing sensors changes (a change-only
+            # Zigbee sensor going quiet and returning, one that dies, one added
+            # late) the series is re-based so the change of *membership* is not a
+            # change of *temperature*: without it every such event adds a step that
+            # a quiet zone's few real windows cannot outweigh.
+            horizon = timedelta(hours=6)
             latest: dict[Any, tuple[datetime, float]] = {}
             series = []
-            # Start only once every sensor that reports at the beginning of the
-            # window has reported: otherwise the first rows are a partial average
-            # and the step to the full average reads as a temperature change.  A
-            # sensor that first appears later just joins (one step) — it does not
-            # hold back the history.
+            # Start only once every sensor present at the beginning of the window
+            # has reported (the first rows would be a partial average).
             first_ts = valid[0].recorded_at
             initial = {
-                row.sensor_id
-                for row in valid
-                if row.recorded_at - first_ts <= timedelta(hours=6)
+                row.sensor_id for row in valid if row.recorded_at - first_ts <= horizon
             }
+            adj = 0.0
+            prev_members: frozenset[Any] | None = None
             for row in valid:
                 latest[row.sensor_id] = (row.recorded_at, row.temperature_c)
                 if not initial <= latest.keys():
                     continue
-                fresh = [
-                    temp
-                    for ts, temp in latest.values()
-                    if row.recorded_at - ts <= timedelta(hours=6)
-                ]
-                series.append((row, sum(fresh) / len(fresh)))
+                members = frozenset(
+                    sid for sid, (ts, _t) in latest.items() if row.recorded_at - ts <= horizon
+                )
+                avg = sum(latest[sid][1] for sid in members) / len(members)
+                if prev_members is not None and members != prev_members:
+                    before = sum(latest[sid][1] for sid in prev_members) / len(prev_members)
+                    adj += before - avg
+                prev_members = members
+                series.append((row, avg + adj))
         return [
             {
                 "recorded_at": row.recorded_at,

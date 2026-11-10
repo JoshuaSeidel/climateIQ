@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.110] - 2026-11-10
+
+Round 18. Independently reviewed before release (the review cleared the multi-sensor loader algebra and caught three issues in the other fixes, all corrected). Regression tests: `backend/tests/scenario/test_r18_*.py`, `backend/tests/unit/test_zone_analytics_multisensor.py`.
+
+### Fixed
+- **Multi-sensor learned rates (1.0.109 follow-up):** a change-only Zigbee sensor going quiet for over 6 h (or dying, or being added late) made the zone-average series step, teaching fake +4/-4 C/h rates; in a quiet zone a single outage inflated a real 0.2 C/h rate 3.3x. The series is now re-based whenever the set of contributing sensors changes, so a change of membership is never a change of temperature. A real 1 C/h ramp is still learned (0.93-1.0) through offset sensors of different cadence.
+- **The thermostat guard on `POST /devices/{id}/action` could be bypassed** with `CLIMATE.Thermostat` or a comma list such as `fan.bedroom,climate.thermostat` (Home Assistant lower-cases ids and accepts comma lists). Matching is now case-insensitive and comma-aware, checks both the parameter entity and the device's own entity, and the rule-engine dispatcher uses the same matching.
+- **`notification_target` was interpolated into the REST path**, so `x/../../homeassistant/restart` reached another service (only reachable through a backup restore). The target is now normalized (padding, case, leading `notify.`) and must be `[a-z0-9_]+`; an invalid one is not sent and never broadcast.
+- **Covers could flap open/closed on alternating ticks** when the Zones page's `lux_max` was at or below the absolute default re-open level (200 lx). The default re-open level is now derived from `lux_max`; an explicit `lux_open` is honoured.
+
+### Known / not changed
+- The rule engine only ever turns a humidifier/dehumidifier **on** (never off) and its occupancy setback always goes colder, even for a cooling `climate.*` device other than the thermostat.
+- Cover "closed" state is kept in memory only: a blind ClimateIQ closed is not reopened after a restart.
+- The rate calculation is O(n^2) (about 57 s of blocking CPU per zone for 30 days x 4 sensors at 1/min; unchanged by these fixes).
+
 ## [1.0.109] - 2026-11-10
 
 Round 17: the learning code and the backup importer. Independently reviewed before release (the review caught two flaws in the first multi-sensor fix, both corrected). Regression tests: `backend/tests/scenario/test_r17_*.py`. Also brings `docs/CONTROL_SPEC.md` up to date with the recent rules.

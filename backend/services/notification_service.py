@@ -8,6 +8,7 @@ comfort issues).
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -139,7 +140,18 @@ class NotificationService:
                     )
                     return
 
-        service_name = target if target else "notify"
+        # The target becomes a service name in the REST path: only a plain
+        # `notify.<name>` service is allowed (no dots, slashes or ".." that
+        # would reach another service such as homeassistant/restart).  Accept
+        # the usual spellings (padding, upper case, a leading "notify.").  An
+        # invalid target is NOT turned into a broadcast to every notify service.
+        service_name = "notify"
+        if target:
+            cleaned = target.strip().lower().removeprefix("notify.")
+            if not re.fullmatch(r"[a-z0-9_]+", cleaned):
+                logger.warning("Invalid notification target %r — notification not sent", target)
+                return
+            service_name = cleaned
         data: dict[str, Any] = {
             "title": title,
             "message": message,

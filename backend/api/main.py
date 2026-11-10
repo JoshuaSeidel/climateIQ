@@ -2814,6 +2814,13 @@ class _NoLLMError(Exception):
     """No LLM provider is configured/reachable for Active mode."""
 
 
+def _is_managed_entity(entity_id: str, managed_lowercase: set[str]) -> bool:
+    """Does this (possibly comma-listed, any-case) HA entity id include a managed thermostat?"""
+    return any(
+        part.strip().lower() in managed_lowercase for part in str(entity_id).split(",") if part.strip()
+    )
+
+
 async def _load_weekday_pattern(db: Any, zone_id: Any) -> Any:
     """The zone's weekday occupancy pattern for the CURRENT season (else the newest).
 
@@ -4140,6 +4147,15 @@ async def execute_cover_automation() -> None:
                 try:
                     lux_close = float(prefs.get("lux_max", _DEFAULT_LUX_CLOSE))
                     lux_open_thresh = float(prefs.get("lux_open", _DEFAULT_LUX_OPEN))
+                    # Keep a real hysteresis band.  The Zones page only sends lux_max,
+                    # and the absolute default re-open level (200) at or above it
+                    # flaps the cover open/closed on alternating ticks: derive the
+                    # default from lux_max.  An explicit lux_open is honoured (capped
+                    # at the close level, where open and close cannot overlap).
+                    if "lux_open" in prefs:
+                        lux_open_thresh = min(lux_open_thresh, lux_close)
+                    else:
+                        lux_open_thresh = min(lux_open_thresh, lux_close * 0.8)
                 except (TypeError, ValueError, AttributeError):
                     continue  # invalid preferences: leave this zone's covers alone
 
@@ -4258,10 +4274,12 @@ async def execute_rule_engine() -> None:
             ).scalar_one_or_none()
             if _ce_row and _ce_row.value:
                 managed_climate.update(
-                    e.strip() for e in str(_ce_row.value.get("value", "")).split(",") if e.strip()
+                    e.strip().lower()
+                    for e in str(_ce_row.value.get("value", "")).split(",")
+                    if e.strip()
                 )
             managed_climate.update(
-                e.strip() for e in settings_instance.climate_entities.split(",") if e.strip()
+                e.strip().lower() for e in settings_instance.climate_entities.split(",") if e.strip()
             )
 
             for state in zone_manager.iter_states():
@@ -4294,7 +4312,7 @@ async def execute_rule_engine() -> None:
                         device = dev_result.scalar_one_or_none()
                         if device and device.ha_entity_id:
                             entity_id = device.ha_entity_id
-                            if entity_id in managed_climate or (
+                            if _is_managed_entity(entity_id, managed_climate) or (
                                 action.action_type == ActionType.set_temperature
                                 and not entity_id.startswith("climate.")
                             ):
@@ -4303,7 +4321,7 @@ async def execute_rule_engine() -> None:
                                     action.action_type,
                                     entity_id,
                                     "managed thermostat"
-                                    if entity_id in managed_climate
+                                    if _is_managed_entity(entity_id, managed_climate)
                                     else "not a climate entity",
                                 )
                                 entity_id = ""

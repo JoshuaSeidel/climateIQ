@@ -164,8 +164,13 @@ async def execute_device_action(
     # (no heat_cool).  Use /system/override or /system/mode instead.
     from backend.core.manual_control import is_managed_thermostat
 
-    target_entity = str(payload.parameters.get("entity_id") or device.ha_entity_id or "")
-    if await is_managed_thermostat(db, target_entity):
+    # Both the device's own entity and any entity named in the parameters.
+    if any(
+        [
+            await is_managed_thermostat(db, str(payload.parameters.get("entity_id") or "")),
+            await is_managed_thermostat(db, str(device.ha_entity_id or "")),
+        ]
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This is the main thermostat — use /system/override or /system/mode.",
