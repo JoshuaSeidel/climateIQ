@@ -74,6 +74,20 @@ async def export_backup(
         ) from exc
 
 
+async def _sync_runtime_settings(db: AsyncSession) -> None:
+    """Re-apply the in-memory side of the restored settings (as PUT /settings does)."""
+    try:
+        from backend.config import SETTINGS
+        from backend.core.manual_control import display_unit
+
+        SETTINGS.temperature_unit = await display_unit(db)
+        import backend.api.main as main_mod
+
+        main_mod._primary_climate_cache = None
+    except Exception as exc:  # the data is restored; a restart picks up the rest
+        logger.warning("Could not sync runtime settings after restore: %s", exc)
+
+
 @router.post("/import", response_model=BackupRestoreResponse)
 async def import_backup(
     file: UploadFile,
@@ -104,6 +118,11 @@ async def import_backup(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid JSON file: {exc}",
         ) from exc
+    if not isinstance(backup_payload, dict) or not isinstance(backup_payload.get("tables", {}), dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Backup file has an unexpected structure",
+        )
 
     backup_id = backup_payload.get("backup_id", "uploaded")
 
@@ -113,8 +132,9 @@ async def import_backup(
 
     backup_dir = _backup_service.get_backup_dir()
     timestamp_str = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    if not backup_payload.get("backup_id"):
-        backup_payload["backup_id"] = str(uuid.uuid4())
+    # Always a fresh id for an upload: reusing the one inside the file could
+    # collide with (overwrite, then on rejection delete) a real backup file.
+    backup_payload["backup_id"] = str(uuid.uuid4())
     backup_id = str(backup_payload["backup_id"])
     filename = f"climateiq_backup_{timestamp_str}_{backup_id[:8]}.json"
     filepath = backup_dir / filename
@@ -125,16 +145,20 @@ async def import_backup(
 
     try:
         await _backup_service.restore_backup(db, backup_id)
+        await _sync_runtime_settings(db)
         return BackupRestoreResponse(
             message="Backup restored successfully",
             backup_id=backup_id,
         )
     except FileNotFoundError as exc:
+        filepath.unlink(missing_ok=True)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
     except ValueError as exc:
+        # A rejected upload must not stay on disk as a "backup".
+        filepath.unlink(missing_ok=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),

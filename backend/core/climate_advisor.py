@@ -561,7 +561,10 @@ def _build_prompt(
             days = thermal_profile.get("data_days", 0)
             nap = thermal_profile.get("nap_detected", False)
             occ_by_hour: dict[str, float] = thermal_profile.get("occupancy_score_by_hour", {})
-            current_hour = datetime.now(UTC).hour
+            # The profile's hour keys are the user's LOCAL hours (zone_analytics).
+            from backend.core.user_tz import cached_local_now
+
+            current_hour = cached_local_now().hour
             occ_score = occ_by_hour.get(str(current_hour), 0.0)
             occ_status = "likely occupied" if occ_score >= 0.5 else "likely unoccupied"
             if hr is not None:

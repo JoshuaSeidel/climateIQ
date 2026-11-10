@@ -173,9 +173,15 @@ class BackupService:
         except (json.JSONDecodeError, OSError) as exc:
             raise ValueError(f"Backup file is corrupt or unreadable: {exc}") from exc
 
+        if not isinstance(backup_payload, dict) or not isinstance(
+            backup_payload.get("tables", {}), dict
+        ):
+            raise ValueError("Backup file has an unexpected structure")
         tables: dict[str, list[dict[str, Any]]] = backup_payload.get("tables", {})
         if not tables:
             raise ValueError("Backup contains no table data")
+        # Reject a corrupt/hostile file BEFORE anything is deleted.
+        _validate_restore_rows(tables)
 
         # Restore in reverse dependency order (children first for deletes,
         # then parents first for inserts).
@@ -191,6 +197,10 @@ class BackupService:
         try:
             # Phase 1: delete existing rows (children → parents)
             for table_name in delete_order:
+                # An empty system_config would delete the live singleton (current
+                # mode, last sync) and refill nothing: keep the live row instead.
+                if table_name == "system_config" and not tables.get(table_name):
+                    continue
                 if table_name in tables:
                     safe_name = _validate_table_name(table_name)
                     await db_session.execute(text(f'DELETE FROM "{safe_name}"'))  # noqa: S608
@@ -346,6 +356,49 @@ class BackupService:
         for i in range(0, len(prepared), chunk):
             await db_session.execute(sa_insert(table), prepared[i : i + chunk])
         return len(prepared)
+
+
+def _validate_restore_rows(tables: dict[str, Any]) -> None:
+    """Validate rows whose bad values would drive the thermostat.
+
+    Only what a restore must not trust: schedule targets/times/priority (a 500 °C
+    target would drive the thermostat to the safety ceiling).  A backup made by
+    this app always passes — the schedule routes enforce the same limits.
+    """
+    from backend.api.routes.schedule import parse_time
+    from backend.config import SETTINGS
+
+    lo, hi = SETTINGS.safety_min_temp_c, SETTINGS.safety_max_temp_c
+    for row in tables.get("schedules") or []:
+        name = row.get("name", "?") if isinstance(row, dict) else "?"
+        if not isinstance(row, dict):
+            raise ValueError("Backup contains a malformed schedule row")
+        if "target_temp_c" in row:
+            # (A row without the column fails the real insert, atomically.)
+            try:
+                target_f = float(row["target_temp_c"])
+                if target_f != target_f:  # NaN
+                    raise ValueError("NaN target")
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"Backup schedule '{name}' has no valid target temperature"
+                ) from None
+            if not lo <= target_f <= hi:
+                raise ValueError(
+                    f"Backup schedule '{name}' has target {target_f:g} °C outside the "
+                    f"safety range {lo:g}-{hi:g} °C"
+                )
+        for key in ("start_time", "end_time"):
+            if row.get(key) is not None:
+                try:
+                    parse_time(str(row[key]))
+                except (ValueError, TypeError):
+                    raise ValueError(f"Backup schedule '{name}' has an invalid {key}") from None
+        prio = row.get("priority")
+        if prio is not None and (
+            isinstance(prio, bool) or not isinstance(prio, int) or not 1 <= prio <= 10
+        ):
+            raise ValueError(f"Backup schedule '{name}' has an invalid priority")
 
 
 def _coercer_for(col_type: Any) -> Any:

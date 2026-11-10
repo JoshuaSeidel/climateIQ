@@ -2814,6 +2814,36 @@ class _NoLLMError(Exception):
     """No LLM provider is configured/reachable for Active mode."""
 
 
+async def _load_weekday_pattern(db: Any, zone_id: Any) -> Any:
+    """The zone's weekday occupancy pattern for the CURRENT season (else the newest).
+
+    Rows are updated in place (``created_at`` never changes), so "newest created"
+    is the wrong season once a year has passed.
+    """
+    from sqlalchemy import select as _sel
+
+    from backend.core.pattern_engine import _current_season
+    from backend.models.database import OccupancyPattern
+    from backend.models.enums import PatternType as _PT
+
+    base = _sel(OccupancyPattern).where(
+        OccupancyPattern.zone_id == zone_id,
+        OccupancyPattern.pattern_type == _PT.weekday,
+    )
+    row = (
+        await db.execute(
+            base.where(OccupancyPattern.season == _current_season())
+            .order_by(OccupancyPattern.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        row = (
+            await db.execute(base.order_by(OccupancyPattern.created_at.desc()).limit(1))
+        ).scalar_one_or_none()
+    return row
+
+
 @single_flight
 async def execute_active_mode() -> None:
     """Full AI-driven HVAC control (Active mode).
@@ -3038,25 +3068,13 @@ async def execute_active_mode() -> None:
                 trend_now: float | None = None
                 trend_next: float | None = None
                 try:
-                    from backend.models.database import OccupancyPattern
-                    from backend.models.enums import PatternType as _PT
-
                     # Patterns are bucketed by UTC timestamp in
                     # pattern_engine.learn_occupancy_patterns, so look them
                     # up by UTC too (local time was 4-5 h off in US-East).
                     day_str = now_utc.strftime("%a").lower()
                     slot_now = now_utc.hour * 12 + now_utc.minute // 5
                     slots_ahead = [slot_now + i for i in range(1, 7)]  # +5..+30 min
-                    p_result = await db.execute(
-                        sa_select(OccupancyPattern)
-                        .where(
-                            OccupancyPattern.zone_id == zone.id,
-                            OccupancyPattern.pattern_type == _PT.weekday,
-                        )
-                        .order_by(OccupancyPattern.created_at.desc())
-                        .limit(1)
-                    )
-                    pat = p_result.scalar_one_or_none()
+                    pat = await _load_weekday_pattern(db, zone.id)
                     if pat and pat.schedule:
                         next_probs: list[float] = []
                         for entry in pat.schedule:

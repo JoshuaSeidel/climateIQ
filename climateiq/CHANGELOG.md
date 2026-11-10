@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.109] - 2026-11-10
+
+Round 17: the learning code and the backup importer. Independently reviewed before release (the review caught two flaws in the first multi-sensor fix, both corrected). Regression tests: `backend/tests/scenario/test_r17_*.py`. Also brings `docs/CONTROL_SPEC.md` up to date with the recent rules.
+
+### Fixed
+- **Zones with several sensors learned fake heating/cooling rates**, so preconditioning started far too late (a flat room with sensors at 20 and 22 °C "learned" +8 °C/h and a 15-minute lead time). Readings are now one zone-average series (each sensor's latest value carried forward, 6 h horizon; the series starts once every sensor present at the start has reported; a sensor added later joins with a single step and no history is discarded).
+- **The occupancy "arriving soon" hint could read the wrong season's pattern** after a year (rows are updated in place); the current season's row is preferred.
+- **The AI prompt looked up the learned occupancy by UTC hour** although the profile is keyed by local hour (US-East at 8 pm was "likely unoccupied").
+- **Backup import accepted anything:** a schedule with a 500 °C target drove the thermostat to the safety ceiling. Schedules with a target outside the safety range, an unparsable time or an out-of-range priority are now rejected with a 400 **before** anything is deleted (a backup made by this app always passes). An empty `system_config` no longer wipes the live row (the app silently dropped out of scheduled control), a non-object upload is a 400 instead of a 500, rejected uploads no longer pile up on disk, uploads always get a fresh backup id (they could overwrite and then delete a real backup file), and the in-memory unit setting is re-synced after a restore.
+
+### Known / not changed
+- Chat directives and memories are inserted into the Active-mode prompt without a length cap or escaping (the output is still clamped by the schedule guard and safety range).
+- A time window that blocks both heat and cool with no escape is accepted (the UI warns; the 40 °F safety floor still applies).
+- `default_comfort_*`, `default_humidity_*` and a few other settings accept out-of-range values.
+- The arrival-hint window does not wrap past UTC midnight; the recent-trend loop is O(n²).
+
 ## [1.0.108] - 2026-11-10
 
 Round 16: dashboard display correctness and the physical dial. Independently reviewed before release. Regression test: `backend/tests/scenario/test_r16_display_consistency.py`.

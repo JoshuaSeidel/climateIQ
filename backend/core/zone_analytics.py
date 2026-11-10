@@ -162,6 +162,7 @@ class ZoneAnalytics:
 
         result = await self._db.execute(
             sa_select(
+                SensorReading.sensor_id,
                 SensorReading.recorded_at,
                 SensorReading.temperature_c,
                 SensorReading.presence,
@@ -174,15 +175,50 @@ class ZoneAnalytics:
             )
             .order_by(SensorReading.recorded_at.asc())
         )
+        valid = [row for row in result.fetchall() if -40 <= row.temperature_c <= 60]
+        sensors_present = {row.sensor_id for row in valid}
+        if len(sensors_present) <= 1:
+            series = [(row, row.temperature_c) for row in valid]
+        else:
+            # Several sensors report at different levels.  Merged as-is, the offset
+            # between two sensors reads as a temperature *change* and teaches fake
+            # heating/cooling rates (and so too-short preconditioning).  Use one
+            # zone-average series instead: each sensor's latest value carried
+            # forward, ignoring a sensor silent for over 6 hours.  The horizon is
+            # long on purpose: a sensor that reports every 45 minutes must not drop
+            # in and out of the average (each flip would be a fake step), and a
+            # sensor added late costs one step instead of the earlier history.
+            latest: dict[Any, tuple[datetime, float]] = {}
+            series = []
+            # Start only once every sensor that reports at the beginning of the
+            # window has reported: otherwise the first rows are a partial average
+            # and the step to the full average reads as a temperature change.  A
+            # sensor that first appears later just joins (one step) — it does not
+            # hold back the history.
+            first_ts = valid[0].recorded_at
+            initial = {
+                row.sensor_id
+                for row in valid
+                if row.recorded_at - first_ts <= timedelta(hours=6)
+            }
+            for row in valid:
+                latest[row.sensor_id] = (row.recorded_at, row.temperature_c)
+                if not initial <= latest.keys():
+                    continue
+                fresh = [
+                    temp
+                    for ts, temp in latest.values()
+                    if row.recorded_at - ts <= timedelta(hours=6)
+                ]
+                series.append((row, sum(fresh) / len(fresh)))
         return [
             {
                 "recorded_at": row.recorded_at,
-                "temperature_c": row.temperature_c,
+                "temperature_c": temp,
                 "presence": row.presence,
                 "lux": row.lux,
             }
-            for row in result.fetchall()
-            if -40 <= row.temperature_c <= 60
+            for row, temp in series
         ]
 
     async def _load_device_actions(
