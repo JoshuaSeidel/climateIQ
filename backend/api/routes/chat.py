@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.dependencies import get_db
 from backend.config import get_settings
-from backend.integrations.llm.provider import LLMProvider
+from backend.integrations.llm.provider import LLMProvider, strip_reasoning
 from backend.integrations.llm.tools import get_climate_tools
 from backend.models.database import Conversation, Zone
 
@@ -234,7 +234,7 @@ async def _extract_directives(
             system="You extract user preferences from HVAC conversations. Return only valid JSON.",
         )
 
-        content = response.get("content", "").strip()
+        content = strip_reasoning(response.get("content", "")).strip()
         # Strip markdown code fences if present
         if content.startswith("```"):
             content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
@@ -2479,7 +2479,7 @@ async def _run_llm_with_tools(
         tools=get_climate_tools(),
     )
 
-    assistant_message: str = response.get("content", "") or ""
+    assistant_message: str = strip_reasoning(response.get("content", "") or "")
     tool_calls: list[dict[str, Any]] = response.get("tool_calls", [])
     actions_taken: list[dict[str, Any]] = []
 
@@ -2537,7 +2537,7 @@ async def _run_llm_with_tools(
                 system=system_prompt,
                 # No tools — force a plain text response
             )
-            assistant_message = (followup.get("content", "") or "").strip()
+            assistant_message = strip_reasoning(followup.get("content", "") or "").strip()
         except Exception:
             logger.debug("Follow-up LLM call failed; falling through to synthesis", exc_info=True)
 
@@ -2734,11 +2734,18 @@ async def _command_set_zone_temp(
         in_safety_range,
         is_managed_thermostat,
     )
-    from backend.models.database import Device
+    from backend.models.database import Device, Zone
 
     if not in_safety_range(temp_c):
         return "That temperature is outside the safety range."
-    devices = (await db.execute(select(Device).where(Device.zone_id == zone_id))).scalars().all()
+    # A hallucinated / stale zone id must not turn into a house-wide override.
+    try:
+        zone_uuid = zone_id if isinstance(zone_id, uuid.UUID) else uuid.UUID(str(zone_id))
+    except ValueError:
+        return "Zone not found."
+    if (await db.execute(select(Zone.id).where(Zone.id == zone_uuid))).first() is None:
+        return "Zone not found."
+    devices = (await db.execute(select(Device).where(Device.zone_id == zone_uuid))).scalars().all()
     zone_tstat = next(
         (d for d in devices if d.ha_entity_id and d.type.value == "thermostat"), None
     )
@@ -2814,7 +2821,7 @@ async def execute_command(
             import json
 
             try:
-                parsed = json.loads(response.get("content", "{}"))
+                parsed = json.loads(strip_reasoning(response.get("content", "{}")))
             except json.JSONDecodeError:
                 parsed = None
         except Exception:
@@ -3099,6 +3106,10 @@ async def chat_websocket(
         while True:
             data = await websocket.receive_json()
 
+            if not isinstance(data, dict):
+                await websocket.send_json({"type": "error", "message": "Invalid message"})
+                continue
+
             if data.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
                 continue
@@ -3107,10 +3118,16 @@ async def chat_websocket(
                 continue
 
             # Use provided session_id if available
-            if data.get("session_id"):
+            if isinstance(data.get("session_id"), str) and 0 < len(data["session_id"]) <= 64:
                 session_id = data["session_id"]
 
             user_message = data.get("content", "")
+            # Same limits as the REST ChatMessage model.
+            if not isinstance(user_message, str) or not 1 <= len(user_message.strip()) <= 10000:
+                await websocket.send_json(
+                    {"type": "error", "message": "Message must be 1-10000 characters"}
+                )
+                continue
 
             # Send typing indicator
             await websocket.send_json(
@@ -3181,12 +3198,13 @@ async def chat_websocket(
 
     except WebSocketDisconnect:
         return
-    except Exception as e:
+    except Exception:
+        logger.exception("Chat websocket error")
         try:
             await websocket.send_json(
                 {
                     "type": "error",
-                    "message": str(e),
+                    "message": "Something went wrong handling that message.",
                 }
             )
         except Exception:

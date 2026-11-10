@@ -54,9 +54,9 @@ const TABS: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
 ]
 
 const MODE_DESCRIPTIONS: Record<SystemMode, string> = {
-  learn: 'System observes occupancy patterns and temperature preferences without making changes.',
-  scheduled: 'System follows configured schedules to control HVAC devices.',
-  follow_me: 'System tracks occupancy and adjusts climate in occupied zones automatically.',
+  learn: 'System observes occupancy patterns and temperature preferences. Control is handed back to the thermostat\'s own program and ClimateIQ makes no changes.',
+  scheduled: 'System follows configured schedules to control HVAC devices. Between schedules the thermostat\'s own program takes over.',
+  follow_me: 'System follows your schedules, and between them tracks occupancy and adjusts climate in occupied zones automatically.',
   active: 'Full AI-driven control. The LLM makes decisions based on all available data, and always honors your schedules (including preconditioning before they start).',
 }
 
@@ -216,6 +216,9 @@ function GeneralTab({ settings, loading }: { settings?: SystemSettings; loading:
     mutationFn: (data: Record<string, unknown>) => api.put<SystemSettings>('/settings', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      // Status data is served in the display unit: refetch it after a unit change.
+      queryClient.invalidateQueries({ queryKey: ['override-status'] })
+      queryClient.invalidateQueries({ queryKey: ['active-schedule'] })
     },
   })
 
@@ -1139,6 +1142,8 @@ function ModesTab({ settings }: { settings?: SystemSettings }) {
     mutationFn: (mode: SystemMode) => api.post('/system/mode', { mode }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      // A mode switch clears any manual override (spec §2).
+      queryClient.invalidateQueries({ queryKey: ['override-status'] })
     },
   })
 
@@ -2121,7 +2126,8 @@ function FanNightCapCard({ settings }: { settings?: SystemSettings }) {
 
   const commitPct = () => {
     const parsed = Number(pctDraft)
-    if (!Number.isFinite(parsed)) {
+    // A blank field is Number('') === 0: it would silently cap fans at 0%.
+    if (pctDraft.trim() === '' || !Number.isFinite(parsed)) {
       setPctDraft(String(maxPct))
       return
     }
@@ -2266,7 +2272,8 @@ function LogicTab({
 
   const commitCooldown = () => {
     const parsed = Number(cooldownDraft)
-    if (!Number.isFinite(parsed)) {
+    // A blank field is Number('') === 0: it would silently disable the cooldown.
+    if (cooldownDraft.trim() === '' || !Number.isFinite(parsed)) {
       setCooldownDraft(String(cooldownMin))
       return
     }

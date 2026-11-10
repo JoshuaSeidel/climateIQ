@@ -344,9 +344,20 @@ export const Zones = () => {
   // Save comfort preferences mutation
   const [comfortSaveStatus, setComfortSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const saveComfortPrefs = useMutation({
-    mutationFn: ({ id, prefs }: { id: string; prefs: ComfortPrefs }) =>
+    mutationFn: ({
+      id,
+      prefs,
+      existing,
+    }: {
+      id: string
+      prefs: ComfortPrefs
+      existing?: Record<string, unknown>
+    }) =>
       api.put<ZoneBackend>(`/zones/${id}`, {
         comfort_preferences: {
+          // Keep keys this form does not show (target_humidity, lux_open, ...):
+          // the backend replaces the whole object.
+          ...(existing ?? {}),
           temp_min: Number(toStorageCelsius(Number(prefs.temp_min), unitKey).toFixed(2)),
           temp_max: Number(toStorageCelsius(Number(prefs.temp_max), unitKey).toFixed(2)),
           humidity_min: Number(prefs.humidity_min),
@@ -1235,7 +1246,18 @@ export const Zones = () => {
                 disabled={saveComfortPrefs.isPending}
                 onClick={() => {
                   if (selectedZoneId) {
-                    saveComfortPrefs.mutate({ id: selectedZoneId, prefs: comfortPrefs })
+                    // A blank field would be sent as 0 (and a blank °F minimum
+                    // becomes -17.8 °C): refuse instead of saving it.
+                    const complete = Object.values(comfortPrefs).every(
+                      (v) => String(v).trim() !== '' && Number.isFinite(Number(v)),
+                    )
+                    if (!complete) {
+                      setComfortSaveStatus('error')
+                      return
+                    }
+                    const existing = (zonesRaw ?? []).find((z) => z.id === selectedZoneId)
+                      ?.comfort_preferences as Record<string, unknown> | undefined
+                    saveComfortPrefs.mutate({ id: selectedZoneId, prefs: comfortPrefs, existing })
                   }
                 }}
               >

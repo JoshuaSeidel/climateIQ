@@ -60,6 +60,32 @@ const buildUrl = (path: string, params?: FetchOptions['params']) => {
   return url.toString()
 }
 
+/**
+ * Turn an error response body into a message a person can read: FastAPI sends
+ * `{"detail": "text"}` or `{"detail": [{"loc": [...], "msg": "..."}]}`.
+ */
+export function formatApiError(body: string, status: number): string {
+  const fallback = body || `API request failed: ${status}`
+  try {
+    const parsed: unknown = JSON.parse(body)
+    const detail = (parsed as { detail?: unknown } | null)?.detail
+    if (typeof detail === 'string' && detail) return detail
+    if (Array.isArray(detail) && detail.length > 0) {
+      const parts = detail.map((item) => {
+        const entry = item as { loc?: unknown[]; msg?: unknown }
+        const field = Array.isArray(entry.loc) ? String(entry.loc[entry.loc.length - 1] ?? '') : ''
+        const msg = typeof entry.msg === 'string' ? entry.msg : ''
+        return field && msg ? `${field}: ${msg}` : msg || field
+      })
+      const text = parts.filter(Boolean).join('; ')
+      if (text) return text
+    }
+  } catch {
+    // not JSON: use the raw text
+  }
+  return fallback
+}
+
 export async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T> {
   const { params, headers, ...rest } = options
   const response = await fetch(buildUrl(path, params), {
@@ -72,7 +98,7 @@ export async function apiFetch<T>(path: string, options: FetchOptions = {}): Pro
 
   if (!response.ok) {
     const message = await response.text()
-    throw new Error(message || `API request failed: ${response.status}`)
+    throw new Error(formatApiError(message, response.status))
   }
 
   // 204 No Content — nothing to parse

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -173,7 +174,9 @@ class LLMProvider:
         choice = response.choices[0]
         content = choice.message.content or ""
 
-        result: dict[str, Any] = {"content": content}
+        # Reasoning models (qwen3, deepseek-r1) wrap their draft in <think>…</think>:
+        # it is not part of the answer and breaks JSON parsing of extractions.
+        result: dict[str, Any] = {"content": strip_reasoning(content)}
 
         # Extract tool calls if present
         if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
@@ -207,6 +210,13 @@ class LLMProvider:
 # ============================================================================
 # Original Provider Implementation
 # ============================================================================
+
+
+def strip_reasoning(content: str) -> str:
+    """Remove ``<think>…</think>`` blocks (and an unterminated trailing one)."""
+    cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.S)
+    cleaned = re.sub(r"<think>.*\Z", "", cleaned, flags=re.S)
+    return cleaned.strip() if cleaned != content else content
 
 
 def _require_litellm() -> Any:

@@ -454,6 +454,47 @@ async def get_settings(
 # ---------------------------------------------------------------------------
 # PUT /settings — partial update
 # ---------------------------------------------------------------------------
+def _validate_comfort_defaults(changed: dict[str, Any], stored: dict[str, Any]) -> None:
+    """Validate the comfort-default temperatures a request actually CHANGES.
+
+    They are stored in °C (the Settings page converts on save): a value must be
+    finite and within -10..50, and min must not exceed max.  A value merely
+    echoed back unchanged is accepted — the General card always resends both, and
+    a legacy stored value outside the range (e.g. the -17.78 an old blank-°F bug
+    saved) must not make every other setting fail to save.
+    """
+    keys = ("default_comfort_temp_min", "default_comfort_temp_max")
+    modified: dict[str, bool] = {}
+    effective: dict[str, float] = {}
+    for key in keys:
+        old = stored.get(key)
+        if key in changed:
+            new = float(changed[key])
+            # Tolerance covers the display rounding of the Settings page (toFixed(1)
+            # in °F or °C, then back to °C): an echoed value can differ by ~0.05.
+            unchanged = old is not None and abs(new - float(old)) < 0.06
+            if not unchanged and (not math.isfinite(new) or not -10.0 <= new <= 50.0):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{key} must be a Celsius value between -10 and 50",
+                )
+            modified[key] = not unchanged
+            effective[key] = new
+        else:
+            modified[key] = False
+            if old is not None:
+                effective[key] = float(old)
+    if (
+        any(modified.values())
+        and len(effective) == 2
+        and effective[keys[0]] > effective[keys[1]]
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="default_comfort_temp_min must not exceed default_comfort_temp_max",
+        )
+
+
 @router.put("", response_model=SystemSettingsResponse)
 async def update_settings(
     updates: SystemSettingsUpdate,
@@ -468,6 +509,8 @@ async def update_settings(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No fields provided for update",
         )
+
+    _validate_comfort_defaults(changed, await _read_all_kv(db))
 
     for key, value in changed.items():
         if key not in _KV_DEFAULTS:

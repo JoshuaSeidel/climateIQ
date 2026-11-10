@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.111] - 2026-11-10
+
+Round 19: the pages where you edit data, and the chat assistant. Independently reviewed before release (the review caught a regression in the first version of the comfort-default validation, corrected below). Regression tests: `backend/tests/scenario/test_r19_chat_and_settings.py`, `frontend/src/lib/__tests__/api.test.ts`.
+
+### Fixed
+- **Zones "Save preferences" deleted settings the page does not show** (`target_humidity`, `lux_open`) because the backend replaces the whole object; the page now keeps the existing keys. It also refuses to save a blank number field instead of sending 0.
+- **Blank number fields were saved as 0:** a blank "Fan quiet hours max %" capped fans at 0% and a blank "Mode switch cooldown" disabled the cooldown. A blank field now reverts.
+- **Comfort default temperatures** (Settings) must be Celsius values between -10 and 50, in order. The check applies only to values that actually change, so a legacy stored value never blocks saving other settings, and a partial update can no longer store min above max.
+- **Error messages** from the server are shown as readable text instead of raw JSON.
+- **After a unit or mode change** the dashboard refetches its status immediately instead of briefly showing the old numbers with the new unit; mode descriptions now match the control spec (schedules binding in Follow-Me, the thermostat's own program between schedules, Learn handing control back).
+- **Chat assistant:** a hallucinated or stale zone id no longer becomes a house-wide 24-hour override; `<think>…</think>` reasoning text from local models (qwen3, deepseek-r1) is stripped from replies and no longer breaks memory extraction; the chat WebSocket validates frames (non-dict, empty, over 10,000 characters) and no longer closes or leaks an internal error on a malformed frame.
+
+### Known / not changed
+- A Settings General save sends every field of that card, so a stale second tab could overwrite a setting changed elsewhere; display rounding can drift a value by up to 0.03 °C per load/save cycle.
+- Chat directives are inserted into the Active-mode prompt without a length cap or escaping (output is still clamped by the schedule guard and the safety range).
+
 ## [1.0.110] - 2026-11-10
 
 Round 18. Independently reviewed before release (the review cleared the multi-sensor loader algebra and caught three issues in the other fixes, all corrected). Regression tests: `backend/tests/scenario/test_r18_*.py`, `backend/tests/unit/test_zone_analytics_multisensor.py`.
