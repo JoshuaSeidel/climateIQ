@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.100] - 2026-11-09
+
+Round 10 (partial). Fixes a regression introduced by 1.0.99 plus two findings. Regression tests: `backend/tests/**/test_r10*.py`.
+
+### Fixed
+- **Dashboard / dial live updates dropped every few seconds when idle** (1.0.99 regression): the new 3 s Redis read timeout killed the WebSocket pub/sub listener whenever a channel was quiet. The listener now polls with a short timeout and treats a quiet channel as normal. HVAC control was not affected.
+- **Fans we raised were never released** when every zone of the governing schedule was excluded; they are now released.
+- **Standalone API key:** a non-ASCII credential crashed the key middleware with a 500; it now returns 401 (or closes the WebSocket with 4001).
+
 ## [1.0.99] - 2026-11-09
 
 Heating/cooling correctness and hardening, round 9. Each fix has a regression test (`backend/tests/scenario/test_r9*.py`).

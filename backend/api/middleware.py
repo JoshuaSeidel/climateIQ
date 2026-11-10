@@ -318,8 +318,9 @@ class APIKeyMiddleware:
             return
 
         headers = dict(scope.get("headers", []))
-        auth_header = headers.get(b"authorization", b"").decode("utf-8")
-        if hmac.compare_digest(auth_header, f"Bearer {self._api_key}"):
+        auth_header = headers.get(b"authorization", b"").decode("utf-8", "replace")
+        # Compare as bytes: compare_digest raises TypeError on non-ASCII str.
+        if hmac.compare_digest(auth_header.encode(), f"Bearer {self._api_key}".encode()):
             await self.app(scope, receive, send)
             return
 
@@ -328,7 +329,9 @@ class APIKeyMiddleware:
             from urllib.parse import parse_qs
 
             qs = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"))
-            if hmac.compare_digest(qs.get("api_key", [""])[0], self._api_key):
+            if hmac.compare_digest(
+                qs.get("api_key", [""])[0].encode(), self._api_key.encode()
+            ):
                 await self.app(scope, receive, send)
                 return
             await send({"type": "websocket.close", "code": 4001})

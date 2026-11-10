@@ -3307,8 +3307,11 @@ async def execute_active_mode() -> None:
             call_llm = True
             if governing_schedule is not None and not focus_zones:
                 # The schedule's zones are all excluded: nothing is governed
-                # this tick (spec §2b) — no LLM call, no fan changes.
+                # this tick (spec §2b) — no LLM call, no new fan changes, no
+                # thermostat write.  Fans we raised earlier are released: nothing
+                # governs them any more and the LLM can't answer "=0".
                 call_llm = False
+                await _release_all_raised_fans(ha_client)
 
             # ── Gate 1: steady-state skip ───────────────────────────────
             focus_on_target = True

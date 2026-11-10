@@ -13,6 +13,7 @@ from typing import Any
 
 import redis.asyncio as redis
 from fastapi import WebSocket
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from backend.api.dependencies import get_redis
 
@@ -136,8 +137,16 @@ class ConnectionManager:
                     await pubsub.subscribe(
                         self._channel, self._SENSOR_CHANNEL, self._DEVICE_CHANNEL
                     )
-                    async for message in pubsub.listen():
-                        if message.get("type") != "message":
+                    while True:
+                        # Poll with a short timeout: a quiet channel is normal and
+                        # must not trip the client's socket read timeout.
+                        try:
+                            message = await pubsub.get_message(
+                                ignore_subscribe_messages=True, timeout=1.0
+                            )
+                        except (RedisTimeoutError, TimeoutError):
+                            continue
+                        if message is None or message.get("type") != "message":
                             continue
                         raw = message.get("data")
                         if not isinstance(raw, str):
