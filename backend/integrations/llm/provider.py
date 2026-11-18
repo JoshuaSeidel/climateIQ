@@ -13,6 +13,7 @@ This module does not implement tool execution; it only defines the LLM interface
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -159,6 +160,10 @@ class LLMProvider:
             "max_tokens": self.max_tokens,
             "tools": tools if tools else None,
         }
+        if _is_gemini3(self.provider, self.model):
+            call_kwargs.pop("temperature")  # Gemini 3: keep the default (1.0)
+            call_kwargs["max_tokens"] = max(self.max_tokens, _GEMINI3_MIN_OUTPUT_TOKENS)
+            call_kwargs.setdefault("reasoning_effort", "low")
         if self.api_key:
             call_kwargs["api_key"] = self.api_key
         if self.base_url:
@@ -168,7 +173,20 @@ class LLMProvider:
         # otherwise pin a chat request (and its DB session) for 100 minutes.
         call_kwargs.setdefault("timeout", self.DEFAULT_TIMEOUT_S)
 
-        response = await litellm.acompletion(**call_kwargs)
+        pause_key = _cooldown_key(self.provider, self.model, self.api_key)
+        paused_for = _PROVIDER_COOLDOWN_UNTIL.get(pause_key, 0.0) - time.monotonic()
+        if paused_for > 0:
+            raise RuntimeError(
+                f"{self.provider} is rate limited (free-tier quota) — retry in {paused_for:.0f}s"
+            )
+        try:
+            response = await litellm.acompletion(**call_kwargs)
+        except Exception as exc:
+            pause = _quota_cooldown_s(exc)
+            if pause is not None:
+                _PROVIDER_COOLDOWN_UNTIL[pause_key] = time.monotonic() + pause
+                logger.warning("LLM provider %s is rate limited — pausing %.0fs", self.provider, pause)
+            raise
 
         # Extract response content
         choice = response.choices[0]
@@ -217,6 +235,60 @@ def strip_reasoning(content: str) -> str:
     cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.S)
     cleaned = re.sub(r"<think>.*\Z", "", cleaned, flags=re.S)
     return cleaned.strip() if cleaned != content else content
+
+
+# --- Gemini support -----------------------------------------------------------
+# Gemini 3 models "think" before answering and count those hidden tokens against
+# max_tokens, so a small budget (the advisor asks for 250) is spent before the JSON
+# is finished and the reply is cut off.  They also recommend leaving temperature at
+# its default of 1.0 (lower values can loop / degrade).  The free tier is capped at
+# a handful of requests per minute and a daily quota.
+_GEMINI3_MIN_OUTPUT_TOKENS = 2048
+_GEMINI_MAX_RPM = 10  # free-tier flash-lite is ~15 RPM; stay clear of it
+
+
+def _is_gemini3(provider: str, model: str | None) -> bool:
+    name = (model or "").lower().removeprefix("models/").removeprefix("gemini/")
+    return provider.lower().strip() == "gemini" and name.startswith("gemini-3")
+
+
+def _quota_cooldown_s(exc: BaseException) -> float | None:
+    """Seconds to pause a provider after a rate-limit / quota error, else None.
+
+    Deliberately strict: only a real rate-limit signal counts.  A bare "quota" or
+    "429" substring also matches unrelated failures (a 403 "requires a quota
+    project", an id like "1429") that must not silence the provider.
+    """
+    text = f"{type(exc).__name__} {exc}".lower()
+    status = getattr(exc, "status_code", None)
+    if not (
+        status == 429
+        or "ratelimit" in type(exc).__name__.lower()
+        or "resource_exhausted" in text
+        or re.search(r"\b429\b", text)
+        or ("quota" in text and "exceed" in text)
+    ):
+        return None
+    if "per day" in text or "perday" in text or "daily" in text:
+        return 3600.0  # the daily quota will not recover within the hour
+    match = re.search(r"retry(?: in|delay)[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?)\s*(ms|s)\b", text)
+    if match:
+        seconds = float(match.group(1)) / (1000.0 if match.group(2) == "ms" else 1.0)
+        return min(max(seconds + 1.0, 5.0), 300.0)
+    return 60.0
+
+
+def _cooldown_key(provider: str, model: str | None, api_key: str | None) -> str:
+    """Quotas are per project (key) and per model: pause exactly that combination."""
+    digest = hashlib.sha256((api_key or "").encode()).hexdigest()[:8]
+    return f"{provider.lower().strip()}|{(model or '').lower()}|{digest}"
+
+
+# Shared across provider instances: the advisor builds a new ClimateIQLLMProvider
+# for every call, so per-instance limiter/cooldown state would never accumulate.
+_SHARED_LIMITERS: dict[tuple[str, int], _RateLimiter] = {}
+_PROVIDER_COOLDOWN_UNTIL: dict[str, float] = {}
+_SHARED_LOCK = threading.Lock()
 
 
 def _require_litellm() -> Any:
@@ -292,7 +364,11 @@ class ClimateIQLLMProvider:
         self._rate_limiters: dict[str, _RateLimiter] = {}
         for s in [self.primary, self.secondary, self.local]:
             if s:
-                self._rate_limiters[s.provider] = _RateLimiter(s.rpm)
+                with _SHARED_LOCK:
+                    limiter = _SHARED_LIMITERS.setdefault(
+                        (s.provider, s.rpm), _RateLimiter(s.rpm)
+                    )
+                self._rate_limiters[s.provider] = limiter
 
         self._models_lock = threading.Lock()
         self._models: dict[str, list[ModelInfo]] = {}
@@ -344,6 +420,14 @@ class ClimateIQLLMProvider:
         last_err: BaseException | None = None
 
         for settings, resolved_model in candidates:
+            pause_key = _cooldown_key(settings.provider, resolved_model, settings.api_key)
+            paused_until = _PROVIDER_COOLDOWN_UNTIL.get(pause_key, 0.0)
+            if time.monotonic() < paused_until:
+                logger.debug(
+                    "LLM provider %s paused for %.0fs more (rate limit)",
+                    settings.provider, paused_until - time.monotonic(),
+                )
+                continue
             try:
                 self._rate_limiters[settings.provider].acquire()
                 resp = self._chat_once(
@@ -379,6 +463,15 @@ class ClimateIQLLMProvider:
                     resolved_model,
                     e,
                 )
+                pause = _quota_cooldown_s(e)
+                if pause is not None:
+                    # Out of quota (e.g. the Gemini free tier): stop calling for a
+                    # while instead of failing on every tick; callers fall back.
+                    _PROVIDER_COOLDOWN_UNTIL[pause_key] = time.monotonic() + pause
+                    logger.warning(
+                        "LLM provider %s is rate limited — pausing it for %.0fs",
+                        settings.provider, pause,
+                    )
                 continue
 
         logger.error("All LLM fallbacks failed")
@@ -453,14 +546,24 @@ class ClimateIQLLMProvider:
             "request_id": request_id,
             "timeout": settings.timeout_s,
         }
-        if temperature is not None:
+        gemini3 = _is_gemini3(settings.provider, model)
+        if temperature is not None and not gemini3:
             params["temperature"] = float(temperature)
         if max_tokens is not None:
-            params["max_tokens"] = int(max_tokens)
+            tokens = int(max_tokens)
+            # Hidden "thinking" tokens share this budget on Gemini 3.
+            params["max_tokens"] = max(tokens, _GEMINI3_MIN_OUTPUT_TOKENS) if gemini3 else tokens
         if tools is not None:
             params["tools"] = list(tools)
         if tool_choice is not None:
             params["tool_choice"] = tool_choice
+        # JSON mode (valid JSON guaranteed by Gemini's responseMimeType); other
+        # providers ignore the flag.
+        if kwargs.pop("json_mode", False) and settings.provider == "gemini":
+            params["response_format"] = {"type": "json_object"}
+        if gemini3:
+            # Short, cheap, deterministic thinking for control decisions.
+            params.setdefault("reasoning_effort", "low")
 
         params.update(kwargs)
         return litellm.completion(**params)
@@ -586,6 +689,7 @@ def _normalize_settings(s: ProviderSettings) -> ProviderSettings:
 
     api_key = s.api_key
     base_url = s.base_url
+    rpm = s.rpm
 
     if p == "openai":
         api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -596,6 +700,7 @@ def _normalize_settings(s: ProviderSettings) -> ProviderSettings:
     elif p == "gemini":
         api_key = api_key or os.getenv("GEMINI_API_KEY")
         base_url = base_url or os.getenv("GEMINI_BASE_URL")
+        rpm = min(rpm, _GEMINI_MAX_RPM)
     elif p == "grok":
         api_key = api_key or os.getenv("GROK_API_KEY")
         base_url = base_url or os.getenv("GROK_BASE_URL")
@@ -612,7 +717,7 @@ def _normalize_settings(s: ProviderSettings) -> ProviderSettings:
         api_key=api_key,
         base_url=base_url,
         default_model=s.default_model,
-        rpm=s.rpm,
+        rpm=rpm,
         timeout_s=s.timeout_s,
     )
 

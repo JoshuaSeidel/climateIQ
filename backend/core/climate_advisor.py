@@ -1001,6 +1001,7 @@ class ClimateAdvisor:
                 ],
                 max_tokens=_LLM_MAX_TOKENS,
                 temperature=_LLM_TEMPERATURE,
+                json_mode=True,
             )
             if response.get("climateiq_provider_unavailable"):
                 # Every provider in the chain was unreachable, so `response`

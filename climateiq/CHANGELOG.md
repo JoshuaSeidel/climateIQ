@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.112] - 2026-11-18
+
+Gemini support (including the free tier). Independently reviewed before release. Tests: `backend/tests/unit/test_llm_gemini.py`.
+
+### Fixed
+- **Gemini 3 replies were cut off** ("No JSON found in LLM response"): its hidden thinking tokens count against the output limit, so the advisor's 250-token budget ran out. Gemini 3 models now get at least 2048 output tokens, low reasoning effort, and the recommended default temperature (lower values cause loops/degraded output). The advisor also requests JSON mode from Gemini.
+- **Free-tier rate limits:** Gemini requests are capped at 10 per minute, and the limiter is shared across advisor calls. After a rate-limit/quota error the provider is paused (using Google's "retry in Ns" hint, one hour for daily quota) instead of failing on every call; the pause is per model and API key, covers the chat assistant and Active mode too, and the advisor falls back to the formula meanwhile.
+- **Active mode** now parses `RECOMMENDED_TEMP` even when the model wraps it in markdown bold.
+- Test fix: `test_r12_b_stale_off` no longer depends on the real date.
+
+### Notes
+- Google may use free-tier prompts (zone names, temperatures, schedules, saved memories) to improve its products.
+
 ## [1.0.111] - 2026-11-10
 
 Round 19: the pages where you edit data, and the chat assistant. Independently reviewed before release (the review caught a regression in the first version of the comfort-default validation, corrected below). Regression tests: `backend/tests/scenario/test_r19_chat_and_settings.py`, `frontend/src/lib/__tests__/api.test.ts`.

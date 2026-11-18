@@ -15,12 +15,14 @@ async def test_stale_off_record(house: House) -> None:
     await house.add_schedule("Day", "06:30", "22:00", 72, ["Living Room"])
     async with main_mod.get_session_maker()() as db:
         ent = await climate_entity(db)
+    # Freeze the clock FIRST: the record's age is measured against it (building it
+    # from the real clock made this test fail once the real date passed the frozen one).
+    house.at(2026, 11, 9, 11, 0)
     main_mod._mode_switch_loaded = True
     main_mod._last_mode_switch.clear()
     main_mod._last_mode_switch[ent] = ("off", datetime.now(UTC) - timedelta(days=3))
     # The user turned it back on: a normal tick observes a non-off mode.
     house.ha.set_thermostat(mode="heat", setpoint_f=72, reading_f=70)
-    house.at(2026, 11, 9, 11, 0)
     await house.tick_scheduled()
     # ...and later turns it off again while the sensor is down.
     house.ha.set_thermostat(mode="off", setpoint_f=72, reading_f=70)

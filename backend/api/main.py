@@ -3870,7 +3870,8 @@ async def execute_active_mode() -> None:
                     # Reasoning models may emit a <think> draft containing
                     # earlier, discarded numbers — parse only the final answer.
                     content = re.sub(r"<think>.*?</think>", "", content, flags=re.S)
-                    temp_match = re.search(r"RECOMMENDED_TEMP:\s*(-?\d+(?:\.\d+)?)", content)
+                    # Tolerate markdown (Gemini often writes "**RECOMMENDED_TEMP:** 72").
+                    temp_match = re.search(r"RECOMMENDED_TEMP[\s:*]*(-?\d+(?:\.\d+)?)", content)
                     if temp_match:
                         llm_val = float(temp_match.group(1))
                         # The LLM answered in the user's display unit.  Convert
